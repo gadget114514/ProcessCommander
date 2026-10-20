@@ -80,6 +80,7 @@ public:
 
     // Remove finished processes from list
     int ClearFinished();
+    bool RemoveProcess(int id);
 
     // Bring separate console window to foreground
     bool FocusProcessWindow(int id);

@@ -1,84 +1,103 @@
 # ProcessCommander
 
-Claude から他の LLM プログラム（`opencode`, `claude` 等）やサブプロセスを起動・監視・対話制御し、**状況をひと目で把握できる Native Win32 ダッシュボード GUI** を備えたプロセスマネージャです。
+**[English](README.md) | [日本語 (Japanese)](README-ja.md)**
+
+**ProcessCommander** is a native Win32 C++ Multi-Terminal ConPTY Process Manager and Dashboard designed for orchestrating, monitoring, and interacting with multiple parallel CLI agents (`claude`, `opencode`, build scripts, and interactive shells) via both **Model Context Protocol (MCP)** and **CLI commands**.
+
+![ProcessCommander Dashboard](docs/images/dashboard.png)
 
 ---
 
-## 主な特徴
+## Key Features
 
-1. **一覧性重視の Native Win32 ダッシュボード GUI**
-   - **上部 KPI サマリーカード (6枚)**: 管理プロセス総数、稼働中 (Active)、待機/無応答注意 (Idle >= 10s)、正常完了、失敗/強制終了、および全 Job Object の合計プロセス数・合計メモリ使用量をリアルタイム表示。
-   - **全プロセス状況テーブル (色分け表示)**: ID、エージェント名、ステータスバッジ、実行モード (`pty`/`pipe`/`console`)、ルートPID＋Job内プロセス数、メモリ使用量、経過時間/制限時間、無通信時間 (Idle)、**最新出力1行プレビュー** を一覧表示。
-   - **左下 2x2 マルチエージェント・ライブタイルモニター**: 最大4つの並列プロセス（`opencode` や `claude` 等）の最新ターミナル出力（`TerminalBuffer` から抽出）を同時にリアルタイム監視可能。タイルをクリックすると右側の Direct2D `TerminalView` が即座に切り替わります。
-   - **右下 擬似PTYターミナル (`TerminalView`) & 対話入力バー**: `src/Terminal` および `include` の Direct2D / DirectWrite / IME 対応フルVTターミナルエミュレータ（`TerminalView` + `TerminalEmulator` + `TerminalBuffer` + `ConPtySession`）を埋め込み表示。直接ターミナル内をクリックしてキー入力・IME変換・マウス操作・スクロールバックができるほか、下部の入力バーからの送信 (`Send Input`)、`Ctrl+C` 送信、およびツールバーの **`[Grid View]`** ボタンによる DWM サムネイル一覧オーバーレイ（`TerminalGridView`）にも対応。
+### 1. Native Win32 + Direct2D Multi-Terminal Dashboard GUI
+- **6 Top KPI Summary Cards**: Real-time metrics for Total Terminals, Active Running, Waiting/Idle (`>= 10s`), Completed (`Exit 0`), Failed/Killed, and Total Job Object Memory & Process Count.
+- **Sortable Process Summary Table (Newest on Top)**:
+  - Newly launched processes are automatically added to the **top of the list** (`ID ▼` descending by default).
+  - Click **any column header** (`ID`, `Agent / Name`, `Status`, `Start Time`, `Uptime`, `PID (Tree)`, `Memory`, `Idle`, `Latest Output Preview`, `Command Line`) to toggle **Ascending (`▲`) / Descending (`▼`)** sort order.
+- **Tab-Switched Full-Size Direct2D Terminal (`>= 80x25`)**:
+  - Embedded hardware-accelerated Direct2D / DirectWrite / IME / Sixel VT terminal emulator (`TerminalView` + `ConPtySession`).
+  - Switch between active terminals using the **Terminal Tab Bar** while always preserving at least **80 columns × 25 rows** of terminal viewport so TUI apps (`claude`, `opencode`, `vim`, `htop`) never wrap or corrupt their layout.
+  - Type directly into the terminal (full keyboard input, `Ctrl+C`, IME composition, mouse wheel scrollback, and text selection).
+- **Up to 16 Parallel Terminals in Live Grid View (`[Grid View]`)**:
+  - Click **`[Grid View]`** to open a live DWM thumbnail & snapshot grid (up to **16 parallel terminals** in a `4×4` matrix). Click any cell or use arrow keys + Enter to jump directly to that terminal tab.
 
-2. **3つの実行モード (`--mode`)**
-   - `pty` (**Win32 ConPTY / 擬似コンソール**): `CreatePseudoConsole` を使用し、TUI や対話プロンプトを持つ `opencode` や `claude` の対話セッションを維持。ANSI エスケープシーケンスの自動除去機能付き。
-   - `pipe` (**匿名パイプ**): `claude -p "..."` や `opencode run "..."` 等の非対話・バッチ実行向け。
-   - `console` (**別コンソールウィンドウ表示**): `CREATE_NEW_CONSOLE` で独立したコンソール画面を開き、人間が直接画面を見たり操作したりしつつ、Job Object でツリー監視・強制終了が可能。
-   - ※ Windows 上で `.cmd` / `.bat` としてインストールされている `claude` や `opencode` も `SearchPathW` により自動解決して起動します。
+![Terminal Grid View](docs/images/grid_view.png)
 
-3. **確実なプロセスツリー管理 (Win32 Job Object)**
-   - 各プロセスに専用の `Job Object` (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) を割り当て、子・孫プロセス（Node.js、Python、サブシェル等）の生存数とメモリ使用量を追跡し、`kill` やタイムアウト時にはツリー全体を確実に強制終了します。
-   - **全体タイムアウト (`--timeout`)** と **無応答ハングタイムアウト (`--idle-timeout`)** の両方に対応。
+### 2. Multi-Shell Launcher & `[Config]` Dialog (`cmd` / `powershell` / `bash`)
+- Click **`[+ Launch (...)]`** on the toolbar to immediately spawn a new interactive ConPTY terminal tab.
+- Click **`[Config]`** to select the default shell (`cmd`, `powershell`, or `bash` — auto-detecting Git Bash / WSL Bash), customize startup command lines, or launch any shell on the spot. Settings are persisted in `logs/config.json`.
 
-4. **Claude からの2通りの呼び出し方式（CLI コマンド & MCP サーバー両対応）**
-   - どちらの方式で呼び出しても、裏で Named Pipe (`\\.\pipe\ProcessCommander_IPC_v1`) を通じて GUI ダッシュボード本体と連携します（GUI 未起動時は自動でダッシュボードが立ち上がります）。
+![Shell Config Dialog](docs/images/config_dialog.png)
+
+### 3. History Management & Task Details Dialog
+- **`[終了履歴を消去 (Clear Ended)]`**: Deletes all completed/killed/failed process entries from history and updates `logs/processes_state.json`.
+- **`[終了履歴を非表示 (Hide Ended)]`**: Toggles hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
+- **Right-Click Context Menu & Task Details Dialog**: Right-click any process row or terminal tab (or double-click a row) to inspect the full command line, working directory, PID/Job metrics, log file path, `.done` file path, and output preview, or copy the command line to the clipboard.
+
+### 4. System Tray Integration
+- Click **`[トレイに格納 (Tray)]`**, minimize the window, or press the window close button (`[X]`) to hide ProcessCommander into the **Windows System Tray** while keeping all background ConPTY processes and IPC/MCP services running.
+- Left-click or double-click the tray icon (or right-click to open the tray menu) to restore and expand the dashboard at any time.
+
+### 5. Persistent Logs, State Recovery & `.done` Completion Marker Files
+- **Real-Time Per-Process Logs**: Every process's stdout/ConPTY stream is continuously written to `logs/proc_<id>_<name>_<YYYYMMDD_HHMMSS>.log` (or a custom `--log-file <path>`).
+- **Completion Marker Files (`.done`) for AI Agents**: On process exit, ProcessCommander atomically writes a JSON completion file (`logs/proc_<id>.done` or custom `--done-file <path>`), allowing Claude or automation scripts to detect task completion via simple file-existence checks.
+- **State Persistence Across Restarts**: Process metadata and history are saved in `logs/processes_state.json` and automatically restored when ProcessCommander starts.
+
+### 6. Reliable Win32 Job Object Process Tree Control
+- Each process runs inside a dedicated Win32 `Job Object` (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), tracking all child/grandchild processes and memory usage and guaranteeing clean tree termination on `kill`, `--timeout`, or `--idle-timeout`.
 
 ---
 
-## ビルド方法
+## Build Instructions
+
+Requires Windows 10/11 (x64), Visual Studio 2022 (C++17), and CMake 3.20+:
 
 ```powershell
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-ビルド成果物: `build/Release/ProcessCommander.exe`
+Output binary: `build/Release/ProcessCommander.exe` (alongside `conpty.dll` and `OpenConsole.exe`).
 
 ---
 
-## 使い方 1: Claude から CLI コマンドとして呼び出す
+## Usage 1: CLI Commands
 
-### プロセスの起動 (`start`)
+All CLI commands communicate with the running GUI Dashboard via Named Pipe (`\\.\pipe\ProcessCommander_IPC_v1`). If the dashboard is not yet running, it is launched automatically.
+
 ```powershell
-# 非対話モード (pipe) で claude を起動
-ProcessCommander.exe start --name "claude-review" --mode pipe --timeout 120 --cmd "claude -p \"Review src/main.cpp\""
+# Launch the GUI Dashboard (or restore from System Tray if already running)
+ProcessCommander.exe gui
 
-# 対話モード (ConPTY) で opencode を起動
-ProcessCommander.exe start --name "opencode-agent" --mode pty --cmd "opencode"
+# Start an interactive ConPTY process with custom log and .done marker file
+ProcessCommander.exe start --name "agent-task" --mode pty --cmd "opencode run \"Fix issue #42\"" --log-file "C:/logs/task42.log" --done-file "C:/logs/task42.done"
 
-# 別コンソールウィンドウ (console) を開いて起動
-ProcessCommander.exe start --name "visible-agent" --mode console --cmd "claude"
-```
-
-### 稼働状況の一覧取得 (`list`)
-```powershell
+# List all managed processes (JSON)
 ProcessCommander.exe list
-```
 
-### 出力ログの取得 (`logs`)
-```powershell
-ProcessCommander.exe logs --id 1 --tail 50
-```
+# Read the latest 80 lines of clean output from process #1
+ProcessCommander.exe logs --id 1 --tail 80
 
-### 対話セッションへの入力送信 (`send`)
-```powershell
-ProcessCommander.exe send --id 1 --input "yes"
-```
+# Send input to process #1's ConPTY / stdin
+ProcessCommander.exe send --id 1 --input "y"
 
-### 完了待機 (`wait`) / プロセスツリー強制終了 (`kill`)
-```powershell
-ProcessCommander.exe wait --id 1 --wait-ms 10000
+# Wait for process #1 to finish (up to 30 seconds)
+ProcessCommander.exe wait --id 1 --wait-ms 30000
+
+# Kill a process tree or all running processes
 ProcessCommander.exe kill --id 1
 ProcessCommander.exe kill-all
+
+# Clear finished process history
+ProcessCommander.exe clear
 ```
 
 ---
 
-## 使い方 2: Claude の MCP サーバーとして登録する
+## Usage 2: MCP Server for Claude Code / Claude Desktop
 
-`claude_desktop_config.json` または `.mcp.json`（Claude Code 用）に以下を追加すると、Claude が専用ツールとして `ProcessCommander` を直接呼び出せます。
+Add `ProcessCommander.exe` to your `.mcp.json` or `claude_desktop_config.json`:
 
 ```json
 {
@@ -91,10 +110,13 @@ ProcessCommander.exe kill-all
 }
 ```
 
-### 提供される MCP ツール
-- `start_process`: プロセス起動（`cmd`, `name`, `mode` [`pipe`|`pty`|`console`], `cwd`, `timeout_sec`, `idle_timeout_sec`, `wait`, `wait_ms`）
-- `list_processes`: 全管理プロセスのステータス・メモリ・Job内プロセス数・最新出力行の一覧取得
-- `get_process_output`: 指定プロセスの出力ログ取得（ANSI 除去済みテキスト）
-- `send_process_input`: 実行中プロセスの stdin / ConPTY へテキスト入力送信
-- `kill_process`: 指定 ID（または全プロセス）の Job Object ツリー強制終了
-- `wait_process`: 指定プロセスの終了待機
+### Provided MCP Tools
+| Tool Name | Description |
+| :--- | :--- |
+| `start_process` | Start a process (`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`], `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `wait`, `wait_ms`) |
+| `list_processes` | List all managed processes with status, start time, uptime, PID tree count, memory, log/done paths, and latest output line |
+| `get_process_output` | Retrieve ANSI-stripped or raw terminal output for a process (`id`, `tail_lines`, `clean_ansi`) |
+| `send_process_input` | Send text input or commands to a running process's ConPTY / stdin (`id`, `input`, `append_newline`) |
+| `wait_process` | Wait for a process to exit (`id`, `wait_ms`) |
+| `kill_process` | Terminate a specific process tree (`id`) or all running processes (`kill_all: true`) |
+| `focus_process_window` | Focus the terminal tab or console window of a process (`id`) |

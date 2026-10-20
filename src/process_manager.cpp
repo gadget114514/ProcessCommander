@@ -772,6 +772,25 @@ int ProcessManager::ClearFinished() {
     return static_cast<int>(toDestroy.size());
 }
 
+bool ProcessManager::RemoveProcess(int id) {
+    std::shared_ptr<ManagedProcess> removed;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto it = processes_.begin(); it != processes_.end(); ++it) {
+            if ((*it)->id == id && (*it)->state != ProcState::Running) {
+                removed = std::move(*it);
+                processes_.erase(it);
+                break;
+            }
+        }
+    }
+    if (removed) {
+        SaveState();
+        return true;
+    }
+    return false;
+}
+
 struct FindWindowByPidData {
     DWORD targetPid;
     HWND foundHwnd;

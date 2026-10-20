@@ -43,9 +43,12 @@ extern void UpdateTabs(HWND hwnd);
 // ---------------------------------------------------------------------------
 // Sync terminal list from g_appTabs
 // ---------------------------------------------------------------------------
+static constexpr int kMaxGridTerminals = 16;
+
 static void SyncTerminalTabs() {
     s_terminals.clear();
     for (int i = 0; i < (int)g_appTabs.size(); ++i) {
+        if ((int)s_terminals.size() >= kMaxGridTerminals) break;
         if (g_appTabs[i].type == TAB_TYPE_TERMINAL) {
             TerminalEntry e;
             e.hwnd = g_appTabs[i].hwnd;
@@ -379,15 +382,78 @@ LRESULT TerminalGridView::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CREATE:       return OnCreate(hwnd);
     case WM_DESTROY:      OnDestroy(); return 0;
     case WM_PAINT:        OnPaint(); return 0;
+    case WM_PRINTCLIENT: {
+        HDC hdc = (HDC)wp;
+        if (hdc) {
+            RECT rcClient;
+            GetClientRect(hwnd, &rcClient);
+            HBRUSH bgBrush = CreateSolidBrush(RGB(30, 30, 30));
+            FillRect(hdc, &rcClient, bgBrush);
+            DeleteObject(bgBrush);
+
+            HFONT hFontLbl = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            HGDIOBJ oldF = SelectObject(hdc, hFontLbl);
+            SetBkMode(hdc, TRANSPARENT);
+
+            for (int i = 0; i < cellCount_ && i < (int)s_terminals.size(); ++i) {
+                D2D1_RECT_F cellF;
+                GetCellRect(i, cellF);
+                RECT rcCell = {(LONG)cellF.left, (LONG)cellF.top, (LONG)cellF.right, (LONG)cellF.bottom};
+                bool sel = (i == selectedIndex_);
+
+                HPEN pen = CreatePen(PS_SOLID, sel ? 3 : 1, sel ? RGB(0, 120, 212) : RGB(85, 85, 85));
+                HBRUSH cellBg = CreateSolidBrush(RGB(12, 16, 23));
+                HGDIOBJ oldP = SelectObject(hdc, pen);
+                HGDIOBJ oldB = SelectObject(hdc, cellBg);
+                Rectangle(hdc, rcCell.left, rcCell.top, rcCell.right, rcCell.bottom);
+                SelectObject(hdc, oldP);
+                SelectObject(hdc, oldB);
+                DeleteObject(pen);
+                DeleteObject(cellBg);
+
+                HBITMAP snapBmp = (i < (int)snapshots_.size() && snapshots_[i]) ? snapshots_[i] : CaptureSnapshot(s_terminals[i].hwnd);
+                if (snapBmp) {
+                    BITMAP bm = {};
+                    GetObject(snapBmp, sizeof(bm), &bm);
+                    HDC hdcMem = CreateCompatibleDC(hdc);
+                    HGDIOBJ oldBm = SelectObject(hdcMem, snapBmp);
+                    SetStretchBltMode(hdc, HALFTONE);
+                    StretchBlt(hdc, rcCell.left + 4, rcCell.top + 4,
+                               (rcCell.right - rcCell.left) - 8, (rcCell.bottom - rcCell.top) - 8,
+                               hdcMem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+                    SelectObject(hdcMem, oldBm);
+                    DeleteDC(hdcMem);
+                    if (i >= (int)snapshots_.size() || !snapshots_[i]) {
+                        DeleteObject(snapBmp);
+                    }
+                }
+
+                RECT rcLbl = {rcCell.left, rcCell.bottom + 2, rcCell.right, rcCell.bottom + kLabelH};
+                HBRUSH lblBg = CreateSolidBrush(sel ? RGB(0, 90, 158) : RGB(34, 34, 34));
+                FillRect(hdc, &rcLbl, lblBg);
+                DeleteObject(lblBg);
+                SetTextColor(hdc, RGB(240, 240, 240));
+                DrawTextW(hdc, s_terminals[i].label.c_str(), -1, &rcLbl, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            SelectObject(hdc, oldF);
+            DeleteObject(hFontLbl);
+        }
+        return 0;
+    }
     case WM_ERASEBKGND:   return 1;
     case WM_KEYDOWN:      OnKeyDown(wp); return 0;
     case WM_LBUTTONDOWN:  OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_TIMER:
         if (wp == kTimerId) { OnTimer(); return 0; }
         break;
-    case WM_KILLFOCUS:
-        Dismiss(false);
+    case WM_KILLFOCUS: {
+        HWND hNewFocus = (HWND)wp;
+        if (hNewFocus && (hNewFocus == parent_ || IsChild(parent_, hNewFocus))) {
+            Dismiss(false);
+        }
         return 0;
+    }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }

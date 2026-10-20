@@ -218,6 +218,30 @@ LRESULT TerminalView::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:      OnDestroy(); return 0;
     case WM_SIZE:         OnSize(LOWORD(lp), HIWORD(lp)); return 0;
     case WM_PAINT:        OnPaint(); return 0;
+    case WM_PRINTCLIENT: {
+        HDC hdc = (HDC)wp;
+        if (hdc) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            HBRUSH bg = CreateSolidBrush(RGB(12, 16, 23));
+            FillRect(hdc, &rc, bg);
+            DeleteObject(bg);
+            std::wstring text = ExtractScreenText(0);
+            if (!text.empty()) {
+                HFONT hFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                          FIXED_PITCH | FF_MODERN, L"Consolas");
+                HGDIOBJ oldF = SelectObject(hdc, hFont);
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, RGB(226, 232, 240));
+                RECT rcPad = {rc.left + 8, rc.top + 6, rc.right - 8, rc.bottom - 6};
+                DrawTextW(hdc, text.c_str(), -1, &rcPad, DT_LEFT | DT_TOP | DT_NOPREFIX);
+                SelectObject(hdc, oldF);
+                DeleteObject(hFont);
+            }
+        }
+        return 0;
+    }
     case WM_ERASEBKGND:   return 1; // handled in OnPaint
     case WM_KEYDOWN:      OnKeyDown(wp, lp); return 0;
     case WM_CHAR:         OnChar((wchar_t)wp); return 0;
