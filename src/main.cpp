@@ -90,6 +90,7 @@ int main() {
         if (GetLastError() == ERROR_ALREADY_EXISTS) {
             HWND existing = FindWindowW(L"ProcessCommanderDashboardWnd", nullptr);
             if (existing) {
+                ShowWindow(existing, SW_SHOW);
                 if (IsIconic(existing)) ShowWindow(existing, SW_RESTORE);
                 SetForegroundWindow(existing);
             }

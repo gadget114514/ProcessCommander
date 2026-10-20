@@ -35,19 +35,23 @@ namespace pc {
 constexpr UINT WM_PC_IPC_EVENT        = WM_APP + 101;
 constexpr UINT WM_PC_CREATE_TERMVIEW  = WM_APP + 102;
 constexpr UINT WM_PC_DESTROY_TERMVIEW = WM_APP + 103;
+constexpr UINT WM_PC_TRAYICON         = WM_APP + 104;
 constexpr UINT_PTR TIMER_REFRESH_ID   = 1;
+constexpr UINT TRAY_ICON_ID           = 1;
 
 enum ControlId {
-    IDC_EDIT_NAME = 1001,
-    IDC_EDIT_CMD = 1002,
-    IDC_EDIT_TIMEOUT = 1004,
     IDC_BTN_START = 1005,
     IDC_BTN_KILL_SEL = 1006,
     IDC_BTN_KILL_ALL = 1007,
     IDC_BTN_CLEAR = 1008,
-    IDC_BTN_TILE_MODE = 1014,
+    IDC_LIST_PROCS = 1009,
     IDC_BTN_GRID_VIEW = 1015,
-    IDC_LIST_PROCS = 1009
+    IDC_TAB_TERMINALS = 1016,
+    IDC_BTN_HIDE_TRAY = 1017,
+    IDM_TRAY_RESTORE = 4001,
+    IDM_TRAY_GRID_VIEW = 4002,
+    IDM_TRAY_HIDE = 4003,
+    IDM_TRAY_EXIT = 4004
 };
 
 struct CreateTermViewParams {
@@ -70,16 +74,14 @@ struct DashboardState {
     DWORD guiThreadId = 0;
 
     HWND hwndMain = nullptr;
-    HWND hwndEditName = nullptr;
-    HWND hwndEditCmd = nullptr;
-    HWND hwndEditTimeout = nullptr;
     HWND hwndBtnStart = nullptr;
     HWND hwndBtnKillSel = nullptr;
     HWND hwndBtnKillAll = nullptr;
     HWND hwndBtnClear = nullptr;
-    HWND hwndBtnTileMode = nullptr;
     HWND hwndBtnGridView = nullptr;
+    HWND hwndBtnHideTray = nullptr;
     HWND hwndList = nullptr;
+    HWND hwndTab = nullptr;
 
     std::unique_ptr<TerminalGridView> gridView;
 
@@ -88,7 +90,9 @@ struct DashboardState {
     HFONT hFontKpiVal = nullptr;
 
     int selectedProcId = -1;
-    bool tileMultiTerminals = true; // true = show up to 4 live TerminalViews tiled; false = maximize selected TerminalView
+    bool allowExit = false;
+    NOTIFYICONDATAW nid = {};
+    bool trayAdded = false;
 
     std::string dashboardStartTimeStr;
     uint64_t dashboardStartTickMs = 0;
@@ -173,128 +177,108 @@ static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std
     SelectObject(hdc, oldFont);
 }
 
-// Position the real TerminalView Direct2D child windows inside rcTerminalArea
+// Position the active tab's TerminalView Direct2D child window inside rcTerminalArea
+// and synchronize the WC_TABCONTROLW tab bar (st->hwndTab / g_tabHwnd).
 static void LayoutTerminalViews(DashboardState* st) {
     if (!st) return;
 
     g_appTabs.clear();
     std::vector<ProcessSnapshot> termProcs;
+    int activeTabIdx = 0;
 
     for (const auto& s : st->cachedSnapshots) {
         if (s.terminalHwnd && IsWindow(s.terminalHwnd)) {
             AppTabInfo tab;
             tab.hwnd = s.terminalHwnd;
-            tab.label = L"#" + std::to_wstring(s.id) + L" " + Utf8ToWide(s.name);
+            std::wstring stateShort = (s.state == ProcState::Running) ? L"RUN" : L"END";
+            tab.label = L"#" + std::to_wstring(s.id) + L" " + Utf8ToWide(s.name) + L" [" + stateShort + L"]";
             tab.type = TAB_TYPE_TERMINAL;
             tab.data = reinterpret_cast<void*>(static_cast<intptr_t>(s.id));
             g_appTabs.push_back(tab);
 
             if (s.id == st->selectedProcId) {
-                g_activeAppTab = static_cast<int>(g_appTabs.size()) - 1;
+                activeTabIdx = static_cast<int>(g_appTabs.size()) - 1;
             }
             termProcs.push_back(s);
         }
     }
 
-    st->termBanners.clear();
-
-    RECT area = st->rcTerminalArea;
-    int areaW = (std::max)(710L, area.right - area.left);
-    int areaH = (std::max)(480L, area.bottom - area.top);
-
-    // Guarantee each visible TerminalView has at least 80 columns (~710px width) and 25 rows (~460px height)
-    int maxColsByWidth = (std::max)(1, (std::min)(2, areaW / 710));
-    int maxRowsByHeight = (areaH >= 960) ? 2 : 1;
-    size_t maxTiles = (!st->tileMultiTerminals) ? 1 : static_cast<size_t>(maxColsByWidth * maxRowsByHeight);
-
-    // Determine which TerminalView windows to show on screen
-    std::vector<ProcessSnapshot> visibleTerms;
-    if (maxTiles <= 1 || termProcs.size() <= 1) {
-        for (const auto& s : termProcs) {
-            if (s.id == st->selectedProcId) {
-                visibleTerms.push_back(s);
-                break;
-            }
-        }
-        if (visibleTerms.empty() && !termProcs.empty()) {
-            visibleTerms.push_back(termProcs.back());
-        }
+    if (!g_appTabs.empty()) {
+        g_activeAppTab = activeTabIdx;
+        st->selectedProcId = static_cast<int>(reinterpret_cast<intptr_t>(g_appTabs[g_activeAppTab].data));
     } else {
-        // Tiled mode: show up to maxTiles TerminalView child windows simultaneously (>= 80x25 each)
-        for (const auto& s : termProcs) {
-            if (s.id == st->selectedProcId) {
-                visibleTerms.push_back(s);
-                break;
-            }
-        }
-        for (auto it = termProcs.rbegin(); it != termProcs.rend(); ++it) {
-            if (visibleTerms.size() >= maxTiles) break;
-            if (it->state == ProcState::Running && it->id != st->selectedProcId) {
-                visibleTerms.push_back(*it);
-            }
-        }
-        for (auto it = termProcs.rbegin(); it != termProcs.rend(); ++it) {
-            if (visibleTerms.size() >= maxTiles) break;
-            bool already = false;
-            for (const auto& v : visibleTerms) {
-                if (v.id == it->id) { already = true; break; }
-            }
-            if (!already) visibleTerms.push_back(*it);
-        }
-        // Sort by ID for stable tile positions
-        std::sort(visibleTerms.begin(), visibleTerms.end(),
-                  [](const ProcessSnapshot& a, const ProcessSnapshot& b) { return a.id < b.id; });
+        g_activeAppTab = 0;
     }
 
-    // Hide any TerminalView not in visibleTerms
-    for (const auto& s : termProcs) {
-        bool isVis = false;
-        for (const auto& v : visibleTerms) {
-            if (v.id == s.id) { isVis = true; break; }
+    // Synchronize Win32 Tab Control (st->hwndTab)
+    if (st->hwndTab && IsWindow(st->hwndTab)) {
+        g_suppressTabChange = true;
+        int curTabCount = TabCtrl_GetItemCount(st->hwndTab);
+        int targetTabCount = static_cast<int>(g_appTabs.size());
+
+        while (curTabCount > targetTabCount) {
+            TabCtrl_DeleteItem(st->hwndTab, curTabCount - 1);
+            curTabCount--;
         }
-        if (!isVis && IsWindowVisible(s.terminalHwnd)) {
+        for (int i = 0; i < targetTabCount; ++i) {
+            std::wstring lbl = g_appTabs[i].label;
+            TCITEMW tie = {};
+            tie.mask = TCIF_TEXT | TCIF_PARAM;
+            tie.pszText = lbl.data();
+            tie.lParam = reinterpret_cast<LPARAM>(g_appTabs[i].data);
+            if (i >= curTabCount) {
+                TabCtrl_InsertItem(st->hwndTab, i, &tie);
+            } else {
+                wchar_t existingText[256] = {};
+                TCITEMW curItem = {};
+                curItem.mask = TCIF_TEXT;
+                curItem.pszText = existingText;
+                curItem.cchTextMax = 255;
+                TabCtrl_GetItem(st->hwndTab, i, &curItem);
+                if (lbl != existingText) {
+                    TabCtrl_SetItem(st->hwndTab, i, &tie);
+                }
+            }
+        }
+        if (targetTabCount > 0 && TabCtrl_GetCurSel(st->hwndTab) != g_activeAppTab) {
+            TabCtrl_SetCurSel(st->hwndTab, g_activeAppTab);
+        }
+        g_suppressTabChange = false;
+    }
+
+    st->termBanners.clear();
+
+    if (termProcs.empty()) return;
+
+    const ProcessSnapshot& activeSnap = termProcs[g_activeAppTab];
+
+    // Hide all other TerminalView child windows; show only the active tab's TerminalView
+    for (const auto& s : termProcs) {
+        if (s.id != activeSnap.id && IsWindowVisible(s.terminalHwnd)) {
             ShowWindow(s.terminalHwnd, SW_HIDE);
         }
     }
 
-    if (visibleTerms.empty()) return;
-
-    int count = static_cast<int>(visibleTerms.size());
-    int rows = (count > maxColsByWidth && maxRowsByHeight >= 2) ? 2 : 1;
-    int cols = (rows == 1) ? count : ((count + 1) / 2);
-    int gap = 8;
-    int cellW = (areaW - gap * (cols - 1)) / cols;
-    int cellH = (areaH - gap * (rows - 1)) / rows;
+    RECT area = st->rcTerminalArea;
     int headerH = 26;
+    RECT rcCell = area;
+    RECT rcBanner = {rcCell.left, rcCell.top, rcCell.right, rcCell.top + headerH};
+    st->termBanners.push_back({rcBanner, rcCell, activeSnap.id});
 
-    for (int i = 0; i < count; ++i) {
-        int c = i % cols;
-        int r = i / cols;
-        // If 3 terminals, let the 3rd span or sit in row 1 col 0
-        RECT rcCell;
-        rcCell.left = area.left + c * (cellW + gap);
-        rcCell.top = area.top + r * (cellH + gap);
-        rcCell.right = (c == cols - 1) ? area.right : (rcCell.left + cellW);
-        rcCell.bottom = (r == rows - 1) ? area.bottom : (rcCell.top + cellH);
+    RECT rcTv = {rcCell.left + 2, rcCell.top + headerH, rcCell.right - 2, rcCell.bottom - 2};
+    int tvW = (std::max)(710L, rcTv.right - rcTv.left);
+    int tvH = (std::max)(460L, rcTv.bottom - rcTv.top);
 
-        RECT rcBanner = {rcCell.left, rcCell.top, rcCell.right, rcCell.top + headerH};
-        st->termBanners.push_back({rcBanner, rcCell, visibleTerms[i].id});
-
-        RECT rcTv = {rcCell.left + 2, rcCell.top + headerH, rcCell.right - 2, rcCell.bottom - 2};
-        int tvW = (std::max)(80L, rcTv.right - rcTv.left);
-        int tvH = (std::max)(40L, rcTv.bottom - rcTv.top);
-
-        HWND hTv = visibleTerms[i].terminalHwnd;
-        RECT rcCur;
-        GetWindowRect(hTv, &rcCur);
-        MapWindowPoints(nullptr, st->hwndMain, reinterpret_cast<POINT*>(&rcCur), 2);
-        if (rcCur.left != rcTv.left || rcCur.top != rcTv.top ||
-            (rcCur.right - rcCur.left) != tvW || (rcCur.bottom - rcCur.top) != tvH) {
-            MoveWindow(hTv, rcTv.left, rcTv.top, tvW, tvH, TRUE);
-        }
-        if (!IsWindowVisible(hTv)) {
-            ShowWindow(hTv, SW_SHOW);
-        }
+    HWND hTv = activeSnap.terminalHwnd;
+    RECT rcCur;
+    GetWindowRect(hTv, &rcCur);
+    MapWindowPoints(nullptr, st->hwndMain, reinterpret_cast<POINT*>(&rcCur), 2);
+    if (rcCur.left != rcTv.left || rcCur.top != rcTv.top ||
+        (rcCur.right - rcCur.left) != tvW || (rcCur.bottom - rcCur.top) != tvH) {
+        MoveWindow(hTv, rcTv.left, rcTv.top, tvW, tvH, TRUE);
+    }
+    if (!IsWindowVisible(hTv)) {
+        ShowWindow(hTv, SW_SHOW);
     }
 }
 
@@ -376,12 +360,8 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(203, 213, 225));
     HGDIOBJ oldFont = SelectObject(hdc, st->hFontUiBold);
-    RECT rcLblName = {10, 96, 60, 118};
-    DrawTextW(hdc, L"Name:", -1, &rcLblName, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    RECT rcLblCmd = {175, 96, 225, 118};
-    DrawTextW(hdc, L"Cmd:", -1, &rcLblCmd, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    // 2. Draw Headers & Borders around each live embedded TerminalView child window
+    // 2. Draw Headers & Borders around the active TerminalView tab
     if (st->termBanners.empty()) {
         RECT rcEmpty = st->rcTerminalArea;
         HBRUSH emptyBrush = CreateSolidBrush(RGB(17, 24, 39));
@@ -394,7 +374,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 
         SetTextColor(hdc, RGB(148, 163, 184));
         SelectObject(hdc, st->hFontUiBold);
-        DrawTextW(hdc, L"No active TerminalView sessions. Click [+ Launch Terminal] above or start via Claude CLI / MCP.",
+        DrawTextW(hdc, L"No active TerminalView sessions. Click [+ New Shell] above or start via Claude CLI / MCP.",
                   -1, &rcEmpty, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
         for (const auto& tb : st->termBanners) {
@@ -601,37 +581,36 @@ static void LayoutControls(DashboardState* st, int width, int height) {
 
     int yBar = 94;
     int hBar = 26;
-    MoveWindow(st->hwndEditName, 55, yBar, 110, hBar, TRUE);
-
-    int rightButtonsW = 530;
-    int cmdRight = (std::max)(340, width - rightButtonsW - margin);
-    MoveWindow(st->hwndEditCmd, 215, yBar, cmdRight - 215, hBar, TRUE);
-
-    int xCur = cmdRight + 6;
-    MoveWindow(st->hwndEditTimeout, xCur, yBar, 48, hBar, TRUE);
-    xCur += 54;
-    MoveWindow(st->hwndBtnStart, xCur, yBar, 110, hBar, TRUE);
-    xCur += 115;
-    MoveWindow(st->hwndBtnKillSel, xCur, yBar, 72, hBar, TRUE);
-    xCur += 76;
-    MoveWindow(st->hwndBtnKillAll, xCur, yBar, 65, hBar, TRUE);
-    xCur += 69;
-    MoveWindow(st->hwndBtnClear, xCur, yBar, 68, hBar, TRUE);
-    xCur += 72;
-    MoveWindow(st->hwndBtnTileMode, xCur, yBar, 78, hBar, TRUE);
-    xCur += 82;
-    MoveWindow(st->hwndBtnGridView, xCur, yBar, 78, hBar, TRUE);
+    int xCur = margin;
+    MoveWindow(st->hwndBtnStart, xCur, yBar, 120, hBar, TRUE);
+    xCur += 128;
+    MoveWindow(st->hwndBtnKillSel, xCur, yBar, 88, hBar, TRUE);
+    xCur += 96;
+    MoveWindow(st->hwndBtnKillAll, xCur, yBar, 80, hBar, TRUE);
+    xCur += 88;
+    MoveWindow(st->hwndBtnClear, xCur, yBar, 88, hBar, TRUE);
+    xCur += 96;
+    MoveWindow(st->hwndBtnGridView, xCur, yBar, 100, hBar, TRUE);
+    xCur += 108;
+    MoveWindow(st->hwndBtnHideTray, xCur, yBar, 160, hBar, TRUE);
 
     // Upper Process Summary Table (compact height so TerminalViews always have >= 25 rows)
     int topList = 128;
     int availVert = height - topList - statusBarH - margin;
-    // Reserve at least 500px for rcTerminalArea (26px banner + 474px TerminalView >= 26 rows)
-    int maxListH = (std::max)(95, availVert - 508);
+    // Reserve at least 530px for Tab Bar (28px) + rcTerminalArea (26px banner + 476px TerminalView >= 26 rows)
+    int maxListH = (std::max)(95, availVert - 534);
     int listH = (std::max)(95, (std::min)(150, (std::min)(maxListH, (availVert * 20) / 100)));
     MoveWindow(st->hwndList, margin, topList, width - margin * 2, listH, TRUE);
 
-    // Middle/Bottom Area: dedicated to embedded Direct2D TerminalView windows (>= 25 rows)
-    int termTop = topList + listH + 8;
+    // Terminal Tab Bar (WC_TABCONTROLW) right above the TerminalView area
+    int tabTop = topList + listH + 6;
+    int tabH = 26;
+    if (st->hwndTab) {
+        MoveWindow(st->hwndTab, margin, tabTop, width - margin * 2, tabH, TRUE);
+    }
+
+    // Middle/Bottom Area: dedicated to embedded Direct2D TerminalView windows (>= 80x25 rows)
+    int termTop = tabTop + tabH + 2;
     int termBottom = (std::max)(termTop + 480, height - statusBarH - 4);
     st->rcTerminalArea = {margin, termTop, width - margin, termBottom};
 
@@ -852,27 +831,10 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
 }
 
 static void LaunchFromToolbar(DashboardState* st) {
-    wchar_t nameBuf[256] = {};
-    wchar_t cmdBuf[2048] = {};
-    wchar_t timeoutBuf[64] = {};
-    GetWindowTextW(st->hwndEditName, nameBuf, 255);
-    GetWindowTextW(st->hwndEditCmd, cmdBuf, 2047);
-    GetWindowTextW(st->hwndEditTimeout, timeoutBuf, 63);
-
-    std::string cmd = WideToUtf8(cmdBuf);
-    if (cmd.empty()) {
-        MessageBoxW(st->hwndMain, L"Please enter a command to launch.", L"ProcessCommander", MB_ICONINFORMATION);
-        return;
-    }
-
     StartProcessRequest req;
-    req.name = WideToUtf8(nameBuf);
-    req.commandLine = cmd;
+    req.name = "shell";
+    req.commandLine = "powershell.exe";
     req.mode = ExecMode::ConPTY;
-    try {
-        std::string tStr = WideToUtf8(timeoutBuf);
-        if (!tStr.empty()) req.timeoutSec = std::stoi(tStr);
-    } catch (...) {}
 
     std::string err;
     int id = st->pm->StartProcess(req, err);
@@ -886,6 +848,85 @@ static void LaunchFromToolbar(DashboardState* st) {
         if (tv && tv->Hwnd()) {
             SetFocus(tv->Hwnd());
         }
+    }
+}
+
+static void InitTrayIcon(DashboardState* st) {
+    if (!st || !st->hwndMain || st->trayAdded) return;
+    ZeroMemory(&st->nid, sizeof(st->nid));
+    st->nid.cbSize = sizeof(NOTIFYICONDATAW);
+    st->nid.hWnd = st->hwndMain;
+    st->nid.uID = 1;
+    st->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    st->nid.uCallbackMessage = WM_PC_TRAYICON;
+    st->nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcscpy_s(st->nid.szTip, L"ProcessCommander — Multi-Terminal ConPTY Dashboard");
+    st->trayAdded = (Shell_NotifyIconW(NIM_ADD, &st->nid) != FALSE);
+}
+
+static void RemoveTrayIcon(DashboardState* st) {
+    if (!st || !st->trayAdded) return;
+    Shell_NotifyIconW(NIM_DELETE, &st->nid);
+    st->trayAdded = false;
+}
+
+static void HideToTray(DashboardState* st) {
+    if (!st || !st->hwndMain) return;
+    InitTrayIcon(st);
+    if (st->gridView && st->gridView->IsVisible()) {
+        st->gridView->Hide();
+    }
+    ShowWindow(st->hwndMain, SW_HIDE);
+}
+
+static void RestoreFromTray(DashboardState* st) {
+    if (!st || !st->hwndMain) return;
+    ShowWindow(st->hwndMain, SW_SHOW);
+    if (IsIconic(st->hwndMain)) {
+        ShowWindow(st->hwndMain, SW_RESTORE);
+    }
+    SetForegroundWindow(st->hwndMain);
+    RefreshDashboardData(st);
+    if (st->selectedProcId > 0 && st->pm) {
+        TerminalView* tv = st->pm->GetTerminalView(st->selectedProcId);
+        if (tv && tv->Hwnd()) {
+            SetFocus(tv->Hwnd());
+        }
+    }
+}
+
+static void ShowTrayContextMenu(DashboardState* st) {
+    if (!st || !st->hwndMain) return;
+    POINT pt = {};
+    GetCursorPos(&pt);
+
+    HMENU hMenu = CreatePopupMenu();
+    AppendMenuW(hMenu, MF_STRING | MF_DEFAULT, IDM_TRAY_RESTORE, L"ダッシュボードを拡大・表示 (Restore Dashboard)");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_GRID_VIEW, L"グリッド表示を開く (Open Grid View)");
+    if (IsWindowVisible(st->hwndMain)) {
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_HIDE, L"タスクトレイに格納 (Hide to Tray)");
+    }
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, L"ProcessCommander を完全終了 (Exit)");
+
+    SetForegroundWindow(st->hwndMain);
+    int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, st->hwndMain, nullptr);
+    PostMessageW(st->hwndMain, WM_NULL, 0, 0);
+    DestroyMenu(hMenu);
+
+    if (cmd == IDM_TRAY_RESTORE) {
+        RestoreFromTray(st);
+    } else if (cmd == IDM_TRAY_GRID_VIEW) {
+        RestoreFromTray(st);
+        if (st->gridView) {
+            LayoutTerminalViews(st);
+            st->gridView->Show();
+        }
+    } else if (cmd == IDM_TRAY_HIDE) {
+        HideToTray(st);
+    } else if (cmd == IDM_TRAY_EXIT) {
+        st->allowExit = true;
+        DestroyWindow(st->hwndMain);
     }
 }
 
@@ -907,26 +948,18 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             st->hFontKpiVal = CreateFontW(-24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 
-            st->hwndEditName = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"shell",
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 100, 24, hwnd, (HMENU)IDC_EDIT_NAME, nullptr, nullptr);
-            st->hwndEditCmd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"powershell.exe",
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 300, 24, hwnd, (HMENU)IDC_EDIT_CMD, nullptr, nullptr);
-
-            st->hwndEditTimeout = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"0",
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_NUMBER, 0, 0, 50, 24, hwnd, (HMENU)IDC_EDIT_TIMEOUT, nullptr, nullptr);
-
-            st->hwndBtnStart = CreateWindowExW(0, L"BUTTON", L"+ Launch Terminal",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 110, 24, hwnd, (HMENU)IDC_BTN_START, nullptr, nullptr);
+            st->hwndBtnStart = CreateWindowExW(0, L"BUTTON", L"+ New Shell",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 120, 24, hwnd, (HMENU)IDC_BTN_START, nullptr, nullptr);
             st->hwndBtnKillSel = CreateWindowExW(0, L"BUTTON", L"Kill Tree",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 72, 24, hwnd, (HMENU)IDC_BTN_KILL_SEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 88, 24, hwnd, (HMENU)IDC_BTN_KILL_SEL, nullptr, nullptr);
             st->hwndBtnKillAll = CreateWindowExW(0, L"BUTTON", L"Kill All",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 65, 24, hwnd, (HMENU)IDC_BTN_KILL_ALL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 80, 24, hwnd, (HMENU)IDC_BTN_KILL_ALL, nullptr, nullptr);
             st->hwndBtnClear = CreateWindowExW(0, L"BUTTON", L"Clear End",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 68, 24, hwnd, (HMENU)IDC_BTN_CLEAR, nullptr, nullptr);
-            st->hwndBtnTileMode = CreateWindowExW(0, L"BUTTON", L"Tile / 1-Up",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 78, 24, hwnd, (HMENU)IDC_BTN_TILE_MODE, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 88, 24, hwnd, (HMENU)IDC_BTN_CLEAR, nullptr, nullptr);
             st->hwndBtnGridView = CreateWindowExW(0, L"BUTTON", L"Grid View",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 78, 24, hwnd, (HMENU)IDC_BTN_GRID_VIEW, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 100, 24, hwnd, (HMENU)IDC_BTN_GRID_VIEW, nullptr, nullptr);
+            st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", L"トレイに格納 (Tray)",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 160, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
 
             st->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -955,17 +988,24 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 ListView_InsertColumn(st->hwndList, i, &lvc);
             }
 
+            st->hwndTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_SINGLELINE,
+                0, 0, 600, 26, hwnd, (HMENU)IDC_TAB_TERMINALS, nullptr, nullptr);
+            g_tabHwnd = st->hwndTab;
+
             HWND uiCtrls[] = {
-                st->hwndEditName, st->hwndEditCmd, st->hwndEditTimeout,
                 st->hwndBtnStart, st->hwndBtnKillSel, st->hwndBtnKillAll,
-                st->hwndBtnClear, st->hwndBtnTileMode, st->hwndBtnGridView, st->hwndList
+                st->hwndBtnClear, st->hwndBtnGridView, st->hwndBtnHideTray,
+                st->hwndList, st->hwndTab
             };
             for (HWND h : uiCtrls) {
-                SendMessageW(h, WM_SETFONT, (WPARAM)st->hFontUi, TRUE);
+                if (h) SendMessageW(h, WM_SETFONT, (WPARAM)st->hFontUi, TRUE);
             }
 
             st->gridView = std::make_unique<TerminalGridView>();
             st->gridView->Create(hwnd);
+
+            InitTrayIcon(st);
 
             SetTimer(hwnd, TIMER_REFRESH_ID, 250, nullptr);
             RefreshDashboardData(st);
@@ -1108,19 +1148,14 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             } else if (id == IDC_BTN_CLEAR) {
                 st->pm->ClearFinished();
                 RefreshDashboardData(st);
-            } else if (id == IDC_BTN_TILE_MODE) {
-                st->tileMultiTerminals = !st->tileMultiTerminals;
-                RefreshDashboardData(st);
-                if (st->selectedProcId > 0) {
-                    TerminalView* tv = st->pm->GetTerminalView(st->selectedProcId);
-                    if (tv && tv->Hwnd()) SetFocus(tv->Hwnd());
-                }
             } else if (id == IDC_BTN_GRID_VIEW) {
                 if (st->gridView) {
                     LayoutTerminalViews(st);
                     if (st->gridView->IsVisible()) st->gridView->Hide();
                     else st->gridView->Show();
                 }
+            } else if (id == IDC_BTN_HIDE_TRAY) {
+                HideToTray(st);
             }
             return 0;
         }
@@ -1128,7 +1163,37 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         case WM_NOTIFY: {
             if (!st) return 0;
             auto* nmhdr = reinterpret_cast<NMHDR*>(lParam);
-            if (nmhdr->idFrom == IDC_LIST_PROCS) {
+            if (nmhdr->idFrom == IDC_TAB_TERMINALS) {
+                if (nmhdr->code == TCN_SELCHANGE && !g_suppressTabChange) {
+                    int sel = TabCtrl_GetCurSel(st->hwndTab);
+                    if (sel >= 0 && sel < static_cast<int>(g_appTabs.size())) {
+                        int procId = static_cast<int>(reinterpret_cast<intptr_t>(g_appTabs[sel].data));
+                        HWND hTv = g_appTabs[sel].hwnd;
+                        if (procId > 0) {
+                            st->selectedProcId = procId;
+                            RefreshDashboardData(st);
+                            if (hTv && IsWindow(hTv)) {
+                                SetFocus(hTv);
+                            }
+                        }
+                    }
+                } else if (nmhdr->code == NM_RCLICK) {
+                    POINT ptScreen = {};
+                    GetCursorPos(&ptScreen);
+                    TCHITTESTINFO hti = {};
+                    hti.pt = ptScreen;
+                    ScreenToClient(st->hwndTab, &hti.pt);
+                    int idx = TabCtrl_HitTest(st->hwndTab, &hti);
+                    if (idx >= 0 && idx < static_cast<int>(g_appTabs.size())) {
+                        int procId = static_cast<int>(reinterpret_cast<intptr_t>(g_appTabs[idx].data));
+                        if (procId > 0) {
+                            st->selectedProcId = procId;
+                            RefreshDashboardData(st);
+                            ShowTaskContextMenu(st, procId, ptScreen);
+                        }
+                    }
+                }
+            } else if (nmhdr->idFrom == IDC_LIST_PROCS) {
                 if (nmhdr->code == LVN_ITEMCHANGED) {
                     auto* nmlv = reinterpret_cast<NMLISTVIEW*>(lParam);
                     if ((nmlv->uChanged & LVIF_STATE) && (nmlv->uNewState & LVIS_SELECTED)) {
@@ -1184,6 +1249,38 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             return 0;
         }
 
+        case WM_PC_TRAYICON: {
+            if (!st) return 0;
+            UINT ev = LOWORD(lParam);
+            if (ev == WM_LBUTTONUP || ev == WM_LBUTTONDBLCLK) {
+                if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
+                    SetForegroundWindow(hwnd);
+                } else {
+                    RestoreFromTray(st);
+                }
+            } else if (ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU) {
+                ShowTrayContextMenu(st);
+            }
+            return 0;
+        }
+
+        case WM_SYSCOMMAND: {
+            if ((wParam & 0xFFF0) == SC_MINIMIZE && st) {
+                HideToTray(st);
+                return 0;
+            }
+            break;
+        }
+
+        case WM_CLOSE: {
+            if (st && !st->allowExit) {
+                HideToTray(st);
+                return 0;
+            }
+            DestroyWindow(hwnd);
+            return 0;
+        }
+
         case WM_TERMINAL_PROGRESS: {
             if (st) {
                 st->termProgressState = (lParam >= 0) ? 1 : 0;
@@ -1209,6 +1306,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         case WM_DESTROY: {
             KillTimer(hwnd, TIMER_REFRESH_ID);
             if (st) {
+                RemoveTrayIcon(st);
                 st->gridView.reset();
                 if (st->hFontUi) DeleteObject(st->hFontUi);
                 if (st->hFontUiBold) DeleteObject(st->hFontUiBold);
@@ -1226,7 +1324,7 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc) {
 
     INITCOMMONCONTROLSEX icex = {};
     icex.dwSize = sizeof(icex);
-    icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
+    icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_STANDARD_CLASSES;
     InitCommonControlsEx(&icex);
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
