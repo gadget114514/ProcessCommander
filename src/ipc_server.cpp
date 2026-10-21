@@ -19,6 +19,8 @@ std::string SnapshotToJson(const ProcessSnapshot& s) {
         << "\"start_time\":\"" << JsonEscape(s.startTimeStr) << "\","
         << "\"elapsed_ms\":" << s.elapsedMs << ","
         << "\"elapsed_str\":\"" << JsonEscape(FormatDurationSec(s.elapsedMs)) << "\","
+        << "\"cpu_time_ms\":" << s.cpuTimeMs << ","
+        << "\"cpu_time_str\":\"" << JsonEscape(FormatUptimeHMS(s.cpuTimeMs)) << "\","
         << "\"uptime_str\":\"" << JsonEscape(FormatUptimeHMS(s.elapsedMs)) << "\","
         << "\"idle_ms\":" << s.idleMs << ","
         << "\"timeout_sec\":" << s.timeoutSec << ","
@@ -135,7 +137,8 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
         req.workingDir = JsonGetString(reqJson, "cwd", "");
         req.logFile = JsonGetString(reqJson, "log_file", "");
         req.doneFile = JsonGetString(reqJson, "done_file", "");
-        req.mode = StringToExecMode(JsonGetString(reqJson, "mode", "pty"));
+        req.mode = StringToExecMode(JsonGetString(reqJson, "mode", "pipe"));
+        req.openStdin = JsonGetBool(reqJson, "open_stdin", false);
         req.timeoutSec = static_cast<int>(JsonGetInt(reqJson, "timeout_sec", 0));
         req.idleTimeoutSec = static_cast<int>(JsonGetInt(reqJson, "idle_timeout_sec", 0));
         bool waitFinish = JsonGetBool(reqJson, "wait", false);
@@ -273,103 +276,6 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
     }
 
     return "{\"ok\":false,\"error\":\"Unknown IPC action: " + JsonEscape(action) + "\"}";
-}
-
-static bool TryConnectPipe(HANDLE& outPipe) {
-    while (true) {
-        HANDLE hPipe = CreateFileW(
-            kPipeName,
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            nullptr,
-            OPEN_EXISTING,
-            0,
-            nullptr
-        );
-        if (hPipe != INVALID_HANDLE_VALUE) {
-            DWORD mode = PIPE_READMODE_MESSAGE;
-            SetNamedPipeHandleState(hPipe, &mode, nullptr, nullptr);
-            outPipe = hPipe;
-            return true;
-        }
-        if (GetLastError() != ERROR_PIPE_BUSY) {
-            return false;
-        }
-        if (!WaitNamedPipeW(kPipeName, 500)) {
-            return false;
-        }
-    }
-}
-
-bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::string& outError, bool autoStartGui) {
-    HANDLE hPipe = INVALID_HANDLE_VALUE;
-    if (!TryConnectPipe(hPipe)) {
-        if (!autoStartGui) {
-            outError = "ProcessCommander GUI daemon is not running.";
-            return false;
-        }
-        // Auto-spawn GUI Dashboard process via WMI Win32_Process.Create so that it is
-        // created by WmiPrvSE.exe completely outside the CLI caller's process tree,
-        // Job Object, and stdout/stderr pipes (preventing Claude's Bash tool from blocking).
-        wchar_t exePath[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-
-        STARTUPINFOW si = {};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi = {};
-
-        std::wstring wmiCmd = L"powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "
-                              L"\"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='\\\"";
-        wmiCmd += exePath;
-        wmiCmd += L"\\\" gui'} | Out-Null\"";
-        std::vector<wchar_t> wmiBuf(wmiCmd.begin(), wmiCmd.end());
-        wmiBuf.push_back(L'\0');
-
-        if (CreateProcessW(nullptr, wmiBuf.data(), nullptr, nullptr, FALSE,
-                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-            WaitForSingleObject(pi.hProcess, 4000);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-        }
-
-        // Wait up to 4 seconds for GUI Named Pipe server to come online
-        bool connected = false;
-        for (int attempt = 0; attempt < 40; ++attempt) {
-            Sleep(100);
-            if (TryConnectPipe(hPipe)) {
-                connected = true;
-                break;
-            }
-        }
-        if (!connected) {
-            outError = "Failed to connect to ProcessCommander Named Pipe server after auto-starting GUI.";
-            return false;
-        }
-    }
-
-    DWORD written = 0;
-    if (!WriteFile(hPipe, reqJson.data(), static_cast<DWORD>(reqJson.size()), &written, nullptr)) {
-        CloseHandle(hPipe);
-        outError = "WriteFile to Named Pipe failed.";
-        return false;
-    }
-
-    outRespJson.clear();
-    char buf[16384];
-    DWORD bytesRead = 0;
-    while (true) {
-        BOOL ok = ReadFile(hPipe, buf, sizeof(buf), &bytesRead, nullptr);
-        if (bytesRead > 0) {
-            outRespJson.append(buf, bytesRead);
-        }
-        if (ok) break;
-        if (GetLastError() != ERROR_MORE_DATA) break;
-    }
-
-    CloseHandle(hPipe);
-    return !outRespJson.empty();
 }
 
 } // namespace pc

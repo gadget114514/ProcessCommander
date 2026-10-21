@@ -16,7 +16,8 @@ struct StartProcessRequest {
     std::string workingDir;
     std::string logFile;     // optional custom log file path
     std::string doneFile;    // optional custom completion marker file path
-    ExecMode mode = ExecMode::ConPTY;
+    ExecMode mode = ExecMode::Pipe;
+    bool openStdin = false;  // pipe mode: keep stdin writable; false closes it after launch so children see EOF
     int timeoutSec = 0;      // 0 = no limit
     int idleTimeoutSec = 0;  // 0 = no limit
 };
@@ -26,7 +27,7 @@ struct ProcessSnapshot {
     std::string name;
     std::string commandLine;
     std::string workingDir;
-    ExecMode mode = ExecMode::ConPTY;
+    ExecMode mode = ExecMode::Pipe;
     ProcState state = ProcState::Running;
     DWORD rootPid = 0;
     DWORD exitCode = STILL_ACTIVE;
@@ -37,6 +38,8 @@ struct ProcessSnapshot {
     uint64_t lastOutputTickMs = 0;
     uint64_t elapsedMs = 0;
     uint64_t idleMs = 0;
+    uint64_t cpuTimeMs = 0;
+    uint64_t lastCpuActivityTickMs = 0;
     int timeoutSec = 0;
     int idleTimeoutSec = 0;
     uint32_t treeProcessCount = 0;
@@ -82,6 +85,10 @@ public:
     int ClearFinished();
     bool RemoveProcess(int id);
 
+    // Renumber all processes sequentially from #1 (requires no running processes).
+    // Returns the number of renumbered processes, or -1 on error.
+    int ResetProcessIds(std::string& outError);
+
     // Bring separate console window to foreground
     bool FocusProcessWindow(int id);
 
@@ -106,7 +113,7 @@ private:
         std::string name;
         std::string commandLine;
         std::string workingDir;
-        ExecMode mode = ExecMode::ConPTY;
+        ExecMode mode = ExecMode::Pipe;
         std::atomic<ProcState> state{ProcState::Running};
 
         DWORD rootPid = 0;
@@ -133,6 +140,8 @@ private:
         uint64_t restoredElapsedMs = 0;
         std::atomic<uint64_t> endTickMs{0};
         std::atomic<uint64_t> lastOutputTickMs{0};
+        std::atomic<uint64_t> cpuTime100ns{0};
+        std::atomic<uint64_t> lastCpuActivityTickMs{0};
         int timeoutSec = 0;
         int idleTimeoutSec = 0;
 

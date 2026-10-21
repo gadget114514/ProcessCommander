@@ -29,9 +29,6 @@ private:
     std::thread acceptThread_;
 };
 
-// Client helper: auto-starts the GUI Dashboard if not running, sends request, returns JSON response
-bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::string& outError, bool autoStartGui = true);
-
 // Format ProcessSnapshot as JSON object
 std::string SnapshotToJson(const ProcessSnapshot& s);
 

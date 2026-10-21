@@ -11,8 +11,11 @@ add_executable(ProcessCommander
     src/common.cpp
     src/process_manager.cpp
     src/ipc_server.cpp
+    src/ipc_client.cpp
+    src/cli.cpp
     src/mcp_server.cpp
     src/gui_dashboard.cpp
+    src/app.rc
     src/Terminal/src/ConPtySession.cpp
     src/Terminal/src/ImageManager.cpp
     src/Terminal/src/TerminalBuffer.cpp
@@ -57,4 +60,29 @@ add_custom_command(TARGET ProcessCommander POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/lib/OpenConsole.exe"
         "$<TARGET_FILE_DIR:ProcessCommander>/OpenConsole.exe"
     COMMENT "Copying lib/conpty.dll and lib/OpenConsole.exe to output directory"
+)
+
+# Console client (human-friendly by default, --json for machine-readable output)
+add_executable(pcder
+    src/cli_main.cpp
+    src/cli.cpp
+    src/ipc_client.cpp
+    src/common.cpp
+)
+
+add_dependencies(pcder ProcessCommander)
+
+target_include_directories(pcder PRIVATE
+    src
+    include
+)
+
+if(MSVC)
+    target_compile_options(pcder PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(pcder PRIVATE
+    user32
+    shell32
+    advapi32
 )

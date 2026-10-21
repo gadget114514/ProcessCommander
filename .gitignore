@@ -431,3 +431,6 @@ FodyWeavers.xsd
 build/
 *.done
 
+
+# Distribution archives
+dist/

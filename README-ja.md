@@ -12,10 +12,11 @@
 
 ### 1. 一覧性と操作性を両立した Native Win32 + Direct2D ダッシュボード GUI
 - **上部 KPI サマリーカード (6枚)**:
-  - 管理ターミナル総数、稼働中 (`ACTIVE RUNNING`)、入力待ち/アイドル (`WAITING / IDLE >= 10s`)、正常完了 (`COMPLETED`)、失敗/強制終了 (`FAILED / KILLED`)、および全 Job Object の合計プロセス数・合計メモリ使用量をリアルタイム表示。
+  - 管理ターミナル総数、稼働中 (`ACTIVE RUNNING`)、入力待ち/アイドル (`WAITING / IDLE >= 10s`、出力もCPU消費もない場合)、正常完了 (`COMPLETED`)、失敗/強制終了 (`FAILED / KILLED`)、および全 Job Object の合計プロセス数・合計メモリ使用量をリアルタイム表示。
 - **全プロセス状況リスト（新しい順・全カラムソート対応）**:
   - 新しく起動したプロセスほど**リストの一番上**に追加されます（デフォルト: `ID ▼` 降順）。
-  - リスト上部の**任意のカラムヘッダ**（`ID`, `Agent / Name`, `Status`, `Start Time (起動時刻)`, `Uptime (稼働時間)`, `PID (Tree)`, `Memory`, `Idle`, `Latest Output Preview`, `Command Line`）をクリックすると、**昇順 (`▲`) / 降順 (`▼`)** で自在にソートを切り替えられます。
+  - リスト上部の**任意のカラムヘッダ**（`ID`, `Agent / Name`, `Status`, `Start Time (起動時刻)`, `Uptime (稼働時間)`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`）をクリックすると、**昇順 (`▲`) / 降順 (`▼`)** で自在にソートを切り替えられます。
+  - **CPU 消費を考慮したアイドル判定**: CPU 時間が増え続けているプロセスは `RUNNING` として扱い、`IDLE / WAITING` 表示にせず、`--idle-timeout` の対象にもしません。CPU 時間は Win32 Job Object ツリー全体の合計です。
 - **タブ切り替え式フルサイズ Direct2D ターミナル (`80桁×25行以上保証`)**:
   - Direct2D / DirectWrite / IME / Sixel 対応のフル VT ターミナルエミュレータ（`TerminalView` + `ConPtySession`）を搭載。
   - ターミナル領域上部の**タブバー**で表示するターミナルを切り替え、常に **80桁×25行以上** のコンソールサイズを確保するため、TUI アプリケーション（`claude`, `opencode`, `vim` 等）の表示崩れが起きません。
@@ -70,7 +71,7 @@ CLI コマンドは Named Pipe (`\\.\pipe\ProcessCommander_IPC_v1`) を通じて
 ProcessCommander.exe gui
 
 # ConPTY モードでプロセスを起動（ログ出力先と完了検知用 .done ファイルを指定）
-ProcessCommander.exe start --name "agent-task" --mode pty --cmd "opencode run \"Fix issue #42\"" --log-file "C:/logs/task42.log" --done-file "C:/logs/task42.done"
+ProcessCommander.exe start --name "agent-task" --pty --cmd "opencode run \"Fix issue #42\"" --log-file "C:/logs/task42.log" --done-file "C:/logs/task42.done"
 
 # 全プロセスの稼働状況一覧を取得 (JSON)
 ProcessCommander.exe list
@@ -87,6 +88,20 @@ ProcessCommander.exe kill --id 1
 ProcessCommander.exe kill-all
 ProcessCommander.exe clear
 ```
+
+`start` は既定で **pipe モード**（ConPTY 非経由）でプロセスを起動します。対話型ターミナルとして ConPTY を使う場合は `--pty`（または `--mode pty`）、別ウィンドウのコンソールを使う場合は `--mode console` を指定してください。MCP の `start_process` も同様に `mode` の既定は `pipe` で、`pty: true` を指定すると ConPTY が有効になります。
+
+pipe モードでは起動直後に stdin を閉じるため、`opencode run` のような非対話プログラムは EOF を受け取り、入力待ちで止まりません。`pcder.exe send` で入力を送りたい場合は `--open-stdin` を指定してください:
+
+```powershell
+# 既定の pipe モード: stdin が閉じられるので opencode run が完了する
+pcder.exe start --name "oc-run" --cmd "opencode run OK" --timeout 90
+
+# pcder.exe send で入力を送るため stdin を開いたままにする
+pcder.exe start --name "pipe-shell" --open-stdin --cmd "cmd.exe"
+```
+
+MCP では `open_stdin: true` が同等です。
 
 ---
 
@@ -108,7 +123,7 @@ ProcessCommander.exe clear
 ### 提供される MCP ツール
 | ツール名 | 説明 |
 | :--- | :--- |
-| `start_process` | プロセス起動（`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`], `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `wait`, `wait_ms`） |
+| `start_process` | プロセス起動（`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`, 既定 `pipe`], `pty`, `open_stdin`, `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `wait`, `wait_ms`） |
 | `list_processes` | 全管理プロセスのステータス・起動時刻・稼働時間・PIDツリー数・メモリ・ログ/doneパス・最新出力行の一覧取得 |
 | `get_process_output` | 指定プロセスの出力ログ取得（`id`, `tail_lines`, `clean_ansi`） |
 | `send_process_input` | 実行中プロセスの ConPTY / stdin へテキスト入力送信（`id`, `input`, `append_newline`） |

@@ -143,6 +143,7 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
     proc->startTimeStr = GetCurrentTimestampStr();
     proc->startTickMs = now;
     proc->lastOutputTickMs = now;
+    proc->lastCpuActivityTickMs = now;
 
     if (req.mode == ExecMode::ConPTY) {
         std::weak_ptr<ManagedProcess> weakProc = proc;
@@ -293,6 +294,11 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
             return -1;
         }
 
+        if (req.mode == ExecMode::Pipe && !req.openStdin && proc->hStdinWrite) {
+            CloseHandle(proc->hStdinWrite);
+            proc->hStdinWrite = nullptr;
+        }
+
         AssignProcessToJobObject(proc->hJob, pi.hProcess);
         ResumeThread(pi.hThread);
 
@@ -430,6 +436,16 @@ void ProcessManager::ReaderThreadFunc(std::shared_ptr<ManagedProcess> proc) {
 void ProcessManager::UpdateJobMetrics(ManagedProcess& proc) {
     if (!proc.hJob) return;
 
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION acct = {};
+    if (QueryInformationJobObject(proc.hJob, JobObjectBasicAccountingInformation, &acct, sizeof(acct), nullptr)) {
+        uint64_t total100ns = static_cast<uint64_t>(acct.TotalUserTime.QuadPart) +
+                              static_cast<uint64_t>(acct.TotalKernelTime.QuadPart);
+        uint64_t prev = proc.cpuTime100ns.exchange(total100ns);
+        if (total100ns > prev) {
+            proc.lastCpuActivityTickMs = GetNowTickMs();
+        }
+    }
+
     alignas(JOBOBJECT_BASIC_PROCESS_ID_LIST) uint8_t buf[sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + sizeof(ULONG_PTR) * 256];
     auto* pidList = reinterpret_cast<PJOBOBJECT_BASIC_PROCESS_ID_LIST>(buf);
     if (QueryInformationJobObject(proc.hJob, JobObjectBasicProcessIdList, pidList, sizeof(buf), nullptr)) {
@@ -464,6 +480,7 @@ void ProcessManager::WriteDoneFile(ManagedProcess& proc, ProcState finalState, D
         << "  \"start_time\": \"" << JsonEscape(proc.startTimeStr) << "\",\r\n"
         << "  \"end_time\": \"" << JsonEscape(endTimeStr) << "\",\r\n"
         << "  \"elapsed_ms\": " << elapsedMs << ",\r\n"
+        << "  \"cpu_time_ms\": " << (proc.cpuTime100ns.load() / 10000) << ",\r\n"
         << "  \"uptime_str\": \"" << JsonEscape(FormatUptimeHMS(elapsedMs)) << "\",\r\n"
         << "  \"reason\": \"" << JsonEscape(reasonMsg) << "\",\r\n"
         << "  \"log_file\": \"" << JsonEscape(proc.logFilePath) << "\",\r\n"
@@ -625,10 +642,11 @@ void ProcessManager::MonitorThreadFunc() {
             }
 
             if (proc->idleTimeoutSec > 0) {
-                uint64_t idleSec = (now - proc->lastOutputTickMs.load()) / 1000;
+                uint64_t lastActivity = (std::max)(proc->lastOutputTickMs.load(), proc->lastCpuActivityTickMs.load());
+                uint64_t idleSec = (now - lastActivity) / 1000;
                 if (idleSec >= static_cast<uint64_t>(proc->idleTimeoutSec)) {
                     TerminateJobInternal(*proc, ProcState::IdleTimedOut,
-                        "Process tree terminated: Exceeded idle/hang timeout (" + std::to_string(proc->idleTimeoutSec) + "s without output)");
+                        "Process tree terminated: Exceeded idle/hang timeout (" + std::to_string(proc->idleTimeoutSec) + "s without output or CPU activity)");
                     SaveState();
                     continue;
                 }
@@ -791,6 +809,35 @@ bool ProcessManager::RemoveProcess(int id) {
     return false;
 }
 
+int ProcessManager::ResetProcessIds(std::string& outError) {
+    int count = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& proc : processes_) {
+            if (proc->state == ProcState::Running) {
+                outError = "Cannot reset process IDs while processes are running. Stop them first.";
+                return -1;
+            }
+        }
+
+        std::vector<std::shared_ptr<ManagedProcess>> ordered = processes_;
+        std::sort(ordered.begin(), ordered.end(),
+                  [](const std::shared_ptr<ManagedProcess>& a, const std::shared_ptr<ManagedProcess>& b) {
+                      return a->id < b->id;
+                  });
+
+        int newId = 1;
+        for (const auto& proc : ordered) {
+            proc->id = newId++;
+        }
+        nextId_ = newId;
+        count = static_cast<int>(ordered.size());
+    }
+
+    SaveState();
+    return count;
+}
+
 struct FindWindowByPidData {
     DWORD targetPid;
     HWND foundHwnd;
@@ -858,9 +905,12 @@ ProcessSnapshot ProcessManager::BuildSnapshot(ProcessManager::ManagedProcess& p,
     snap.startTickMs = p.startTickMs;
     snap.endTickMs = p.endTickMs.load();
     snap.lastOutputTickMs = p.lastOutputTickMs.load();
+    snap.lastCpuActivityTickMs = p.lastCpuActivityTickMs.load();
+    snap.cpuTimeMs = p.cpuTime100ns.load() / 10000;
     if (snap.state == ProcState::Running) {
         snap.elapsedMs = (p.startTickMs > 0 && now >= p.startTickMs) ? (now - p.startTickMs) : p.restoredElapsedMs;
-        snap.idleMs = (snap.lastOutputTickMs > 0 && now >= snap.lastOutputTickMs) ? (now - snap.lastOutputTickMs) : 0;
+        uint64_t lastActivity = (std::max)(snap.lastOutputTickMs, snap.lastCpuActivityTickMs);
+        snap.idleMs = (lastActivity > 0 && now >= lastActivity) ? (now - lastActivity) : 0;
     } else {
         if (p.startTickMs > 0 && snap.endTickMs >= p.startTickMs) {
             snap.elapsedMs = snap.endTickMs - p.startTickMs;
@@ -1011,6 +1061,7 @@ void ProcessManager::SaveState() {
             << "\"start_time\":\"" << JsonEscape(s.startTimeStr) << "\","
             << "\"end_time\":\"" << JsonEscape(s.endTimeStr) << "\","
             << "\"elapsed_ms\":" << s.elapsedMs << ","
+            << "\"cpu_time_ms\":" << s.cpuTimeMs << ","
             << "\"timeout_sec\":" << s.timeoutSec << ","
             << "\"idle_timeout_sec\":" << s.idleTimeoutSec << ","
             << "\"total_bytes_read\":" << s.totalBytesRead << ","
@@ -1091,6 +1142,7 @@ void ProcessManager::LoadState() {
         proc->startTimeStr = JsonGetString(itemJson, "start_time", "");
         proc->endTimeStr = JsonGetString(itemJson, "end_time", "");
         proc->restoredElapsedMs = static_cast<uint64_t>(JsonGetInt(itemJson, "elapsed_ms", 0));
+        proc->cpuTime100ns = static_cast<uint64_t>(JsonGetInt(itemJson, "cpu_time_ms", 0)) * 10000;
         proc->timeoutSec = static_cast<int>(JsonGetInt(itemJson, "timeout_sec", 0));
         proc->idleTimeoutSec = static_cast<int>(JsonGetInt(itemJson, "idle_timeout_sec", 0));
         proc->totalBytesRead = static_cast<uint64_t>(JsonGetInt(itemJson, "total_bytes_read", 0));

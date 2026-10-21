@@ -1,5 +1,5 @@
 #include "mcp_server.h"
-#include "ipc_server.h"
+#include "ipc_client.h"
 #include "common.h"
 #include <iostream>
 #include <sstream>
@@ -111,7 +111,9 @@ int RunMcpServer() {
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"cmd\":{\"type\":\"string\",\"description\":\"Command line to execute (e.g. 'claude -p ...' or 'opencode')\"},"
                 << "\"name\":{\"type\":\"string\",\"description\":\"Friendly display label for the dashboard\"},"
-                << "\"mode\":{\"type\":\"string\",\"enum\":[\"pipe\",\"pty\",\"console\"],\"description\":\"Execution mode: 'pipe' (non-interactive stdout/stdin), 'pty' (Win32 ConPTY interactive terminal), or 'console' (separate visible console window)\"},"
+                << "\"mode\":{\"type\":\"string\",\"enum\":[\"pipe\",\"pty\",\"console\"],\"description\":\"Execution mode: 'pipe' (default; non-interactive stdout/stdin, no ConPTY), 'pty' (Win32 ConPTY interactive terminal), or 'console' (separate visible console window)\"},"
+                << "\"pty\":{\"type\":\"boolean\",\"description\":\"Set true to enable ConPTY (same as mode='pty'). Default false.\"},"
+                << "\"open_stdin\":{\"type\":\"boolean\",\"description\":\"Pipe mode only: keep stdin writable for send_process_input. Default false closes stdin after launch so non-interactive programs see EOF.\"},"
                 << "\"cwd\":{\"type\":\"string\",\"description\":\"Working directory path\"},"
                 << "\"log_file\":{\"type\":\"string\",\"description\":\"Optional custom path for the real-time output log file (defaults to logs/proc_<id>_<name>_<timestamp>.log)\"},"
                 << "\"done_file\":{\"type\":\"string\",\"description\":\"Optional custom path for the completion marker file created atomically when the process exits (defaults to logs/proc_<id>.done)\"},"
@@ -174,7 +176,11 @@ int RunMcpServer() {
             if (toolName == "start_process") {
                 std::string cmd = JsonGetString(argsJson, "cmd", "");
                 std::string name = JsonGetString(argsJson, "name", "");
-                std::string mode = JsonGetString(argsJson, "mode", "pty");
+                std::string mode = JsonGetString(argsJson, "mode", "pipe");
+                if (JsonGetBool(argsJson, "pty", false)) {
+                    mode = "pty";
+                }
+                bool openStdin = JsonGetBool(argsJson, "open_stdin", false);
                 std::string cwd = JsonGetString(argsJson, "cwd", "");
                 std::string logFile = JsonGetString(argsJson, "log_file", "");
                 std::string doneFile = JsonGetString(argsJson, "done_file", "");
@@ -187,6 +193,7 @@ int RunMcpServer() {
                        << ",\"cmd\":\"" << JsonEscape(cmd) << "\""
                        << ",\"name\":\"" << JsonEscape(name) << "\""
                        << ",\"mode\":\"" << JsonEscape(mode) << "\""
+                       << ",\"open_stdin\":" << (openStdin ? "true" : "false")
                        << ",\"cwd\":\"" << JsonEscape(cwd) << "\""
                        << ",\"log_file\":\"" << JsonEscape(logFile) << "\""
                        << ",\"done_file\":\"" << JsonEscape(doneFile) << "\""
