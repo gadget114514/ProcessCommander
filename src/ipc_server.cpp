@@ -138,7 +138,7 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
         req.logFile = JsonGetString(reqJson, "log_file", "");
         req.doneFile = JsonGetString(reqJson, "done_file", "");
         req.mode = StringToExecMode(JsonGetString(reqJson, "mode", "pipe"));
-        req.openStdin = JsonGetBool(reqJson, "open_stdin", false);
+        req.openStdin = JsonGetBool(reqJson, "open_stdin", true);
         req.timeoutSec = static_cast<int>(JsonGetInt(reqJson, "timeout_sec", 0));
         req.idleTimeoutSec = static_cast<int>(JsonGetInt(reqJson, "idle_timeout_sec", 0));
         bool waitFinish = JsonGetBool(reqJson, "wait", false);

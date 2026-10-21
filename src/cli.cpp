@@ -60,9 +60,9 @@ COMMANDS:
                                  pipe    = Anonymous pipes (default; no ConPTY)
                                  console = Separate visible console window
         --pty                    Shortcut for --mode pty (enable ConPTY).
-        --open-stdin             Pipe mode only: keep stdin writable for pcder send.
-                                 By default pipe-mode stdin is closed after launch so
-                                 non-interactive programs (e.g. opencode run) see EOF.
+        --open-stdin             Pipe mode only (default): keep stdin writable for pcder send.
+        --close-stdin            Pipe mode only: close stdin after launch so non-interactive
+                                 programs (e.g. opencode run) receive EOF and can finish.
         --cwd <dir>              Working directory
         --log-file <path>        Custom path for live output log
         --done-file <path>       Custom completion marker file created on exit
@@ -159,7 +159,8 @@ void PrintCliUsageJson() {
         {"name": "--name", "value": "<label>", "description": "Display name on the dashboard."},
         {"name": "--mode", "value": "<pty|pipe|console>", "values": ["pty", "pipe", "console"], "description": "Execution mode. Default: pipe (no ConPTY)."},
         {"name": "--pty", "description": "Enable ConPTY. Shortcut for --mode pty. Without this flag or an explicit --mode pty, no ConPTY is used."},
-        {"name": "--open-stdin", "description": "Pipe mode only: keep stdin writable for pcder send. By default pipe-mode stdin is closed after launch so non-interactive programs see EOF."},
+        {"name": "--open-stdin", "description": "Pipe mode only (default): keep stdin writable for pcder send."},
+        {"name": "--close-stdin", "description": "Pipe mode only: close stdin after launch so non-interactive programs (e.g. opencode run) receive EOF and can finish."},
         {"name": "--cwd", "value": "<dir>", "description": "Working directory."},
         {"name": "--log-file", "aliases": ["--log"], "value": "<path>", "description": "Custom live-output log path."},
         {"name": "--done-file", "aliases": ["--done"], "value": "<path>", "description": "Custom completion marker path, written when the process exits."},
@@ -557,7 +558,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
         std::string logFile;
         std::string doneFile;
         std::string mode = "pipe";
-        bool openStdin = false;
+        bool openStdin = true;
         int timeoutSec = 0;
         int idleTimeoutSec = 0;
         bool waitFinish = false;
@@ -581,6 +582,8 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 mode = "pty";
             } else if (a == "--open-stdin") {
                 openStdin = true;
+            } else if (a == "--close-stdin") {
+                openStdin = false;
             } else if (a == "--timeout" && i + 1 < args.size()) {
                 timeoutSec = std::stoi(args[++i]);
             } else if (a == "--idle-timeout" && i + 1 < args.size()) {

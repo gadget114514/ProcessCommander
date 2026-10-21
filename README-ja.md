@@ -91,17 +91,17 @@ ProcessCommander.exe clear
 
 `start` は既定で **pipe モード**（ConPTY 非経由）でプロセスを起動します。対話型ターミナルとして ConPTY を使う場合は `--pty`（または `--mode pty`）、別ウィンドウのコンソールを使う場合は `--mode console` を指定してください。MCP の `start_process` も同様に `mode` の既定は `pipe` で、`pty: true` を指定すると ConPTY が有効になります。
 
-pipe モードでは起動直後に stdin を閉じるため、`opencode run` のような非対話プログラムは EOF を受け取り、入力待ちで止まりません。`pcder.exe send` で入力を送りたい場合は `--open-stdin` を指定してください:
+pipe モードでは既定で stdin が書き込み可能なままなので、`pcder.exe send` で入力を送れます。`opencode run` のような非対話プログラムは stdin の EOF を待ち続けることがあるため、その場合は `--close-stdin` を指定して起動直後に stdin を閉じてください:
 
 ```powershell
-# 既定の pipe モード: stdin が閉じられるので opencode run が完了する
-pcder.exe start --name "oc-run" --cmd "opencode run OK" --timeout 90
-
 # pcder.exe send で入力を送るため stdin を開いたままにする
-pcder.exe start --name "pipe-shell" --open-stdin --cmd "cmd.exe"
+pcder.exe start --name "pipe-shell" --cmd "cmd.exe"
+
+# stdin を読む非対話プログラム: 閉じて EOF を届ける
+pcder.exe start --name "oc-run" --close-stdin --cmd "opencode run OK" --timeout 90
 ```
 
-MCP では `open_stdin: true` が同等です。
+`opencode`（`run` なしの TUI）のような対話型プログラムは `--pty` を推奨します。MCP では `open_stdin: false` が `--close-stdin` に相当します。
 
 ---
 

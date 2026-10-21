@@ -17,7 +17,7 @@ struct StartProcessRequest {
     std::string logFile;     // optional custom log file path
     std::string doneFile;    // optional custom completion marker file path
     ExecMode mode = ExecMode::Pipe;
-    bool openStdin = false;  // pipe mode: keep stdin writable; false closes it after launch so children see EOF
+    bool openStdin = true;   // pipe mode: keep stdin writable; false closes it after launch so children see EOF
     int timeoutSec = 0;      // 0 = no limit
     int idleTimeoutSec = 0;  // 0 = no limit
 };

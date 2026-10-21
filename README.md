@@ -142,17 +142,17 @@ pcder.exe clear
 
 By default, `pcder.exe start` uses **pipe mode**, which launches the process directly without ConPTY. Add `--pty` (or `--mode pty`) to enable ConPTY for interactive terminals, or use `--mode console` to launch a separate visible console window. The MCP `start_process` tool follows the same rule: `mode` defaults to `pipe`, and `pty: true` enables ConPTY.
 
-In pipe mode, stdin is closed immediately after launch by default so non-interactive programs such as `opencode run` see EOF instead of waiting forever. Use `--open-stdin` if you need to keep feeding input with `pcder.exe send`:
+In pipe mode, stdin remains writable by default so `pcder.exe send` can feed input. Non-interactive programs such as `opencode run` may wait forever for stdin EOF; pass `--close-stdin` to close stdin immediately after launch so they can finish:
 
 ```powershell
-# Default pipe mode: stdin is closed, so opencode run can finish
-pcder.exe start --name "oc-run" --cmd "opencode run OK" --timeout 90
-
 # Keep stdin open for interactive input via pcder.exe send
-pcder.exe start --name "pipe-shell" --open-stdin --cmd "cmd.exe"
+pcder.exe start --name "pipe-shell" --cmd "cmd.exe"
+
+# Non-interactive program that reads stdin: close it so EOF is delivered
+pcder.exe start --name "oc-run" --close-stdin --cmd "opencode run OK" --timeout 90
 ```
 
-The MCP equivalent is `open_stdin: true`.
+For an interactive TUI such as `opencode` (without `run`), prefer `--pty`. The MCP equivalent of `--close-stdin` is `open_stdin: false`.
 
 `pcder.exe help` lists all commands and options. `pcder.exe help --json` returns the same reference plus CLI and MCP setup instructions as machine-readable JSON (including the resolved `ProcessCommander.exe` path and a ready-to-use MCP config), making it easy for LLM agents to learn how to configure the tool. The legacy `ProcessCommander.exe <command>` form remains available for compatibility, but `pcder.exe` is the recommended console interface.
 
