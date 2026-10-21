@@ -1766,16 +1766,22 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 ShowShellConfigDialog(st);
             } else if (id == IDC_BTN_KILL_SEL) {
                 if (st->selectedProcId > 0) {
-                    std::string err;
-                    st->pm->KillProcess(st->selectedProcId, err);
-                    RefreshDashboardData(st);
+                    if (MessageBoxW(hwnd, L"Are you sure you want to kill this process tree?", L"Confirm Kill", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                        std::string err;
+                        st->pm->KillProcess(st->selectedProcId, err);
+                        RefreshDashboardData(st);
+                    }
                 }
             } else if (id == IDC_BTN_KILL_ALL) {
-                st->pm->KillAllRunning();
-                RefreshDashboardData(st);
+                if (MessageBoxW(hwnd, L"Are you sure you want to kill ALL running processes?", L"Confirm Kill All", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                    st->pm->KillAllRunning();
+                    RefreshDashboardData(st);
+                }
             } else if (id == IDC_BTN_CLEAR) {
-                st->pm->ClearFinished();
-                RefreshDashboardData(st);
+                if (MessageBoxW(hwnd, L"Are you sure you want to clear finished process history?", L"Confirm Clear", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                    st->pm->ClearFinished();
+                    RefreshDashboardData(st);
+                }
             } else if (id == IDC_BTN_HIDE_ENDED) {
                 st->hideEndedProcesses = !st->hideEndedProcesses;
                 UpdateHideEndedButtonLabel(st);
