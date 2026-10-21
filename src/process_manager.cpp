@@ -29,8 +29,14 @@ static std::wstring ResolveCommandLineForWin32(const std::string& rawCmdUtf8) {
         return _wcsicmp(s.c_str() + s.size() - suffix.size(), suffix.c_str()) == 0;
     };
 
+    auto getCmdExePath = []() -> std::wstring {
+        wchar_t path[MAX_PATH] = {};
+        ExpandEnvironmentStringsW(L"%SystemRoot%\\System32\\cmd.exe", path, MAX_PATH);
+        return path;
+    };
+
     if (endsWithCI(prog, L".cmd") || endsWithCI(prog, L".bat")) {
-        return L"cmd.exe /d /s /c \"" + cmd + L"\"";
+        return getCmdExePath() + L" /d /s /c \"" + cmd + L"\"";
     }
 
     if (!endsWithCI(prog, L".exe")) {
@@ -38,7 +44,7 @@ static std::wstring ResolveCommandLineForWin32(const std::string& rawCmdUtf8) {
         if (SearchPathW(nullptr, prog.c_str(), L".exe", MAX_PATH, foundBuf, nullptr) == 0) {
             if (SearchPathW(nullptr, prog.c_str(), L".cmd", MAX_PATH, foundBuf, nullptr) > 0 ||
                 SearchPathW(nullptr, prog.c_str(), L".bat", MAX_PATH, foundBuf, nullptr) > 0) {
-                return L"cmd.exe /d /s /c \"" + cmd + L"\"";
+                return getCmdExePath() + L" /d /s /c \"" + cmd + L"\"";
             }
         }
     }

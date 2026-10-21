@@ -320,9 +320,21 @@ bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::s
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
 
-        std::wstring wmiCmd = L"powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "
-                              L"\"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='\\\"";
-        wmiCmd += exePath;
+        // Escape single quotes in path for PowerShell string literal
+        std::wstring safeExePath = exePath;
+        size_t pos = 0;
+        while ((pos = safeExePath.find(L"'", pos)) != std::wstring::npos) {
+            safeExePath.replace(pos, 1, L"''");
+            pos += 2;
+        }
+
+        wchar_t psPath[MAX_PATH] = {};
+        ExpandEnvironmentStringsW(L"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", psPath, MAX_PATH);
+
+        std::wstring wmiCmd = psPath;
+        wmiCmd += L" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "
+                  L"\"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='\\\"";
+        wmiCmd += safeExePath;
         wmiCmd += L"\\\" gui'} | Out-Null\"";
         std::vector<wchar_t> wmiBuf(wmiCmd.begin(), wmiCmd.end());
         wmiBuf.push_back(L'\0');
