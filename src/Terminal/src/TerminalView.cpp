@@ -1945,6 +1945,17 @@ std::wstring TerminalView::ExtractLastNonEmptyLine() const {
     int total = buffer_.totalLineCount();
     for (int r = total - 1; r >= 0; --r) {
         const auto& line = buffer_.lineAt(r);
+
+        // Fast-path: Skip line if it only contains whitespace
+        bool hasContent = false;
+        for (const auto& cell : line) {
+            if (!cell.wideContinuation && cell.ch != 0 && cell.ch != L' ' && cell.ch != L'\t') {
+                hasContent = true;
+                break;
+            }
+        }
+        if (!hasContent) continue;
+
         std::wstring rowStr;
         rowStr.reserve(line.size());
         for (const auto& cell : line) {
