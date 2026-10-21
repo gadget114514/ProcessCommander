@@ -63,13 +63,14 @@ COMMANDS:
         --open-stdin             Pipe mode only (default): keep stdin writable for pcder send.
         --close-stdin            Pipe mode only: close stdin after launch so non-interactive
                                  programs (e.g. opencode run) receive EOF and can finish.
-        --cwd <dir>              Working directory
+        --cwd <dir>              Working directory (default: the caller's current directory)
         --log-file <path>        Custom path for live output log
         --done-file <path>       Custom completion marker file created on exit
         --timeout <sec>          Max runtime timeout in seconds (0 = unlimited)
         --idle-timeout <sec>     Hang timeout if no output for N seconds (0 = unlimited)
-        --wait                   Block until process exits
-        --wait-ms <ms>           Wait up to N ms for initial output (default: 500)
+        --wait                   Block until process exits (unlimited unless --wait-ms is set)
+        --wait-ms <ms>           Max wait when --wait is set; initial output wait otherwise
+                                 (default: 500; 0 = unlimited with --wait)
 
   send --id <id> --input "<text>" [--no-newline] [--wait-ms <ms>]
       Send input text to a running process's stdin or ConPTY session.
@@ -85,6 +86,18 @@ COMMANDS:
 
   clear
       Remove finished processes from the dashboard list.
+
+COMPLETION / BACKGROUND TASKS:
+  Use --wait to keep pcder.exe alive until the managed process exits. Add
+  --wait-ms 0 for an unlimited wait (or a positive value for a maximum).
+  The exit code is 0 on completion, the child exit code on failure, and 124
+  if the wait times out.
+
+    pcder.exe start --name task --wait --wait-ms 0 --json --cmd "opencode run ..."
+    pcder.exe wait --id <id> --wait-ms 0 --json
+
+  ProcessCommander also writes a .done JSON file on exit. Without --wait,
+  start returns immediately; poll the .done file or call wait.
 
 SETUP FOR LLM AGENTS:
   CLI:
@@ -152,8 +165,8 @@ void PrintCliUsageJson() {
     {
       "name": "start",
       "aliases": ["run"],
-      "description": "Start a managed process under a Win32 Job Object and display it in the dashboard. Use '--' to pass the command line verbatim.",
-      "usage": "pcder start [options] -- <command...>",
+      "description": "Start a managed process under a Win32 Job Object and display it in the dashboard. Use '--' to pass the command line verbatim. Add --wait (with --wait-ms 0) to block until completion.",
+      "usage": "pcder start [options] [--wait] [--wait-ms <ms>] -- <command...>",
       "options": [
         {"name": "--cmd", "value": "<command>", "description": "Command line to execute."},
         {"name": "--name", "value": "<label>", "description": "Display name on the dashboard."},
@@ -161,13 +174,13 @@ void PrintCliUsageJson() {
         {"name": "--pty", "description": "Enable ConPTY. Shortcut for --mode pty. Without this flag or an explicit --mode pty, no ConPTY is used."},
         {"name": "--open-stdin", "description": "Pipe mode only (default): keep stdin writable for pcder send."},
         {"name": "--close-stdin", "description": "Pipe mode only: close stdin after launch so non-interactive programs (e.g. opencode run) receive EOF and can finish."},
-        {"name": "--cwd", "value": "<dir>", "description": "Working directory."},
+        {"name": "--cwd", "value": "<dir>", "description": "Working directory. Default: the caller's current directory."},
         {"name": "--log-file", "aliases": ["--log"], "value": "<path>", "description": "Custom live-output log path."},
         {"name": "--done-file", "aliases": ["--done"], "value": "<path>", "description": "Custom completion marker path, written when the process exits."},
         {"name": "--timeout", "value": "<sec>", "description": "Maximum runtime in seconds (0 = unlimited)."},
         {"name": "--idle-timeout", "value": "<sec>", "description": "Kill if no output for N seconds (0 = unlimited)."},
-        {"name": "--wait", "description": "Block until the process exits."},
-        {"name": "--wait-ms", "value": "<ms>", "description": "Wait up to N ms for initial output. Default: 500."}
+        {"name": "--wait", "description": "Block until the process exits (unlimited unless --wait-ms is set)."},
+        {"name": "--wait-ms", "value": "<ms>", "description": "With --wait: maximum wait (0 = unlimited). Without --wait: initial output wait. Default: 500."}
       ]
     },
     {
@@ -218,6 +231,19 @@ void PrintCliUsageJson() {
       "options": []
     }
   ],
+  "completion": {
+    "description": "Use --wait to keep pcder.exe alive until the managed process exits. The .done file is written atomically on exit. Without --wait, start returns immediately.",
+    "blocking_start": "pcder.exe start ... --wait --wait-ms 0",
+    "blocking_wait": "pcder.exe wait --id <id> --wait-ms 0",
+    "wait_option": "--wait",
+    "wait_ms_option": "--wait-ms <ms>; 0 means unlimited with --wait",
+    "exit_codes": {
+      "0": "completed",
+      "child_exit_code": "failed",
+      "124": "wait timed out while the process is still running"
+    },
+    "done_file": "JSON file written on process exit with state, exit_code, reason, log_file, and done_file"
+  },
   "setup": {
     "cli": {
       "recommended_binary": "pcder.exe",
@@ -419,10 +445,30 @@ std::string BuildTransportError(const std::string& message) {
     return "{\"ok\":false,\"error\":\"" + JsonEscape(message) + "\"}";
 }
 
-int PrintResponse(const std::string& action, const std::string& respJson, bool jsonOutput, int requestedId = 0) {
+int CompletionExitCode(const std::string& procJson) {
+    std::string state = JsonGetString(procJson, "state", "");
+    if (state == "completed") return 0;
+    if (state == "running") return 124;
+    int64_t ec = JsonGetInt(procJson, "exit_code", 1);
+    if (ec == 0 || ec == STILL_ACTIVE) return 1;
+    return static_cast<int>(ec);
+}
+
+int PrintResponse(const std::string& action, const std::string& respJson, bool jsonOutput,
+                  int requestedId = 0, bool waitForCompletion = false) {
     if (jsonOutput) {
         std::cout << respJson << "\n";
-        return JsonGetBool(respJson, "ok", false) ? 0 : 1;
+        bool ok = JsonGetBool(respJson, "ok", false);
+        if (!ok) return 1;
+        std::string proc = ExtractJsonObject(respJson, "process");
+        if (action == "start" && waitForCompletion && !proc.empty()) {
+            return CompletionExitCode(proc);
+        }
+        if (action == "wait") {
+            if (!JsonGetBool(respJson, "finished", false)) return 124;
+            if (!proc.empty()) return CompletionExitCode(proc);
+        }
+        return 0;
     }
 
     if (!JsonGetBool(respJson, "ok", false)) {
@@ -462,6 +508,9 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
         std::string logFile = JsonGetString(respJson, "log_file", "");
         if (!logFile.empty()) std::cout << "       log : " << logFile << "\n";
         PrintOutput(JsonGetString(respJson, "output", ""));
+        if (waitForCompletion && !proc.empty()) {
+            return CompletionExitCode(proc);
+        }
         return 0;
     }
 
@@ -499,6 +548,8 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
             std::cout << "\n";
         }
         PrintOutput(JsonGetString(respJson, "output", ""));
+        if (!finished) return 124;
+        if (!proc.empty()) return CompletionExitCode(proc);
         return 0;
     }
 
@@ -528,6 +579,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
     args.push_back(rawArgs.empty() ? "pcder" : rawArgs[0]);
 
     bool jsonOutput = false;
+    bool waitForCompletion = false;
     for (size_t i = 1; i < rawArgs.size(); ++i) {
         if (rawArgs[i] == "--json" || rawArgs[i] == "-j") {
             jsonOutput = true;
@@ -562,6 +614,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
         int timeoutSec = 0;
         int idleTimeoutSec = 0;
         bool waitFinish = false;
+        bool waitMsExplicit = false;
         int waitMs = 500;
 
         for (size_t i = 2; i < args.size(); ++i) {
@@ -590,8 +643,10 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 idleTimeoutSec = std::stoi(args[++i]);
             } else if (a == "--wait") {
                 waitFinish = true;
+                waitForCompletion = true;
             } else if (a == "--wait-ms" && i + 1 < args.size()) {
                 waitMs = std::stoi(args[++i]);
+                waitMsExplicit = true;
             } else if (a == "--") {
                 std::ostringstream cmdOss;
                 for (size_t j = i + 1; j < args.size(); ++j) {
@@ -616,6 +671,11 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 std::cerr << "Error: Missing --cmd or command arguments.\n";
             }
             return 1;
+        }
+
+        cwd = ResolveAbsolutePathUtf8(cwd);
+        if (waitFinish && !waitMsExplicit) {
+            waitMs = 0;
         }
 
         reqJson << "{\"action\":\"start\""
@@ -729,7 +789,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
         return 1;
     }
 
-    return PrintResponse(subcmd, respJson, jsonOutput, requestedId);
+    return PrintResponse(subcmd, respJson, jsonOutput, requestedId, waitForCompletion);
 }
 
 } // namespace pc

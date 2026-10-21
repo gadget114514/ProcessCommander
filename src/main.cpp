@@ -31,6 +31,13 @@ CONSOLE CLIENT / CLI SETUP:
   Run `pcder.exe help` for human-readable usage, or `pcder.exe help --json` for
   machine-readable commands and setup instructions for LLMs.
 
+COMPLETION NOTIFICATION / BACKGROUND TASKS:
+  `pcder.exe start ... --wait --wait-ms 0 --json` keeps pcder.exe alive until the
+  managed process exits. `--wait-ms 0` means unlimited wait. Exit code is 0 on
+  completion, the child exit code on failure, and 124 if the wait times out.
+  For an existing process: `pcder.exe wait --id <id> --wait-ms 0 --json`.
+  ProcessCommander also writes a .done JSON file on exit.
+
 MCP SERVER SETUP:
   Register this executable in .mcp.json (Claude Code) or claude_desktop_config.json:
     {

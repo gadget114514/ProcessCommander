@@ -46,6 +46,40 @@ static std::wstring ResolveCommandLineForWin32(const std::string& rawCmdUtf8) {
     return cmd;
 }
 
+static std::vector<wchar_t> BuildChildEnvironment(const std::wstring& cwd) {
+    std::vector<wchar_t> block;
+    auto append = [&block](const std::wstring& entry) {
+        block.insert(block.end(), entry.begin(), entry.end());
+        block.push_back(L'\0');
+    };
+
+    LPWCH env = GetEnvironmentStringsW();
+    if (env) {
+        for (LPWCH p = env; *p; ) {
+            std::wstring entry(p);
+            p += entry.size() + 1;
+            if (entry[0] != L'=') {
+                size_t eq = entry.find(L'=');
+                std::wstring key = (eq == std::wstring::npos) ? entry : entry.substr(0, eq);
+                if (_wcsicmp(key.c_str(), L"PWD") == 0 ||
+                    _wcsicmp(key.c_str(), L"OLDPWD") == 0 ||
+                    _wcsicmp(key.c_str(), L"INIT_CWD") == 0) {
+                    continue;
+                }
+            }
+            append(entry);
+        }
+        FreeEnvironmentStringsW(env);
+    }
+
+    if (!cwd.empty()) {
+        append(L"PWD=" + cwd);
+        append(L"INIT_CWD=" + cwd);
+    }
+    block.push_back(L'\0');
+    return block;
+}
+
 ProcessManager::ManagedProcess::~ManagedProcess() {
     if (hStdinWrite) {
         CloseHandle(hStdinWrite);
@@ -116,8 +150,9 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
         return -1;
     }
 
-    std::wstring cwdWide = Utf8ToWide(req.workingDir);
-    const wchar_t* cwdPtr = cwdWide.empty() ? nullptr : cwdWide.c_str();
+    std::wstring cwdWide = ResolveAbsolutePathWide(Utf8ToWide(req.workingDir));
+    const wchar_t* cwdPtr = cwdWide.c_str();
+    std::vector<wchar_t> childEnv = BuildChildEnvironment(cwdWide);
 
     // Create Win32 Job Object with KILL_ON_JOB_CLOSE
     HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
@@ -132,7 +167,7 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
 
     auto proc = std::make_shared<ManagedProcess>();
     proc->commandLine = req.commandLine;
-    proc->workingDir = req.workingDir;
+    proc->workingDir = WideToUtf8(cwdWide);
     proc->mode = req.mode;
     proc->timeoutSec = req.timeoutSec;
     proc->idleTimeoutSec = req.idleTimeoutSec;
@@ -258,7 +293,7 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
                 nullptr,
                 TRUE,
                 CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                nullptr,
+                childEnv.data(),
                 cwdPtr,
                 &si,
                 &pi
@@ -281,7 +316,7 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
                 nullptr,
                 FALSE,
                 CREATE_NEW_CONSOLE | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                nullptr,
+                childEnv.data(),
                 cwdPtr,
                 &si,
                 &pi

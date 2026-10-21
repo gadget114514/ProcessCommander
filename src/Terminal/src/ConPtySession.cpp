@@ -353,6 +353,32 @@ std::wstring ConPtySession::BuildEnvBlock(
         { L"CLICOLOR_FORCE", L"1"              },
         { L"FORCE_COLOR",    L"3"              },
     };
+
+    std::wstring cwd = workingDir_;
+    if (cwd.empty()) {
+        DWORD len = GetCurrentDirectoryW(0, nullptr);
+        if (len > 0) {
+            cwd.resize(len);
+            DWORD n = GetCurrentDirectoryW(len, cwd.data());
+            if (n > 0) cwd.resize(n);
+            else cwd.clear();
+        }
+    }
+
+    std::vector<std::pair<std::wstring,std::wstring>> effectiveExtra;
+    for (const auto& kv : extra) {
+        if (_wcsicmp(kv.first.c_str(), L"PWD") == 0 ||
+            _wcsicmp(kv.first.c_str(), L"OLDPWD") == 0 ||
+            _wcsicmp(kv.first.c_str(), L"INIT_CWD") == 0) {
+            continue;
+        }
+        effectiveExtra.push_back(kv);
+    }
+    if (!cwd.empty()) {
+        effectiveExtra.push_back({ L"PWD", cwd });
+        effectiveExtra.push_back({ L"INIT_CWD", cwd });
+    }
+
     wchar_t* env = GetEnvironmentStringsW();
     std::wstring block;
     if (env) {
@@ -365,16 +391,23 @@ std::wstring ConPtySession::BuildEnvBlock(
                     entry.substr(0, kv.first.size() + 1) == kv.first + L'=')
                     { skip = true; break; }
             if (!skip)
-                for (auto& kv : extra)
+                for (auto& kv : effectiveExtra)
                     if (entry.size() > kv.first.size() &&
                         entry.substr(0, kv.first.size() + 1) == kv.first + L'=')
                         { skip = true; break; }
+            if (!skip) {
+                size_t eq = entry.find(L'=');
+                if (entry[0] != L'=' && eq != std::wstring::npos &&
+                    _wcsicmp(entry.substr(0, eq).c_str(), L"OLDPWD") == 0) {
+                    skip = true;
+                }
+            }
             if (!skip) { block += entry; block += L'\0'; }
         }
         FreeEnvironmentStringsW(env);
     }
     for (auto& kv : termVars) { block += kv.first + L'=' + kv.second; block += L'\0'; }
-    for (auto& kv : extra)    { block += kv.first + L'=' + kv.second; block += L'\0'; }
+    for (auto& kv : effectiveExtra) { block += kv.first + L'=' + kv.second; block += L'\0'; }
     block += L'\0';
     return block;
 }

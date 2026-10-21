@@ -24,6 +24,31 @@ std::string WideToUtf8(const std::wstring& wide) {
     return result;
 }
 
+std::wstring GetCurrentDirectoryWide() {
+    DWORD len = GetCurrentDirectoryW(0, nullptr);
+    if (len == 0) return L"";
+    std::wstring buf(len, L'\0');
+    DWORD n = GetCurrentDirectoryW(len, buf.data());
+    if (n == 0) return L"";
+    buf.resize(n);
+    return buf;
+}
+
+std::wstring ResolveAbsolutePathWide(const std::wstring& path) {
+    if (path.empty()) return GetCurrentDirectoryWide();
+    DWORD len = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    if (len == 0) return path;
+    std::wstring out(len, L'\0');
+    DWORD n = GetFullPathNameW(path.c_str(), len, out.data(), nullptr);
+    if (n == 0) return path;
+    out.resize(n);
+    return out;
+}
+
+std::string ResolveAbsolutePathUtf8(const std::string& path) {
+    return WideToUtf8(ResolveAbsolutePathWide(Utf8ToWide(path)));
+}
+
 std::string ExecModeToString(ExecMode mode) {
     switch (mode) {
         case ExecMode::Pipe:    return "pipe";

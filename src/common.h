@@ -29,6 +29,11 @@ enum class ProcState {
 std::wstring Utf8ToWide(const std::string& utf8);
 std::string WideToUtf8(const std::wstring& wide);
 
+// Absolute path / current-directory helpers
+std::wstring GetCurrentDirectoryWide();
+std::wstring ResolveAbsolutePathWide(const std::wstring& path);
+std::string ResolveAbsolutePathUtf8(const std::string& path);
+
 std::string ExecModeToString(ExecMode mode);
 ExecMode StringToExecMode(const std::string& s);
 std::string ProcStateToString(ProcState state);

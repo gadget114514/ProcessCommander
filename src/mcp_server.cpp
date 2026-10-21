@@ -107,20 +107,20 @@ int RunMcpServer() {
             oss << "{\"jsonrpc\":\"2.0\",\"id\":" << rpcId << ",\"result\":{\"tools\":["
                 << "{"
                 << "\"name\":\"start_process\","
-                << "\"description\":\"Start and manage an external LLM CLI or program (e.g. claude, opencode) under a Win32 Job Object and display it on the ProcessCommander GUI Dashboard. Automatically writes live output to log_file and creates done_file atomically when the process exits.\","
+                << "\"description\":\"Start and manage an external LLM CLI or program (e.g. claude, opencode) under a Win32 Job Object and display it on the ProcessCommander GUI Dashboard. Automatically writes live output to log_file and creates done_file atomically when the process exits. Set wait=true and wait_ms=0 to block until completion.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"cmd\":{\"type\":\"string\",\"description\":\"Command line to execute (e.g. 'claude -p ...' or 'opencode')\"},"
                 << "\"name\":{\"type\":\"string\",\"description\":\"Friendly display label for the dashboard\"},"
                 << "\"mode\":{\"type\":\"string\",\"enum\":[\"pipe\",\"pty\",\"console\"],\"description\":\"Execution mode: 'pipe' (default; non-interactive stdout/stdin, no ConPTY), 'pty' (Win32 ConPTY interactive terminal), or 'console' (separate visible console window)\"},"
                 << "\"pty\":{\"type\":\"boolean\",\"description\":\"Set true to enable ConPTY (same as mode='pty'). Default false.\"},"
                 << "\"open_stdin\":{\"type\":\"boolean\",\"description\":\"Pipe mode only: keep stdin writable for send_process_input. Default true; set false to close stdin after launch so non-interactive programs see EOF.\"},"
-                << "\"cwd\":{\"type\":\"string\",\"description\":\"Working directory path\"},"
+                << "\"cwd\":{\"type\":\"string\",\"description\":\"Working directory path (default: current directory)\"},"
                 << "\"log_file\":{\"type\":\"string\",\"description\":\"Optional custom path for the real-time output log file (defaults to logs/proc_<id>_<name>_<timestamp>.log)\"},"
                 << "\"done_file\":{\"type\":\"string\",\"description\":\"Optional custom path for the completion marker file created atomically when the process exits (defaults to logs/proc_<id>.done)\"},"
                 << "\"timeout_sec\":{\"type\":\"integer\",\"description\":\"Max runtime timeout in seconds (0 = unlimited)\"},"
                 << "\"idle_timeout_sec\":{\"type\":\"integer\",\"description\":\"Auto-kill if no output for N seconds (0 = unlimited)\"},"
-                << "\"wait\":{\"type\":\"boolean\",\"description\":\"Wait until process exits before returning\"},"
-                << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"Initial milliseconds to wait for early output (default 500)\"}"
+                << "\"wait\":{\"type\":\"boolean\",\"description\":\"Wait until the process exits before returning (blocking completion notification)\"},"
+                << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"With wait=true: maximum wait in ms (0 = unlimited). With wait=false: initial output wait. Default: 500.\"}"
                 << "},\"required\":[\"cmd\"]}"
                 << "},"
                 << "{"
@@ -181,13 +181,16 @@ int RunMcpServer() {
                     mode = "pty";
                 }
                 bool openStdin = JsonGetBool(argsJson, "open_stdin", true);
-                std::string cwd = JsonGetString(argsJson, "cwd", "");
+                std::string cwd = ResolveAbsolutePathUtf8(JsonGetString(argsJson, "cwd", ""));
                 std::string logFile = JsonGetString(argsJson, "log_file", "");
                 std::string doneFile = JsonGetString(argsJson, "done_file", "");
                 int64_t timeoutSec = JsonGetInt(argsJson, "timeout_sec", 0);
                 int64_t idleTimeoutSec = JsonGetInt(argsJson, "idle_timeout_sec", 0);
                 bool wait = JsonGetBool(argsJson, "wait", false);
-                int64_t waitMs = JsonGetInt(argsJson, "wait_ms", 500);
+                int64_t waitMs = JsonGetInt(argsJson, "wait_ms", -1);
+                if (waitMs < 0) {
+                    waitMs = wait ? 0 : 500;
+                }
 
                 ipcReq << "{\"action\":\"start\""
                        << ",\"cmd\":\"" << JsonEscape(cmd) << "\""

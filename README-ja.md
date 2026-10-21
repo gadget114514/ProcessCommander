@@ -103,6 +103,18 @@ pcder.exe start --name "oc-run" --close-stdin --cmd "opencode run OK" --timeout 
 
 `opencode`（`run` なしの TUI）のような対話型プログラムは `--pty` を推奨します。MCP では `open_stdin: false` が `--close-stdin` に相当します。
 
+`--cwd` を省略した場合、`pcder.exe` を実行したディレクトリが使用され、絶対パスに解決されます。ProcessCommander は子プロセスの実際の作業ディレクトリと `PWD` / `INIT_CWD` をそのパスに揃え（`OLDPWD` は削除）、opencode のように `PWD` からプロジェクトディレクトリを決定するツールでも意図したフォルダを利用できるようにします。
+
+**完了通知:** プロセス終了時に `.done` JSON ファイルがアトミックに書き出されます。完了まで待つ場合は `pcder.exe start --wait`（必要なら `--wait-ms` で上限指定）、MCP の `start_process` で `"wait": true`、または `wait_process` を使用してください。`wait` を指定しない場合、`start` は即座に戻るため、`.done` ファイルをポーリングするか `wait` を呼び出す必要があります。
+
+**Claude Code のバックグラウンドタスク:** `run_in_background` でブロッキング起動します:
+
+```powershell
+pcder.exe start --name "task" --cwd C:\ws\Survivors --close-stdin --timeout 3600 --wait --wait-ms 0 --json --cmd C:\path\run_task.cmd
+```
+
+`pcder.exe` は管理対象プロセスが終了するまで残るため、`pcder.exe` の終了時に Claude Code が `<task-notification>` を出します。終了コードは完了時 `0`、失敗時は子プロセスの終了コード、待機タイムアウト時は `124` です。出力ファイルには最終 JSON（`state`, `exit_code`, `log_file`, `done_file`）が残ります。
+
 ---
 
 ## 使い方 2: Claude の MCP サーバーとして登録する
