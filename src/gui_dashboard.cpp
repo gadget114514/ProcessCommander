@@ -39,6 +39,7 @@ constexpr UINT WM_PC_CREATE_TERMVIEW  = WM_APP + 102;
 constexpr UINT WM_PC_DESTROY_TERMVIEW = WM_APP + 103;
 constexpr UINT WM_PC_TRAYICON         = WM_APP + 104;
 constexpr UINT_PTR TIMER_REFRESH_ID   = 1;
+constexpr UINT_PTR TIMER_KPI_ANIM_ID  = 2;
 constexpr UINT TRAY_ICON_ID           = 1;
 constexpr int  APP_ICON_RESOURCE_ID   = 1;
 
@@ -286,6 +287,13 @@ static LRESULT CALLBACK TabSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
+static COLORREF BlendColor(COLORREF from, COLORREF to, float t) {
+    auto mix = [t](int a, int b) { return static_cast<int>(a + (b - a) * t + 0.5f); };
+    return RGB(mix(GetRValue(from), GetRValue(to)),
+               mix(GetGValue(from), GetGValue(to)),
+               mix(GetBValue(from), GetBValue(to)));
+}
+
 
 static const wchar_t* Tr(const wchar_t* ja, const wchar_t* en, const wchar_t* es = nullptr) {
     if (g_uiLanguage == UiLanguage::Spanish) return es ? es : en;
@@ -409,9 +417,10 @@ struct DashboardState {
     HWND hwndKpiTip = nullptr;
     RECT kpiCardRects[6] = {};
     std::wstring kpiTipText[6];
+    int activeRunningCount = 0;
 
     bool hideProcessList = false;
-    bool hideTerminalGrid = false;
+    bool hideTerminalGrid = true;
 
     ShellType defaultShell = ShellType::PowerShell;
     std::string cmdCommand = "cmd.exe";
@@ -562,8 +571,11 @@ static COLORREF KpiAccent(int index) {
     return IsDarkThemeActive() ? darkAccents[index] : lightAccents[index];
 }
 
+static float g_kpiBarPhase = 0.0f;
+
 static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std::wstring& value,
-                        COLORREF accentColor, HFONT hFontUi, HFONT hFontKpiVal) {
+                        COLORREF accentColor, HFONT hFontUi, HFONT hFontKpiVal,
+                        float marqueePhase = -1.0f) {
     HBRUSH bgBrush = CreateSolidBrush(g_theme.panel);
     HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
     HGDIOBJ oldBrush = SelectObject(hdc, bgBrush);
@@ -578,6 +590,22 @@ static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std
     HBRUSH stripeBrush = CreateSolidBrush(accentColor);
     FillRect(hdc, &rcStripe, stripeBrush);
     DeleteObject(stripeBrush);
+
+    if (marqueePhase >= 0.0f) {
+        int stripeLeft = static_cast<int>(rcStripe.left);
+        int stripeRight = static_cast<int>(rcStripe.right);
+        int stripeW = stripeRight - stripeLeft;
+        int bandW = (std::max)(18, stripeW / 3);
+        int travel = stripeW + bandW;
+        int bandLeft = stripeLeft - bandW + static_cast<int>(marqueePhase * travel);
+        RECT rcBand = {(std::max)(stripeLeft, bandLeft), rcStripe.top,
+                       (std::min)(stripeRight, bandLeft + bandW), rcStripe.bottom};
+        if (rcBand.right > rcBand.left) {
+            HBRUSH bandBrush = CreateSolidBrush(BlendColor(accentColor, RGB(255, 255, 255), 0.55f));
+            FillRect(hdc, &rcBand, bandBrush);
+            DeleteObject(bandBrush);
+        }
+    }
 
     SetBkMode(hdc, TRANSPARENT);
 
@@ -793,6 +821,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
             failedOrKilled++;
         }
     }
+    st->activeRunningCount = activeRunning;
 
     // 1. Top KPI Cards
     int kpiMargin = 10;
@@ -816,7 +845,8 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                         KpiAccent(0), st->hFontUi, st->hFontKpiVal);
         } else if (i == 1) {
             DrawKpiCard(hdc, rcCard, Tr(L"稼働中", L"ACTIVE RUNNING", L"EN EJECUCIÓN"), std::to_wstring(activeRunning),
-                        KpiAccent(1), st->hFontUi, st->hFontKpiVal);
+                        KpiAccent(1), st->hFontUi, st->hFontKpiVal,
+                        activeRunning > 0 ? g_kpiBarPhase : -1.0f);
         } else if (i == 2) {
             DrawKpiCard(hdc, rcCard, Tr(L"待機 / アイドル", L"WAITING / IDLE", L"ESPERANDO / INACTIVO"), std::to_wstring(idleWaiting),
                         KpiAccent(2), st->hFontUi, st->hFontKpiVal);
@@ -1631,7 +1661,7 @@ static void LoadShellConfig(DashboardState* st) {
     st->bashCommand = JsonGetString(content, "bash_command", st->bashCommand);
     st->hideEndedProcesses = JsonGetBool(content, "hide_ended", false);
     st->hideProcessList = JsonGetBool(content, "hide_process_list", false);
-    st->hideTerminalGrid = JsonGetBool(content, "hide_terminal_grid", false);
+    st->hideTerminalGrid = JsonGetBool(content, "hide_terminal_grid", true);
     int listH = static_cast<int>(JsonGetInt(content, "process_list_height", st->processListHeight));
     if (listH >= kMinListH && listH <= 4000) st->processListHeight = listH;
     std::string langCode = JsonGetString(content, "language", "");
@@ -2509,6 +2539,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ApplyNativeThemeToWindow(hwnd);
 
             SetTimer(hwnd, TIMER_REFRESH_ID, 250, nullptr);
+            SetTimer(hwnd, TIMER_KPI_ANIM_ID, 60, nullptr);
             RefreshDashboardData(st);
             return 0;
         }
@@ -2583,6 +2614,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (wParam == TIMER_REFRESH_ID && st) {
                 UpdateClock(st);
                 RefreshDashboardData(st);
+            } else if (wParam == TIMER_KPI_ANIM_ID && st) {
+                if (st->activeRunningCount > 0) {
+                    g_kpiBarPhase += 0.05f;
+                    if (g_kpiBarPhase >= 1.0f) g_kpiBarPhase -= 1.0f;
+                    InvalidateRect(hwnd, &st->kpiCardRects[1], FALSE);
+                }
             }
             return 0;
         }
@@ -3003,6 +3040,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
         case WM_DESTROY: {
             KillTimer(hwnd, TIMER_REFRESH_ID);
+            KillTimer(hwnd, TIMER_KPI_ANIM_ID);
             if (st) {
                 RemoveTrayIcon(st);
                 st->gridView.reset();
