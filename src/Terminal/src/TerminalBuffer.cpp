@@ -1193,16 +1193,21 @@ void TerminalBuffer::clampCursor() {
 }
 
 void TerminalBuffer::trimHistory() {
-    // 通常は 1 行だけ溢れるので if で十分（while は O(n²) になるため使わない）
-    if ((int)history_.size() > maxHistoryLines_)
-        history_.erase(history_.begin());
+    if ((int)history_.size() > maxHistoryLines_) {
+        // ⚡ Bolt: Block-erase instead of element-by-element to turn O(N^2) into O(N) when reducing scrollback limit
+        int overflow = (int)history_.size() - maxHistoryLines_;
+        history_.erase(history_.begin(), history_.begin() + overflow);
+    }
 }
 
 void TerminalBuffer::setMaxHistoryLines(int n) {
     maxHistoryLines_ = std::max(100, n);   // 最低 100 行は保証
     // 新しい上限を超えている分を即時トリム
-    while ((int)history_.size() > maxHistoryLines_)
-        history_.erase(history_.begin());
+    if ((int)history_.size() > maxHistoryLines_) {
+        // ⚡ Bolt: Use block-erase here as well for massive speedups on large trims
+        int overflow = (int)history_.size() - maxHistoryLines_;
+        history_.erase(history_.begin(), history_.begin() + overflow);
+    }
 }
 
 int TerminalBuffer::maxHistoryLines() const { return maxHistoryLines_; }
