@@ -939,9 +939,25 @@ void TerminalView::OnFileDownload(const std::vector<uint8_t>& data,
         downloadsPath[1] = L'\0';
     }
 
+    std::wstring safeName = name;
+    size_t lastSlash = safeName.find_last_of(L"/\\");
+    if (lastSlash != std::wstring::npos) {
+        safeName = safeName.substr(lastSlash + 1);
+    }
+    for (auto& c : safeName) {
+        if (c == L'<' || c == L'>' || c == L':' || c == L'"' ||
+            c == L'/' || c == L'\\' || c == L'|' || c == L'?' || c == L'*' ||
+            (c >= 0 && c <= 31)) {
+            c = L'_';
+        }
+    }
+    if (safeName.empty() || safeName == L"." || safeName == L"..") {
+        safeName = L"Unnamed file";
+    }
+
     std::wstring savePath = downloadsPath;
     savePath += L"\\Downloads\\";
-    savePath += name.empty() ? L"Unnamed file" : name;
+    savePath += safeName;
 
     // If file exists, append a number
     if (GetFileAttributesW(savePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
