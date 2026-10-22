@@ -1,4 +1,4 @@
-## 2024-05-30 - Command Injection in WMI Process Create
-**Vulnerability:** Command Injection in PowerShell WMI script via unescaped path variable
-**Learning:** `GetModuleFileNameW` returns a path that may contain single quotes (e.g. `C:\User's Files\exe.exe`). Passing this directly into a PowerShell script wrapped in single quotes allows command injection if an attacker crafts a path with single quotes.
-**Prevention:** Sanitize the path by properly escaping single quotes for PowerShell (e.g., doubling them to `''`).
+## 2026-10-22 - [Path Traversal in OSC 1337 File Download]
+**Vulnerability:** The OSC 1337 inline file download handler (`TerminalView::OnFileDownload`) appended an unsanitized filename provided by the untrusted terminal process/remote host directly to the user's Downloads directory path.
+**Learning:** This existed because the application implicitly trusted the file name parameter from the terminal escape sequence without performing any sanitization or path extraction, which is a common pitfall when processing remote content.
+**Prevention:** Always treat filenames from external or untrusted sources as potentially malicious. Before using them in filesystem operations, extract only the base name (strip directory components) and remove or replace any characters that are illegal or dangerous on the target file system.
