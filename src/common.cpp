@@ -230,25 +230,28 @@ std::string GetTailLines(const std::string& text, int maxLines) {
 }
 
 std::string JsonEscape(const std::string& s) {
-    std::ostringstream oss;
+    std::string out;
+    out.reserve(s.size() + s.size() / 8); // Heuristic to reduce allocations
     for (unsigned char c : s) {
         switch (c) {
-            case '"':  oss << "\\\""; break;
-            case '\\': oss << "\\\\"; break;
-            case '\b': oss << "\\b";  break;
-            case '\f': oss << "\\f";  break;
-            case '\n': oss << "\\n";  break;
-            case '\r': oss << "\\r";  break;
-            case '\t': oss << "\\t";  break;
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
             default:
                 if (c < 0x20) {
-                    oss << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(c));
+                    out += buf;
                 } else {
-                    oss << static_cast<char>(c);
+                    out += static_cast<char>(c);
                 }
         }
     }
-    return oss.str();
+    return out;
 }
 
 static size_t FindJsonKeyValuePos(const std::string& json, const std::string& key) {
