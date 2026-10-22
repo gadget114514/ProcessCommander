@@ -7,9 +7,12 @@
 #include <shellapi.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
+#include <commdlg.h>
+#include <mmsystem.h>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // Globals required by src/Terminal/src/TerminalGridView.cpp
@@ -369,6 +372,10 @@ enum ControlId {
     IDC_SET_THEME_PASTEL = 6014,
     IDC_SET_SHELL_CONFIG = 6022,
     IDC_SET_RESET_IDS = 6021,
+    IDC_SET_SOUND_ENABLED = 6030,
+    IDC_SET_SOUND_PATH = 6031,
+    IDC_SET_SOUND_BROWSE = 6032,
+    IDC_SET_SOUND_TEST = 6033,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -430,6 +437,10 @@ struct DashboardState {
     bool hideEndedProcesses = false;
     int sortColumn = 0;        // Default: Column 0 (ID)
     bool sortAscending = false; // Default: Descending (newest processes at the top)
+
+    bool completionSoundEnabled = true;
+    std::string completionSoundPath;
+    std::unordered_map<int, ProcState> lastProcStates;
 
     std::unique_ptr<TerminalGridView> gridView;
 
@@ -1152,9 +1163,41 @@ static void SortSnapshots(std::vector<ProcessSnapshot>& snaps, int col, bool asc
 }
 
 
+static void PlayCompletionSound(const DashboardState& st) {
+    if (!st.completionSoundEnabled) return;
+    if (!st.completionSoundPath.empty()) {
+        std::wstring path = Utf8ToWide(st.completionSoundPath);
+        if (PlaySoundW(path.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT)) {
+            return;
+        }
+    }
+    if (!PlaySoundW(L"Notification.Default", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT)) {
+        if (!PlaySoundW(L"SystemAsterisk", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT)) {
+            MessageBeep(MB_ICONASTERISK);
+        }
+    }
+}
+
 static void RefreshDashboardData(DashboardState* st) {
     if (!st || !st->pm) return;
     st->allSnapshots = st->pm->GetAllSnapshots();
+
+    bool processFinished = false;
+    std::unordered_map<int, ProcState> nextStates;
+    nextStates.reserve(st->allSnapshots.size());
+    for (const auto& s : st->allSnapshots) {
+        auto it = st->lastProcStates.find(s.id);
+        if (it != st->lastProcStates.end() && it->second == ProcState::Running &&
+            s.state != ProcState::Running) {
+            processFinished = true;
+        }
+        nextStates.emplace(s.id, s.state);
+    }
+    st->lastProcStates.swap(nextStates);
+    if (processFinished) {
+        PlayCompletionSound(*st);
+    }
+
     st->cachedSnapshots.clear();
     for (const auto& s : st->allSnapshots) {
         if (st->hideEndedProcesses && s.state != ProcState::Running) {
@@ -1662,6 +1705,8 @@ static void LoadShellConfig(DashboardState* st) {
     st->hideEndedProcesses = JsonGetBool(content, "hide_ended", false);
     st->hideProcessList = JsonGetBool(content, "hide_process_list", false);
     st->hideTerminalGrid = JsonGetBool(content, "hide_terminal_grid", true);
+    st->completionSoundEnabled = JsonGetBool(content, "completion_sound_enabled", true);
+    st->completionSoundPath = JsonGetString(content, "completion_sound_path", "");
     int listH = static_cast<int>(JsonGetInt(content, "process_list_height", st->processListHeight));
     if (listH >= kMinListH && listH <= 4000) st->processListHeight = listH;
     std::string langCode = JsonGetString(content, "language", "");
@@ -1686,6 +1731,8 @@ static void SaveShellConfig(const DashboardState* st) {
        << "  \"hide_ended\": " << (st->hideEndedProcesses ? "true" : "false") << ",\n"
        << "  \"hide_process_list\": " << (st->hideProcessList ? "true" : "false") << ",\n"
        << "  \"hide_terminal_grid\": " << (st->hideTerminalGrid ? "true" : "false") << ",\n"
+       << "  \"completion_sound_enabled\": " << (st->completionSoundEnabled ? "true" : "false") << ",\n"
+       << "  \"completion_sound_path\": \"" << JsonEscape(st->completionSoundPath) << "\",\n"
        << "  \"process_list_height\": " << st->processListHeight << ",\n"
        << "  \"language\": \"" << LanguageCode(g_uiLanguage) << "\",\n"
        << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\"\n"
@@ -2156,7 +2203,23 @@ struct SettingsDlgState {
     HWND btnShell = nullptr;
     HWND btnReset = nullptr;
     HWND btnClose = nullptr;
+    HWND hwndSoundLabel = nullptr;
+    HWND chkSound = nullptr;
+    HWND editSound = nullptr;
+    HWND btnBrowseSound = nullptr;
+    HWND btnTestSound = nullptr;
+    HWND hwndSoundHint = nullptr;
 };
+
+static void CommitSoundSettings(SettingsDlgState* ds) {
+    if (!ds || !ds->dash) return;
+    wchar_t path[MAX_PATH * 4] = {};
+    GetWindowTextW(ds->editSound, path, MAX_PATH * 4);
+    ds->dash->completionSoundPath = WideToUtf8(path);
+    ds->dash->completionSoundEnabled =
+        (SendMessageW(ds->chkSound, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    SaveShellConfig(ds->dash);
+}
 
 static void UpdateSettingsDialogTexts(HWND hwnd) {
     auto* ds = reinterpret_cast<SettingsDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -2173,6 +2236,11 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnShell, Tr(L"シェル構成...", L"Shell Config...", L"Configurar shell..."));
     SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
+    SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
+    SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
+    SetWindowTextW(ds->btnBrowseSound, Tr(L"参照...", L"Browse...", L"Examinar..."));
+    SetWindowTextW(ds->btnTestSound, Tr(L"試聴", L"Test", L"Probar"));
+    SetWindowTextW(ds->hwndSoundHint, Tr(L"(空欄 = Windows の既定の通知音)", L"(Empty = Windows default notification sound)", L"(Vacío = sonido de notificación predeterminado de Windows)"));
     CheckRadioButton(hwnd, IDC_SET_LANG_JA, IDC_SET_LANG_ES,
         g_uiLanguage == UiLanguage::Japanese ? IDC_SET_LANG_JA :
         g_uiLanguage == UiLanguage::Spanish ? IDC_SET_LANG_ES : IDC_SET_LANG_EN);
@@ -2227,10 +2295,32 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 210, 200, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
             ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                560, 250, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
+                560, 360, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
+
+            ds->hwndSoundLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 248, 300, 20, hwnd, nullptr, hInst, nullptr);
+            SendMessageW(ds->hwndSoundLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
+
+            ds->chkSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                18, 272, 340, 24, hwnd, (HMENU)IDC_SET_SOUND_ENABLED, hInst, nullptr);
+            ds->editSound = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                18, 302, 470, 26, hwnd, (HMENU)IDC_SET_SOUND_PATH, hInst, nullptr);
+            ds->btnBrowseSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                496, 302, 90, 26, hwnd, (HMENU)IDC_SET_SOUND_BROWSE, hInst, nullptr);
+            ds->btnTestSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                594, 302, 80, 26, hwnd, (HMENU)IDC_SET_SOUND_TEST, hInst, nullptr);
+            ds->hwndSoundHint = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 332, 470, 18, hwnd, nullptr, hInst, nullptr);
+            SendMessageW(ds->hwndSoundHint, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
+
+            SendMessageW(ds->chkSound, BM_SETCHECK,
+                ds->dash->completionSoundEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+            SetWindowTextW(ds->editSound, Utf8ToWide(ds->dash->completionSoundPath).c_str());
 
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
-                             ds->btnShell, ds->btnReset, ds->btnClose };
+                             ds->btnShell, ds->btnReset, ds->btnClose, ds->chkSound, ds->editSound,
+                             ds->btnBrowseSound, ds->btnTestSound };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
@@ -2240,10 +2330,36 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             if (id == IDCANCEL || id == IDOK) {
+                if (ds) CommitSoundSettings(ds);
                 DestroyWindow(hwnd);
                 return 0;
             }
             if (!ds) return 0;
+            if (id == IDC_SET_SOUND_ENABLED) {
+                CommitSoundSettings(ds);
+                return 0;
+            }
+            if (id == IDC_SET_SOUND_BROWSE) {
+                CommitSoundSettings(ds);
+                wchar_t file[MAX_PATH] = {};
+                OPENFILENAMEW ofn = {};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = hwnd;
+                ofn.lpstrFilter = L"WAV (*.wav)\0*.wav\0All Files (*.*)\0*.*\0";
+                ofn.lpstrFile = file;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+                if (GetOpenFileNameW(&ofn)) {
+                    SetWindowTextW(ds->editSound, file);
+                    CommitSoundSettings(ds);
+                }
+                return 0;
+            }
+            if (id == IDC_SET_SOUND_TEST) {
+                CommitSoundSettings(ds);
+                PlayCompletionSound(*ds->dash);
+                return 0;
+            }
             if (id == IDC_SET_LANG_JA || id == IDC_SET_LANG_EN || id == IDC_SET_LANG_ES) {
                 g_uiLanguage = (id == IDC_SET_LANG_JA) ? UiLanguage::Japanese :
                                (id == IDC_SET_LANG_ES) ? UiLanguage::Spanish : UiLanguage::English;
@@ -2352,13 +2468,15 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             FillRect(hdc, &rc, g_dialogBgBrush);
             return 1;
         }
-        case WM_CTLCOLORSTATIC: {
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT: {
             HDC hdc = reinterpret_cast<HDC>(wParam);
             SetTextColor(hdc, g_theme.text);
             SetBkColor(hdc, g_theme.panel);
             return reinterpret_cast<LRESULT>(g_dialogBgBrush);
         }
         case WM_CLOSE:
+            if (ds) CommitSoundSettings(ds);
             DestroyWindow(hwnd);
             return 0;
     }
@@ -2396,7 +2514,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 340;
+    int dlgH = 450;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 

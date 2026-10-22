@@ -41,6 +41,7 @@ target_link_libraries(ProcessCommander PRIVATE
     user32
     gdi32
     comctl32
+    comdlg32
     uxtheme
     shell32
     advapi32
@@ -48,6 +49,7 @@ target_link_libraries(ProcessCommander PRIVATE
     ole32
     shlwapi
     imm32
+    winmm
     d2d1
     dwrite
     dwmapi

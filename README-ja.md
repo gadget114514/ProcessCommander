@@ -4,7 +4,7 @@
 
 **ProcessCommander** は、Claude Code や各種自動化スクリプトから複数のサブプロセス・対話型 CLI エージェント（`opencode`, `claude`, PowerShell, cmd, Git Bash 等）を並列起動・監視・制御し、**状況をひと目で把握できる Native Win32 + Direct2D マルチターミナルダッシュボード GUI** を備えたプロセスマネージャです。
 
-![ProcessCommander Dashboard](docs/images/dashboard.png)
+![ProcessCommander Dashboard](docs/images/dashboard.jpg)
 
 ---
 
