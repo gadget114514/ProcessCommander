@@ -163,6 +163,8 @@ pcder.exe start --name "oc-run" --close-stdin --cmd "opencode run OK" --timeout 
 
 For an interactive TUI such as `opencode` (without `run`), prefer `--pty`. The MCP equivalent of `--close-stdin` is `open_stdin: false`.
 
+While a process is running, the **End Time** column shows an estimated finish time in gray. Pass `--eta "18:30"` (or `--estimate-end`) to set it explicitly; otherwise `--timeout` makes the column show remaining seconds (e.g. `残り 120 秒` / `120s left`).
+
 If `--cwd` is omitted, `pcder.exe` uses the directory where it was invoked and resolves it to an absolute path. ProcessCommander sets the child's actual working directory and its `PWD` / `INIT_CWD` environment variables to that path (removing `OLDPWD`), so tools such as opencode that resolve their project directory from `PWD` operate on the intended folder.
 
 **Completion notification:** ProcessCommander writes a `.done` JSON file atomically when a process exits. To block until completion, use `pcder.exe start --wait` (optionally with `--wait-ms` as a maximum), MCP `start_process` with `"wait": true`, or MCP `wait_process`. Without `wait`, `start` returns immediately and callers should poll the `.done` file or call `wait`.
@@ -199,7 +201,7 @@ You can also run the server directly with `ProcessCommander.exe mcp`. It connect
 ### Provided MCP Tools
 | Tool Name | Description |
 | :--- | :--- |
-| `start_process` | Start a process (`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`, default `pipe`], `pty`, `open_stdin`, `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `wait`, `wait_ms`) |
+| `start_process` | Start a process (`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`, default `pipe`], `pty`, `open_stdin`, `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `estimate_end`, `wait`, `wait_ms`) |
 | `list_processes` | List all managed processes with status, start time, uptime, PID tree count, memory, log/done paths, and latest output line (`id` optional) |
 | `get_process_output` | Retrieve ANSI-stripped or raw terminal output for a process (`id`, `tail`, `wait_ms`) |
 | `send_process_input` | Send text input or commands to a running process's ConPTY / stdin (`id`, `input`, `newline`, `wait_ms`) |

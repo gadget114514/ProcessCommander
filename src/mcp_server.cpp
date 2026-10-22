@@ -119,6 +119,7 @@ int RunMcpServer() {
                 << "\"done_file\":{\"type\":\"string\",\"description\":\"Optional custom path for the completion marker file created atomically when the process exits (defaults to logs/proc_<id>.done)\"},"
                 << "\"timeout_sec\":{\"type\":\"integer\",\"description\":\"Max runtime timeout in seconds (0 = unlimited)\"},"
                 << "\"idle_timeout_sec\":{\"type\":\"integer\",\"description\":\"Auto-kill if no output for N seconds (0 = unlimited)\"},"
+                << "\"estimate_end\":{\"type\":\"string\",\"description\":\"Optional estimated end time shown in gray in the End Time column while running (e.g. '18:30' or '2026-10-22 18:30:00'). If omitted, timeout_sec makes the column show remaining seconds.\"},"
                 << "\"wait\":{\"type\":\"boolean\",\"description\":\"Wait until the process exits before returning (blocking completion notification)\"},"
                 << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"With wait=true: maximum wait in ms (0 = unlimited). With wait=false: initial output wait. Default: 500.\"}"
                 << "},\"required\":[\"cmd\"]}"
@@ -186,6 +187,7 @@ int RunMcpServer() {
                 std::string doneFile = JsonGetString(argsJson, "done_file", "");
                 int64_t timeoutSec = JsonGetInt(argsJson, "timeout_sec", 0);
                 int64_t idleTimeoutSec = JsonGetInt(argsJson, "idle_timeout_sec", 0);
+                std::string estimateEnd = JsonGetString(argsJson, "estimate_end", "");
                 bool wait = JsonGetBool(argsJson, "wait", false);
                 int64_t waitMs = JsonGetInt(argsJson, "wait_ms", -1);
                 if (waitMs < 0) {
@@ -202,6 +204,7 @@ int RunMcpServer() {
                        << ",\"done_file\":\"" << JsonEscape(doneFile) << "\""
                        << ",\"timeout_sec\":" << timeoutSec
                        << ",\"idle_timeout_sec\":" << idleTimeoutSec
+                       << ",\"estimate_end\":\"" << JsonEscape(estimateEnd) << "\""
                        << ",\"wait\":" << (wait ? "true" : "false")
                        << ",\"wait_ms\":" << waitMs << "}";
             }

@@ -112,6 +112,8 @@ pcder.exe start --name "oc-run" --close-stdin --cmd "opencode run OK" --timeout 
 
 `opencode`（`run` なしの TUI）のような対話型プログラムは `--pty` を推奨します。MCP では `open_stdin: false` が `--close-stdin` に相当します。
 
+稼働中は **End Time** 列に見積終了時刻がグレーで表示されます。`--eta "18:30"`（または `--estimate-end`）で明示的に指定でき、省略時は `--timeout` に基づく残り秒数（例: `残り 120 秒`）を表示します。
+
 `--cwd` を省略した場合、`pcder.exe` を実行したディレクトリが使用され、絶対パスに解決されます。ProcessCommander は子プロセスの実際の作業ディレクトリと `PWD` / `INIT_CWD` をそのパスに揃え（`OLDPWD` は削除）、opencode のように `PWD` からプロジェクトディレクトリを決定するツールでも意図したフォルダを利用できるようにします。
 
 **完了通知:** プロセス終了時に `.done` JSON ファイルがアトミックに書き出されます。完了まで待つ場合は `pcder.exe start --wait`（必要なら `--wait-ms` で上限指定）、MCP の `start_process` で `"wait": true`、または `wait_process` を使用してください。`wait` を指定しない場合、`start` は即座に戻るため、`.done` ファイルをポーリングするか `wait` を呼び出す必要があります。
@@ -144,7 +146,7 @@ pcder.exe start --name "task" --cwd C:\ws\Survivors --close-stdin --timeout 3600
 ### 提供される MCP ツール
 | ツール名 | 説明 |
 | :--- | :--- |
-| `start_process` | プロセス起動（`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`, 既定 `pipe`], `pty`, `open_stdin`, `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `wait`, `wait_ms`） |
+| `start_process` | プロセス起動（`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`, 既定 `pipe`], `pty`, `open_stdin`, `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `estimate_end`, `wait`, `wait_ms`） |
 | `list_processes` | 全管理プロセスのステータス・起動時刻・稼働時間・PIDツリー数・メモリ・ログ/doneパス・最新出力行の一覧取得 |
 | `get_process_output` | 指定プロセスの出力ログ取得（`id`, `tail_lines`, `clean_ansi`） |
 | `send_process_input` | 実行中プロセスの ConPTY / stdin へテキスト入力送信（`id`, `input`, `append_newline`） |

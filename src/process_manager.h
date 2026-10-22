@@ -20,6 +20,7 @@ struct StartProcessRequest {
     bool openStdin = true;   // pipe mode: keep stdin writable; false closes it after launch so children see EOF
     int timeoutSec = 0;      // 0 = no limit
     int idleTimeoutSec = 0;  // 0 = no limit
+    std::string estimatedEndTimeStr;  // optional estimated end time for display
 };
 
 struct ProcessSnapshot {
@@ -33,6 +34,7 @@ struct ProcessSnapshot {
     DWORD exitCode = STILL_ACTIVE;
     std::string startTimeStr;
     std::string endTimeStr;
+    std::string estimatedEndTimeStr;
     uint64_t startTickMs = 0;
     uint64_t endTickMs = 0;
     uint64_t lastOutputTickMs = 0;
@@ -136,6 +138,7 @@ private:
 
         std::string startTimeStr;
         std::string endTimeStr;
+        std::string estimatedEndTimeStr;
         uint64_t startTickMs = 0;
         uint64_t restoredElapsedMs = 0;
         std::atomic<uint64_t> endTickMs{0};

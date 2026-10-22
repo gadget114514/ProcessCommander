@@ -177,6 +177,7 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
     proc->mode = req.mode;
     proc->timeoutSec = req.timeoutSec;
     proc->idleTimeoutSec = req.idleTimeoutSec;
+    proc->estimatedEndTimeStr = req.estimatedEndTimeStr;
     proc->hJob = hJob;
     proc->destroyTerminalCb = destroyTerminalCb_;
 
@@ -520,6 +521,7 @@ void ProcessManager::WriteDoneFile(ManagedProcess& proc, ProcState finalState, D
         << "  \"pid\": " << proc.rootPid << ",\r\n"
         << "  \"start_time\": \"" << JsonEscape(proc.startTimeStr) << "\",\r\n"
         << "  \"end_time\": \"" << JsonEscape(endTimeStr) << "\",\r\n"
+        << "  \"estimated_end_time\": \"" << JsonEscape(proc.estimatedEndTimeStr) << "\",\r\n"
         << "  \"elapsed_ms\": " << elapsedMs << ",\r\n"
         << "  \"cpu_time_ms\": " << (proc.cpuTime100ns.load() / 10000) << ",\r\n"
         << "  \"uptime_str\": \"" << JsonEscape(FormatUptimeHMS(elapsedMs)) << "\",\r\n"
@@ -943,6 +945,7 @@ ProcessSnapshot ProcessManager::BuildSnapshot(ProcessManager::ManagedProcess& p,
     snap.exitCode = p.exitCode.load();
     snap.startTimeStr = p.startTimeStr;
     snap.endTimeStr = p.endTimeStr;
+    snap.estimatedEndTimeStr = p.estimatedEndTimeStr;
     snap.startTickMs = p.startTickMs;
     snap.endTickMs = p.endTickMs.load();
     snap.lastOutputTickMs = p.lastOutputTickMs.load();
@@ -1101,6 +1104,7 @@ void ProcessManager::SaveState() {
             << "\"exit_code\":" << s.exitCode << ","
             << "\"start_time\":\"" << JsonEscape(s.startTimeStr) << "\","
             << "\"end_time\":\"" << JsonEscape(s.endTimeStr) << "\","
+            << "\"estimated_end_time\":\"" << JsonEscape(s.estimatedEndTimeStr) << "\","
             << "\"elapsed_ms\":" << s.elapsedMs << ","
             << "\"cpu_time_ms\":" << s.cpuTimeMs << ","
             << "\"timeout_sec\":" << s.timeoutSec << ","
@@ -1182,6 +1186,7 @@ void ProcessManager::LoadState() {
         proc->exitCode = ec;
         proc->startTimeStr = JsonGetString(itemJson, "start_time", "");
         proc->endTimeStr = JsonGetString(itemJson, "end_time", "");
+        proc->estimatedEndTimeStr = JsonGetString(itemJson, "estimated_end_time", "");
         proc->restoredElapsedMs = static_cast<uint64_t>(JsonGetInt(itemJson, "elapsed_ms", 0));
         proc->cpuTime100ns = static_cast<uint64_t>(JsonGetInt(itemJson, "cpu_time_ms", 0)) * 10000;
         proc->timeoutSec = static_cast<int>(JsonGetInt(itemJson, "timeout_sec", 0));

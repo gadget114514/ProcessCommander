@@ -68,6 +68,10 @@ COMMANDS:
         --done-file <path>       Custom completion marker file created on exit
         --timeout <sec>          Max runtime timeout in seconds (0 = unlimited)
         --idle-timeout <sec>     Hang timeout if no output for N seconds (0 = unlimited)
+        --eta <time>             Estimated end time shown in gray while running
+                                 (e.g. "18:30" or "2026-10-22 18:30:00").
+                                 If omitted, --timeout shows "remaining N seconds".
+        --estimate-end <time>    Alias for --eta
         --wait                   Block until process exits (unlimited unless --wait-ms is set)
         --wait-ms <ms>           Max wait when --wait is set; initial output wait otherwise
                                  (default: 500; 0 = unlimited with --wait)
@@ -179,6 +183,7 @@ void PrintCliUsageJson() {
         {"name": "--done-file", "aliases": ["--done"], "value": "<path>", "description": "Custom completion marker path, written when the process exits."},
         {"name": "--timeout", "value": "<sec>", "description": "Maximum runtime in seconds (0 = unlimited)."},
         {"name": "--idle-timeout", "value": "<sec>", "description": "Kill if no output for N seconds (0 = unlimited)."},
+        {"name": "--eta", "aliases": ["--estimate-end"], "value": "<time>", "description": "Estimated end time shown in gray in the End Time column while the process is running (e.g. '18:30' or '2026-10-22 18:30:00'). If omitted, --timeout causes the column to show remaining seconds."},
         {"name": "--wait", "description": "Block until the process exits (unlimited unless --wait-ms is set)."},
         {"name": "--wait-ms", "value": "<ms>", "description": "With --wait: maximum wait (0 = unlimited). Without --wait: initial output wait. Default: 500."}
       ]
@@ -615,6 +620,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
         bool openStdin = true;
         int timeoutSec = 0;
         int idleTimeoutSec = 0;
+        std::string estimateEnd;
         bool waitFinish = false;
         bool waitMsExplicit = false;
         int waitMs = 500;
@@ -643,6 +649,8 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 timeoutSec = std::stoi(args[++i]);
             } else if (a == "--idle-timeout" && i + 1 < args.size()) {
                 idleTimeoutSec = std::stoi(args[++i]);
+            } else if ((a == "--eta" || a == "--estimate-end") && i + 1 < args.size()) {
+                estimateEnd = args[++i];
             } else if (a == "--wait") {
                 waitFinish = true;
                 waitForCompletion = true;
@@ -690,6 +698,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 << ",\"open_stdin\":" << (openStdin ? "true" : "false")
                 << ",\"timeout_sec\":" << timeoutSec
                 << ",\"idle_timeout_sec\":" << idleTimeoutSec
+                << ",\"estimate_end\":\"" << JsonEscape(estimateEnd) << "\""
                 << ",\"wait\":" << (waitFinish ? "true" : "false")
                 << ",\"wait_ms\":" << waitMs << "}";
     }

@@ -58,7 +58,7 @@ static HICON LoadAppSmallIcon() {
 }
 
 enum class UiLanguage { Japanese, English, Spanish };
-enum class UiTheme { System, Dark, Light, HighContrast };
+enum class UiTheme { System, Dark, Light, Pastel, HighContrast };
 
 struct ThemeColors {
     COLORREF windowBg;
@@ -131,14 +131,21 @@ static ThemeColors ThemeFor(UiTheme theme) {
             return {
                 RGB(241, 245, 249), RGB(255, 255, 255), RGB(203, 213, 225),
                 RGB(15, 23, 42), RGB(71, 85, 105), RGB(2, 132, 199),
-                RGB(15, 23, 42), RGB(226, 232, 240), RGB(15, 23, 42), RGB(219, 234, 254),
+                RGB(15, 23, 42), RGB(226, 232, 240), RGB(15, 23, 42), RGB(229, 231, 235),
                 RGB(220, 252, 231), RGB(254, 243, 199), RGB(219, 234, 254), RGB(254, 226, 226)
+            };
+        case UiTheme::Pastel:
+            return {
+                RGB(248, 244, 250), RGB(255, 251, 253), RGB(214, 204, 224),
+                RGB(74, 66, 84), RGB(130, 118, 140), RGB(178, 148, 210),
+                RGB(34, 30, 40), RGB(243, 236, 248), RGB(74, 66, 84), RGB(232, 230, 235),
+                RGB(220, 244, 226), RGB(252, 238, 210), RGB(220, 235, 250), RGB(250, 220, 224)
             };
         case UiTheme::HighContrast:
             return {
                 RGB(0, 0, 0), RGB(20, 20, 20), RGB(255, 255, 255),
                 RGB(255, 255, 255), RGB(220, 220, 220), RGB(255, 255, 0),
-                RGB(0, 0, 0), RGB(0, 0, 0), RGB(255, 255, 255), RGB(0, 80, 160),
+                RGB(0, 0, 0), RGB(0, 0, 0), RGB(255, 255, 255), RGB(60, 60, 60),
                 RGB(0, 40, 0), RGB(50, 40, 0), RGB(0, 20, 50), RGB(50, 0, 0)
             };
         case UiTheme::Dark:
@@ -146,7 +153,7 @@ static ThemeColors ThemeFor(UiTheme theme) {
             return {
                 RGB(10, 10, 12), RGB(18, 18, 20), RGB(50, 50, 54),
                 RGB(202, 202, 208), RGB(145, 145, 150), RGB(95, 125, 145),
-                RGB(0, 0, 0), RGB(12, 12, 14), RGB(202, 202, 208), RGB(30, 42, 52),
+                RGB(0, 0, 0), RGB(12, 12, 14), RGB(202, 202, 208), RGB(55, 55, 60),
                 RGB(18, 30, 24), RGB(34, 30, 20), RGB(20, 28, 36), RGB(36, 22, 24)
             };
     }
@@ -305,6 +312,7 @@ static const char* ThemeCode(UiTheme theme) {
     switch (theme) {
         case UiTheme::Dark:         return "dark";
         case UiTheme::Light:        return "light";
+        case UiTheme::Pastel:       return "pastel";
         case UiTheme::HighContrast: return "high_contrast";
         default:                    return "system";
     }
@@ -312,6 +320,7 @@ static const char* ThemeCode(UiTheme theme) {
 static UiTheme ParseTheme(const std::string& code) {
     if (code == "dark") return UiTheme::Dark;
     if (code == "light") return UiTheme::Light;
+    if (code == "pastel") return UiTheme::Pastel;
     if (code == "high_contrast") return UiTheme::HighContrast;
     return UiTheme::System;
 }
@@ -341,6 +350,7 @@ enum ControlId {
     IDC_BTN_TOGGLE_LIST = 1020,
     IDC_BTN_TOGGLE_TERM = 1021,
     IDC_BTN_SETTINGS = 1023,
+    IDC_CLOCK = 1024,
     IDC_SET_LANG_JA = 6001,
     IDC_SET_LANG_EN = 6002,
     IDC_SET_LANG_ES = 6003,
@@ -348,6 +358,7 @@ enum ControlId {
     IDC_SET_THEME_DARK = 6011,
     IDC_SET_THEME_LIGHT = 6012,
     IDC_SET_THEME_HC = 6013,
+    IDC_SET_THEME_PASTEL = 6014,
     IDC_SET_SHELL_CONFIG = 6022,
     IDC_SET_RESET_IDS = 6021,
     IDM_TRAY_RESTORE = 4001,
@@ -394,6 +405,7 @@ struct DashboardState {
     HWND hwndBtnToggleTerm = nullptr;
     HWND hwndList = nullptr;
     HWND hwndTab = nullptr;
+    HWND hwndClock = nullptr;
     HWND hwndKpiTip = nullptr;
     RECT kpiCardRects[6] = {};
     std::wstring kpiTipText[6];
@@ -471,6 +483,20 @@ static COLORREF GetStateBadgeColor(const ProcessSnapshot& s) {
         }
         return RGB(255, 255, 255);
     }
+    if (g_uiTheme == UiTheme::Pastel) {
+        switch (s.state) {
+            case ProcState::Running:
+                return (s.idleMs >= 10000) ? RGB(190, 150, 100) : RGB(110, 160, 130);
+            case ProcState::Completed:
+                return RGB(110, 140, 190);
+            case ProcState::Failed:
+            case ProcState::TimedOut:
+            case ProcState::IdleTimedOut:
+            case ProcState::Killed:
+                return RGB(190, 110, 120);
+        }
+        return RGB(140, 130, 150);
+    }
     if (IsDarkThemeActive()) {
         switch (s.state) {
             case ProcState::Running:
@@ -523,11 +549,16 @@ static COLORREF KpiAccent(int index) {
         RGB(100, 116, 139), RGB(22, 163, 74), RGB(217, 119, 6),
         RGB(37, 99, 235), RGB(220, 38, 38), RGB(168, 85, 247)
     };
+    static const COLORREF pastelAccents[6] = {
+        RGB(166, 180, 198), RGB(154, 198, 168), RGB(222, 190, 150),
+        RGB(156, 186, 220), RGB(222, 160, 168), RGB(190, 166, 210)
+    };
     static const COLORREF hcAccents[6] = {
         RGB(255, 255, 255), RGB(0, 255, 0), RGB(255, 255, 0),
         RGB(0, 200, 255), RGB(255, 0, 0), RGB(255, 0, 255)
     };
     if (g_uiTheme == UiTheme::HighContrast) return hcAccents[index];
+    if (g_uiTheme == UiTheme::Pastel) return pastelAccents[index];
     return IsDarkThemeActive() ? darkAccents[index] : lightAccents[index];
 }
 
@@ -1090,6 +1121,7 @@ static void SortSnapshots(std::vector<ProcessSnapshot>& snaps, int col, bool asc
     });
 }
 
+
 static void RefreshDashboardData(DashboardState* st) {
     if (!st || !st->pm) return;
     st->allSnapshots = st->pm->GetAllSnapshots();
@@ -1144,7 +1176,23 @@ static void RefreshDashboardData(DashboardState* st) {
             statusStr += L" (" + std::to_wstring(s.exitCode) + L")";
         }
         std::wstring startStr = Utf8ToWide(s.startTimeStr);
-        std::wstring endStr = (s.state == ProcState::Running || s.endTimeStr.empty()) ? L"-" : Utf8ToWide(s.endTimeStr);
+        std::wstring endStr;
+        if (s.state == ProcState::Running) {
+            if (!s.estimatedEndTimeStr.empty()) {
+                endStr = Utf8ToWide(s.estimatedEndTimeStr);
+            } else if (s.timeoutSec > 0) {
+                int64_t remainingMs = static_cast<int64_t>(s.timeoutSec) * 1000 -
+                                      static_cast<int64_t>(s.elapsedMs);
+                if (remainingMs < 0) remainingMs = 0;
+                long long remainingSec = (remainingMs + 999) / 1000;
+                wchar_t buf[64] = {};
+                swprintf_s(buf, Tr(L"残り %lld 秒", L"%llds left", L"Quedan %lld s"), remainingSec);
+                endStr = buf;
+            }
+        }
+        if (endStr.empty()) {
+            endStr = (s.state == ProcState::Running || s.endTimeStr.empty()) ? L"-" : Utf8ToWide(s.endTimeStr);
+        }
         std::wstring uptimeStr = Utf8ToWide(FormatUptimeHMS(s.elapsedMs));
         if (s.timeoutSec > 0) {
             uptimeStr += L" / " + std::to_wstring(s.timeoutSec) + L"s";
@@ -1223,7 +1271,8 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnGridView, 94},
         {st->hwndBtnToggleList, 90},
         {st->hwndBtnToggleTerm, 112},
-        {st->hwndBtnHideTray, 140}
+        {st->hwndBtnHideTray, 140},
+        {st->hwndClock, 80}
     };
     const int gap = 7;
     int xCur = margin;
@@ -1632,6 +1681,16 @@ static void ApplyListTheme(DashboardState* st) {
     ListView_SetTextColor(st->hwndList, g_theme.listText);
     InvalidateRect(st->hwndList, nullptr, TRUE);
     if (st->hwndTab) InvalidateRect(st->hwndTab, nullptr, TRUE);
+}
+
+static void UpdateClock(DashboardState* st) {
+    if (!st || !st->hwndClock) return;
+    SYSTEMTIME t = {};
+    GetLocalTime(&t);
+    wchar_t buf[16] = {};
+    swprintf_s(buf, L"%02d:%02d:%02d", t.wHour, t.wMinute, t.wSecond);
+    SetWindowTextW(st->hwndClock, buf);
+    InvalidateRect(st->hwndClock, nullptr, TRUE);
 }
 
 static void UpdateToolbarLabels(DashboardState* st) {
@@ -2062,6 +2121,7 @@ struct SettingsDlgState {
     HWND btnSystem = nullptr;
     HWND btnDark = nullptr;
     HWND btnLight = nullptr;
+    HWND btnPastel = nullptr;
     HWND btnHc = nullptr;
     HWND btnShell = nullptr;
     HWND btnReset = nullptr;
@@ -2078,6 +2138,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnSystem, L"Windows");
     SetWindowTextW(ds->btnDark, Tr(L"ダーク", L"Dark", L"Oscuro"));
     SetWindowTextW(ds->btnLight, Tr(L"ライト", L"Light", L"Claro"));
+    SetWindowTextW(ds->btnPastel, Tr(L"パステル", L"Pastel", L"Pastel"));
     SetWindowTextW(ds->btnHc, Tr(L"ハイコントラスト", L"High Contrast", L"Alto contraste"));
     SetWindowTextW(ds->btnShell, Tr(L"シェル構成...", L"Shell Config...", L"Configurar shell..."));
     SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
@@ -2085,9 +2146,10 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     CheckRadioButton(hwnd, IDC_SET_LANG_JA, IDC_SET_LANG_ES,
         g_uiLanguage == UiLanguage::Japanese ? IDC_SET_LANG_JA :
         g_uiLanguage == UiLanguage::Spanish ? IDC_SET_LANG_ES : IDC_SET_LANG_EN);
-    CheckRadioButton(hwnd, IDC_SET_THEME_SYSTEM, IDC_SET_THEME_HC,
+    CheckRadioButton(hwnd, IDC_SET_THEME_SYSTEM, IDC_SET_THEME_PASTEL,
         g_uiTheme == UiTheme::Dark ? IDC_SET_THEME_DARK :
         g_uiTheme == UiTheme::Light ? IDC_SET_THEME_LIGHT :
+        g_uiTheme == UiTheme::Pastel ? IDC_SET_THEME_PASTEL :
         g_uiTheme == UiTheme::HighContrast ? IDC_SET_THEME_HC : IDC_SET_THEME_SYSTEM);
 }
 
@@ -2125,17 +2187,19 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 156, 142, 90, 30, hwnd, (HMENU)IDC_SET_THEME_DARK, hInst, nullptr);
             ds->btnLight = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 254, 142, 90, 30, hwnd, (HMENU)IDC_SET_THEME_LIGHT, hInst, nullptr);
+            ds->btnPastel = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                352, 142, 100, 30, hwnd, (HMENU)IDC_SET_THEME_PASTEL, hInst, nullptr);
             ds->btnHc = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                352, 142, 168, 30, hwnd, (HMENU)IDC_SET_THEME_HC, hInst, nullptr);
+                460, 142, 168, 30, hwnd, (HMENU)IDC_SET_THEME_HC, hInst, nullptr);
 
             ds->btnShell = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 18, 200, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
             ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 210, 200, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
             ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                460, 250, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
+                560, 250, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
 
-            HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnHc,
+            HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnShell, ds->btnReset, ds->btnClose };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
@@ -2160,8 +2224,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
             if (id == IDC_SET_THEME_SYSTEM || id == IDC_SET_THEME_DARK ||
-                id == IDC_SET_THEME_LIGHT || id == IDC_SET_THEME_HC) {
+                id == IDC_SET_THEME_LIGHT || id == IDC_SET_THEME_PASTEL ||
+                id == IDC_SET_THEME_HC) {
                 g_uiTheme = (id == IDC_SET_THEME_LIGHT) ? UiTheme::Light :
+                            (id == IDC_SET_THEME_PASTEL) ? UiTheme::Pastel :
                             (id == IDC_SET_THEME_HC) ? UiTheme::HighContrast :
                             (id == IDC_SET_THEME_DARK) ? UiTheme::Dark : UiTheme::System;
                 ApplyTheme();
@@ -2193,7 +2259,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             if (!dis || !ds) break;
             int id = static_cast<int>(dis->CtlID);
             bool radio = (id >= IDC_SET_LANG_JA && id <= IDC_SET_LANG_ES) ||
-                         (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_HC);
+                         (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_PASTEL);
             bool checked = false;
             if (id == IDC_SET_LANG_JA) checked = (g_uiLanguage == UiLanguage::Japanese);
             else if (id == IDC_SET_LANG_EN) checked = (g_uiLanguage == UiLanguage::English);
@@ -2201,6 +2267,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             else if (id == IDC_SET_THEME_SYSTEM) checked = (g_uiTheme == UiTheme::System);
             else if (id == IDC_SET_THEME_DARK) checked = (g_uiTheme == UiTheme::Dark);
             else if (id == IDC_SET_THEME_LIGHT) checked = (g_uiTheme == UiTheme::Light);
+            else if (id == IDC_SET_THEME_PASTEL) checked = (g_uiTheme == UiTheme::Pastel);
             else if (id == IDC_SET_THEME_HC) checked = (g_uiTheme == UiTheme::HighContrast);
 
             bool pressed = (dis->itemState & ODS_SELECTED) != 0;
@@ -2298,7 +2365,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     ds->dash = st;
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
-    int dlgW = 600;
+    int dlgW = 700;
     int dlgH = 340;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
@@ -2357,6 +2424,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 112, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_TERM, nullptr, nullptr);
             st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", Tr(L"トレイに格納", L"Tray", L"Bandeja"),
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
+            st->hwndClock = CreateWindowExW(0, L"BUTTON", L"",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDC_CLOCK, nullptr, nullptr);
 
             LoadShellConfig(st);
             UpdateToolbarLabels(st);
@@ -2405,7 +2474,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             HWND uiCtrls[] = {
                 st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillSel, st->hwndBtnKillAll,
                 st->hwndBtnClear, st->hwndBtnHideEnded, st->hwndBtnGridView,
-                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnHideTray,
+                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnHideTray, st->hwndClock,
                 st->hwndList, st->hwndTab
             };
             for (HWND h : uiCtrls) {
@@ -2436,6 +2505,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             }
 
             InitTrayIcon(st);
+            UpdateClock(st);
             ApplyNativeThemeToWindow(hwnd);
 
             SetTimer(hwnd, TIMER_REFRESH_ID, 250, nullptr);
@@ -2511,6 +2581,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
         case WM_TIMER: {
             if (wParam == TIMER_REFRESH_ID && st) {
+                UpdateClock(st);
                 RefreshDashboardData(st);
             }
             return 0;
@@ -2840,6 +2911,15 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
                             lvcd->clrTextBk = selected ? g_theme.rowSelected : GetStateRowBgColor(snap);
                             lvcd->clrText = g_theme.listText;
+                        }
+                        return CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT;
+                    }
+                    if (lvcd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+                        int itemIdx = static_cast<int>(lvcd->nmcd.dwItemSpec);
+                        if (itemIdx >= 0 && itemIdx < static_cast<int>(st->cachedSnapshots.size())) {
+                            const auto& snap = st->cachedSnapshots[itemIdx];
+                            lvcd->clrText = (lvcd->iSubItem == 4 && snap.state == ProcState::Running)
+                                                ? g_theme.muted : g_theme.listText;
                         }
                         return CDRF_NEWFONT;
                     }

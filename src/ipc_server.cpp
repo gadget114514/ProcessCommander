@@ -18,6 +18,7 @@ std::string SnapshotToJson(const ProcessSnapshot& s) {
         << "\"exit_code\":" << s.exitCode << ","
         << "\"start_time\":\"" << JsonEscape(s.startTimeStr) << "\","
         << "\"end_time\":\"" << JsonEscape(s.endTimeStr) << "\","
+        << "\"estimated_end_time\":\"" << JsonEscape(s.estimatedEndTimeStr) << "\","
         << "\"elapsed_ms\":" << s.elapsedMs << ","
         << "\"elapsed_str\":\"" << JsonEscape(FormatDurationSec(s.elapsedMs)) << "\","
         << "\"cpu_time_ms\":" << s.cpuTimeMs << ","
@@ -142,6 +143,7 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
         req.openStdin = JsonGetBool(reqJson, "open_stdin", true);
         req.timeoutSec = static_cast<int>(JsonGetInt(reqJson, "timeout_sec", 0));
         req.idleTimeoutSec = static_cast<int>(JsonGetInt(reqJson, "idle_timeout_sec", 0));
+        req.estimatedEndTimeStr = JsonGetString(reqJson, "estimate_end", "");
         bool waitFinish = JsonGetBool(reqJson, "wait", false);
         int waitMs = static_cast<int>(JsonGetInt(reqJson, "wait_ms", 0));
 
