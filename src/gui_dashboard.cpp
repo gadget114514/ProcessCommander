@@ -2690,19 +2690,25 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 ShowSettingsDialog(st);
             } else if (id == IDC_BTN_KILL_SEL) {
                 if (st->selectedProcId > 0) {
-                    if (MessageBoxW(hwnd, L"Are you sure you want to kill this process tree?", L"Confirm Kill", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                    if (MessageBoxW(hwnd,
+                            Tr(L"このプロセスツリーを強制終了しますか？", L"Are you sure you want to kill this process tree?", L"¿Seguro que desea terminar este árbol de procesos?"),
+                            Tr(L"終了の確認", L"Confirm Kill", L"Confirmar cierre"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
                         std::string err;
                         st->pm->KillProcess(st->selectedProcId, err);
                         RefreshDashboardData(st);
                     }
                 }
             } else if (id == IDC_BTN_KILL_ALL) {
-                if (MessageBoxW(hwnd, L"Are you sure you want to kill ALL running processes?", L"Confirm Kill All", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                if (MessageBoxW(hwnd,
+                        Tr(L"実行中のすべてのプロセスを強制終了しますか？", L"Are you sure you want to kill ALL running processes?", L"¿Seguro que desea terminar TODOS los procesos en ejecución?"),
+                        Tr(L"全終了の確認", L"Confirm Kill All", L"Confirmar cierre total"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
                     st->pm->KillAllRunning();
                     RefreshDashboardData(st);
                 }
             } else if (id == IDC_BTN_CLEAR) {
-                if (MessageBoxW(hwnd, L"Are you sure you want to clear finished process history?", L"Confirm Clear", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                if (MessageBoxW(hwnd,
+                        Tr(L"終了済みプロセスの履歴を消去しますか？", L"Are you sure you want to clear finished process history?", L"¿Seguro que desea borrar el historial de procesos finalizados?"),
+                        Tr(L"履歴消去の確認", L"Confirm Clear", L"Confirmar borrado"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
                     st->pm->ClearFinished();
                     RefreshDashboardData(st);
                 }
