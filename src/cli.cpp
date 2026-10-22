@@ -418,6 +418,7 @@ void PrintProcessDetails(const std::string& procJson, const std::string& indent 
     std::string command = JsonGetString(procJson, "command", "");
     std::string cwd = JsonGetString(procJson, "cwd", "");
     std::string start = JsonGetString(procJson, "start_time", "");
+    std::string end = JsonGetString(procJson, "end_time", "");
     std::string cpu = JsonGetString(procJson, "cpu_time_str", "");
     std::string logFile = JsonGetString(procJson, "log_file", "");
     std::string doneFile = JsonGetString(procJson, "done_file", "");
@@ -426,6 +427,7 @@ void PrintProcessDetails(const std::string& procJson, const std::string& indent 
     if (!command.empty()) std::cout << indent << "cmd : " << command << "\n";
     if (!cwd.empty()) std::cout << indent << "cwd : " << cwd << "\n";
     if (!start.empty()) std::cout << indent << "start: " << start << "\n";
+    if (!end.empty()) std::cout << indent << "end  : " << end << "\n";
     if (!cpu.empty()) std::cout << indent << "cpu  : " << cpu << "\n";
     if (!logFile.empty()) std::cout << indent << "log : " << logFile << "\n";
     if (!doneFile.empty()) std::cout << indent << "done: " << doneFile << "\n";

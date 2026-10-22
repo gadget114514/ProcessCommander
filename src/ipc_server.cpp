@@ -17,6 +17,7 @@ std::string SnapshotToJson(const ProcessSnapshot& s) {
         << "\"pid\":" << s.rootPid << ","
         << "\"exit_code\":" << s.exitCode << ","
         << "\"start_time\":\"" << JsonEscape(s.startTimeStr) << "\","
+        << "\"end_time\":\"" << JsonEscape(s.endTimeStr) << "\","
         << "\"elapsed_ms\":" << s.elapsedMs << ","
         << "\"elapsed_str\":\"" << JsonEscape(FormatDurationSec(s.elapsedMs)) << "\","
         << "\"cpu_time_ms\":" << s.cpuTimeMs << ","

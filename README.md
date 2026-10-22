@@ -14,7 +14,7 @@
 - **6 Top KPI Summary Cards**: Real-time metrics for Total Terminals, Active Running, Waiting/Idle (no output or CPU activity for `>= 10s`), Completed (`Exit 0`), Failed/Killed, and Total Job Object Memory & Process Count.
 - **Sortable Process Summary Table (Newest on Top)**:
   - Newly launched processes are automatically added to the **top of the list** (`ID ▼` descending by default).
-  - Click **any column header** (`ID`, `Agent / Name`, `Status`, `Start Time`, `Uptime`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`) to toggle **Ascending (`▲`) / Descending (`▼`)** sort order.
+  - Click **any column header** (`ID`, `Agent / Name`, `Status`, `Start Time`, `End Time`, `Uptime`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`) to toggle **Ascending (`▲`) / Descending (`▼`)** sort order.
   - **CPU-Aware Idle Detection**: While a process's CPU time keeps increasing, it stays `RUNNING` instead of being shown as `IDLE / WAITING`, and it is not killed by `--idle-timeout`. CPU time includes all processes in the Win32 Job Object tree.
 - **Tab-Switched Full-Size Direct2D Terminal (`>= 80x25`)**:
   - Embedded hardware-accelerated Direct2D / DirectWrite / IME / Sixel VT terminal emulator (`TerminalView` + `ConPtySession`).
@@ -27,14 +27,14 @@
 
 ### 2. Multi-Shell Launcher & `[Config]` Dialog (`cmd` / `powershell` / `bash`)
 - Click **`[+ Launch (...)]`** on the toolbar to immediately spawn a new interactive ConPTY terminal tab.
-- Click **`[Config]`** to select the default shell (`cmd`, `powershell`, or `bash` — auto-detecting Git Bash / WSL Bash), customize startup command lines, or launch any shell on the spot. Settings are persisted in `logs/config.json`.
+- Open **`[Settings]`** → **`[Shell Config...]`** to select the default shell (`cmd`, `powershell`, or `bash` — auto-detecting Git Bash / WSL Bash), customize startup command lines, or launch any shell on the spot. Settings are persisted in `logs/config.json`.
 
 ![Shell Config Dialog](docs/images/config_dialog.png)
 
 ### 3. History Management & Task Details Dialog
 - **`[終了履歴を消去 (Clear Ended)]`**: Deletes all completed/killed/failed process entries from history and updates `logs/processes_state.json`.
 - **`[終了履歴を非表示 (Hide Ended)]`**: Toggles hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
-- **`[Reset IDs]`**: Renumbers finished processes sequentially from `#1` and resets the next process ID. All running processes must be stopped first.
+- **`[Reset Process IDs]`** (Settings dialog): Renumbers finished processes sequentially from `#1` and resets the next process ID. All running processes must be stopped first.
 - **Right-Click Context Menu & Task Details Dialog**: Right-click any process row or terminal tab (or double-click a row) to inspect the full command line, working directory, PID/Job metrics, log file path, `.done` file path, and output preview, or copy the command line to the clipboard.
 
 ### 4. System Tray Integration
@@ -48,6 +48,15 @@
 
 ### 6. Reliable Win32 Job Object Process Tree Control
 - Each process runs inside a dedicated Win32 `Job Object` (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), tracking all child/grandchild processes and memory usage and guaranteeing clean tree termination on `kill`, `--timeout`, or `--idle-timeout`.
+
+### 7. Settings Dialog, Theme & Localization
+- Click **`[Settings]`** to open the settings dialog.
+- **Language**: switch between **日本語 / English / Español** buttons; the dashboard, dialogs, menus, and status bar update immediately.
+- **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, or **High Contrast**. Buttons, list headers, scrollbars, and tab labels follow the dark theme.
+- **`[Shell Config...]`** and **`[Reset Process IDs]`** are available here (previously toolbar buttons).
+- Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
+
+![Settings Dialog](docs/images/settings_dialog.png)
 
 ---
 

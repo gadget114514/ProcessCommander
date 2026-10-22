@@ -15,7 +15,7 @@
   - 管理ターミナル総数、稼働中 (`ACTIVE RUNNING`)、入力待ち/アイドル (`WAITING / IDLE >= 10s`、出力もCPU消費もない場合)、正常完了 (`COMPLETED`)、失敗/強制終了 (`FAILED / KILLED`)、および全 Job Object の合計プロセス数・合計メモリ使用量をリアルタイム表示。
 - **全プロセス状況リスト（新しい順・全カラムソート対応）**:
   - 新しく起動したプロセスほど**リストの一番上**に追加されます（デフォルト: `ID ▼` 降順）。
-  - リスト上部の**任意のカラムヘッダ**（`ID`, `Agent / Name`, `Status`, `Start Time (起動時刻)`, `Uptime (稼働時間)`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`）をクリックすると、**昇順 (`▲`) / 降順 (`▼`)** で自在にソートを切り替えられます。
+  - リスト上部の**任意のカラムヘッダ**（`ID`, `Agent / Name`, `Status`, `Start Time (起動時刻)`, `End Time (終了時刻)`, `Uptime (稼働時間)`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`）をクリックすると、**昇順 (`▲`) / 降順 (`▼`)** で自在にソートを切り替えられます。
   - **CPU 消費を考慮したアイドル判定**: CPU 時間が増え続けているプロセスは `RUNNING` として扱い、`IDLE / WAITING` 表示にせず、`--idle-timeout` の対象にもしません。CPU 時間は Win32 Job Object ツリー全体の合計です。
 - **タブ切り替え式フルサイズ Direct2D ターミナル (`80桁×25行以上保証`)**:
   - Direct2D / DirectWrite / IME / Sixel 対応のフル VT ターミナルエミュレータ（`TerminalView` + `ConPtySession`）を搭載。
@@ -28,7 +28,7 @@
 
 ### 2. `[Config]` ボタンによるシェル起動設定 (`cmd` / `powershell` / `bash`)
 - ツールバーの **`[+ Launch (...)]`** ボタンで、設定中のデフォルトシェルを即座に ConPTY タブとして起動します。
-- 隣の **`[Config]`** ボタンをクリックするとシェル設定ダイアログが開き、**`cmd`** (`cmd.exe`)、**`powershell`** (`powershell.exe`)、**`bash`** (`Git Bash` / `WSL`) のデフォルト切り替え・起動コマンドの編集・その場での個別起動が可能です（設定は `logs/config.json` に永続化されます）。
+- **`[設定]`** → **`[シェル構成...]`** からシェル設定ダイアログを開き、**`cmd`** (`cmd.exe`)、**`powershell`** (`powershell.exe`)、**`bash`** (`Git Bash` / `WSL`) のデフォルト切り替え・起動コマンドの編集・その場での個別起動が可能です（設定は `logs/config.json` に永続化されます）。
 
 ![Shell Config Dialog](docs/images/config_dialog.png)
 
@@ -46,6 +46,15 @@
 - **プロセス別リアルタイムログ**: すべてのプロセスの出力は `logs/proc_<id>_<name>_<YYYYMMDD_HHMMSS>.log`（または `--log-file <path>`）にリアルタイム保存されます。
 - **完了検知用 `.done` マーカーファイル**: プロセス終了時に `logs/proc_<id>.done`（または `--done-file <path>`）へ終了コード・稼働時間・ログパスを含む JSON をアトミックに出力します。Claude 等からファイルの存在チェックだけで確実に終了を検知できます。
 - **再起動時の状態復元**: プロセス一覧と終了履歴は `logs/processes_state.json` に自動保存され、次回起動時に復元されます。
+
+### 6. 設定ダイアログ・テーマ・ローカライゼーション
+- **`[設定]`** ボタンで設定ダイアログを開きます。
+- **言語**: **日本語 / English / Español** ボタンで即座に切り替え。ダッシュボード、ダイアログ、メニュー、ステータスバーが連動します。
+- **テーマ (色)**: **Windows**（既定。Windows のライト/ダークモードと個人設定のアクセントカラーに追従）、**ダーク**、**ライト**、**ハイコントラスト** から選択。ボタン、リストヘッダ、スクロールバー、タブラベルもダークテーマに追従します。
+- **`[シェル構成...]`** と **`[プロセスIDをリセット]`** は設定ダイアログ内に移動しました（旧ツールバーボタン）。
+- 設定・言語・テーマ・リスト/ターミナルの表示状態・レイアウトは `logs/config.json` に自動保存され、次回起動時に復元されます。
+
+![設定ダイアログ](docs/images/settings_dialog.png)
 
 ---
 

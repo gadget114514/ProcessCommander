@@ -5,6 +5,8 @@
 #include <commctrl.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <dwmapi.h>
+#include <uxtheme.h>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -55,26 +57,213 @@ static HICON LoadAppSmallIcon() {
     return hIcon ? hIcon : LoadIconW(nullptr, IDI_APPLICATION);
 }
 
-static bool UseEnglishUi() {
-    static const bool english = [] {
-        wchar_t buf[16] = {};
-        DWORD n = GetEnvironmentVariableW(L"PC_UI_LANG", buf, 16);
-        if (n > 0) return _wcsnicmp(buf, L"en", 2) == 0;
-        return PRIMARYLANGID(GetUserDefaultUILanguage()) != LANG_JAPANESE;
-    }();
-    return english;
+enum class UiLanguage { Japanese, English, Spanish };
+enum class UiTheme { System, Dark, Light, HighContrast };
+
+struct ThemeColors {
+    COLORREF windowBg;
+    COLORREF panel;
+    COLORREF border;
+    COLORREF text;
+    COLORREF muted;
+    COLORREF accent;
+    COLORREF terminalBg;
+    COLORREF emptyBg;
+    COLORREF listText;
+    COLORREF rowRunning;
+    COLORREF rowIdle;
+    COLORREF rowCompleted;
+    COLORREF rowFailed;
+};
+
+static UiLanguage g_uiLanguage = UiLanguage::English;
+static UiTheme g_uiTheme = UiTheme::System;
+static ThemeColors g_theme = {};
+static HBRUSH g_dialogBgBrush = nullptr;
+
+static UiLanguage DetectDefaultLanguage() {
+    wchar_t buf[16] = {};
+    DWORD n = GetEnvironmentVariableW(L"PC_UI_LANG", buf, 16);
+    if (n > 0) {
+        if (_wcsnicmp(buf, L"ja", 2) == 0) return UiLanguage::Japanese;
+        if (_wcsnicmp(buf, L"es", 2) == 0) return UiLanguage::Spanish;
+        return UiLanguage::English;
+    }
+    switch (PRIMARYLANGID(GetUserDefaultUILanguage())) {
+        case LANG_JAPANESE: return UiLanguage::Japanese;
+        case LANG_SPANISH:  return UiLanguage::Spanish;
+        default:            return UiLanguage::English;
+    }
 }
 
-static const wchar_t* Tr(const wchar_t* ja, const wchar_t* en) {
-    return UseEnglishUi() ? en : ja;
+static bool IsSystemDarkMode() {
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            0, KEY_READ, &key) == ERROR_SUCCESS) {
+        RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr,
+                         reinterpret_cast<LPBYTE>(&value), &size);
+        RegCloseKey(key);
+    }
+    return value == 0;
+}
+
+static COLORREF GetSystemAccentColor() {
+    DWORD color = 0;
+    BOOL opaque = FALSE;
+    if (SUCCEEDED(DwmGetColorizationColor(&color, &opaque))) {
+        return RGB((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
+    }
+    return GetSysColor(COLOR_HIGHLIGHT);
+}
+
+static ThemeColors ThemeFor(UiTheme theme) {
+    switch (theme) {
+        case UiTheme::System: {
+            ThemeColors base = ThemeFor(IsSystemDarkMode() ? UiTheme::Dark : UiTheme::Light);
+            base.accent = GetSystemAccentColor();
+            return base;
+        }
+        case UiTheme::Light:
+            return {
+                RGB(241, 245, 249), RGB(255, 255, 255), RGB(203, 213, 225),
+                RGB(15, 23, 42), RGB(71, 85, 105), RGB(2, 132, 199),
+                RGB(15, 23, 42), RGB(226, 232, 240), RGB(15, 23, 42),
+                RGB(220, 252, 231), RGB(254, 243, 199), RGB(219, 234, 254), RGB(254, 226, 226)
+            };
+        case UiTheme::HighContrast:
+            return {
+                RGB(0, 0, 0), RGB(20, 20, 20), RGB(255, 255, 255),
+                RGB(255, 255, 255), RGB(220, 220, 220), RGB(255, 255, 0),
+                RGB(0, 0, 0), RGB(0, 0, 0), RGB(255, 255, 255),
+                RGB(0, 40, 0), RGB(50, 40, 0), RGB(0, 20, 50), RGB(50, 0, 0)
+            };
+        case UiTheme::Dark:
+        default:
+            return {
+                RGB(2, 6, 14), RGB(8, 14, 24), RGB(30, 41, 59),
+                RGB(248, 250, 252), RGB(148, 163, 184), RGB(56, 189, 248),
+                RGB(0, 0, 0), RGB(4, 8, 14), RGB(255, 255, 255),
+                RGB(6, 40, 26), RGB(50, 38, 8), RGB(10, 28, 55), RGB(55, 14, 18)
+            };
+    }
+}
+
+static void ApplyTheme() {
+    g_theme = ThemeFor(g_uiTheme);
+    if (g_dialogBgBrush) {
+        DeleteObject(g_dialogBgBrush);
+    }
+    g_dialogBgBrush = CreateSolidBrush(g_theme.panel);
+}
+static bool IsDarkThemeActive() {
+    return g_uiTheme == UiTheme::Dark || g_uiTheme == UiTheme::HighContrast ||
+           (g_uiTheme == UiTheme::System && IsSystemDarkMode());
+}
+
+using SetPreferredAppModeFn = int(WINAPI*)(int);
+using AllowDarkModeForWindowFn = BOOL(WINAPI*)(HWND, BOOL);
+
+static void ApplyDarkModeApi(HWND hwnd, bool dark) {
+    static bool initialized = false;
+    static SetPreferredAppModeFn setPreferredAppMode = nullptr;
+    static AllowDarkModeForWindowFn allowDarkModeForWindow = nullptr;
+    if (!initialized) {
+        HMODULE ux = LoadLibraryW(L"uxtheme.dll");
+        if (ux) {
+            setPreferredAppMode = reinterpret_cast<SetPreferredAppModeFn>(
+                GetProcAddress(ux, MAKEINTRESOURCEA(135)));
+            allowDarkModeForWindow = reinterpret_cast<AllowDarkModeForWindowFn>(
+                GetProcAddress(ux, MAKEINTRESOURCEA(133)));
+        }
+        initialized = true;
+    }
+    if (setPreferredAppMode) setPreferredAppMode(dark ? 2 : 3);
+    if (allowDarkModeForWindow && hwnd) allowDarkModeForWindow(hwnd, dark ? TRUE : FALSE);
+}
+
+static void ApplyNativeControlTheme(HWND hwnd, bool dark) {
+    if (!hwnd) return;
+    ApplyDarkModeApi(hwnd, dark);
+    SetWindowTheme(hwnd, dark ? L"DarkMode_Explorer" : L"", dark ? L"DarkMode_Explorer" : L"");
+}
+
+static void ApplyNativeThemeToWindow(HWND hwnd) {
+    if (!hwnd) return;
+    bool dark = IsDarkThemeActive();
+    BOOL darkFlag = dark ? TRUE : FALSE;
+    DwmSetWindowAttribute(hwnd, 20, &darkFlag, sizeof(darkFlag));
+    DwmSetWindowAttribute(hwnd, 19, &darkFlag, sizeof(darkFlag));
+    ApplyNativeControlTheme(hwnd, dark);
+    for (HWND child = GetWindow(hwnd, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        ApplyNativeControlTheme(child, dark);
+        if (GetWindow(child, GW_CHILD)) {
+            for (HWND grand = GetWindow(child, GW_CHILD); grand; grand = GetWindow(grand, GW_HWNDNEXT)) {
+                ApplyNativeControlTheme(grand, dark);
+            }
+        }
+    }
+}
+
+static LRESULT CALLBACK TabSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                        UINT_PTR, DWORD_PTR) {
+    if (msg == WM_ERASEBKGND) {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        RECT rc = {};
+        GetClientRect(hwnd, &rc);
+        HBRUSH brush = CreateSolidBrush(g_theme.windowBg);
+        FillRect(hdc, &rc, brush);
+        DeleteObject(brush);
+        return 1;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+
+static const wchar_t* Tr(const wchar_t* ja, const wchar_t* en, const wchar_t* es = nullptr) {
+    if (g_uiLanguage == UiLanguage::Spanish) return es ? es : en;
+    if (g_uiLanguage == UiLanguage::English) return en;
+    return ja;
+}
+
+static const char* LanguageCode(UiLanguage lang) {
+    switch (lang) {
+        case UiLanguage::Japanese: return "ja";
+        case UiLanguage::Spanish:  return "es";
+        default:                   return "en";
+    }
+}
+
+static UiLanguage ParseLanguage(const std::string& code) {
+    if (code == "ja") return UiLanguage::Japanese;
+    if (code == "es") return UiLanguage::Spanish;
+    if (code == "en") return UiLanguage::English;
+    return DetectDefaultLanguage();
+}
+
+static const char* ThemeCode(UiTheme theme) {
+    switch (theme) {
+        case UiTheme::Dark:         return "dark";
+        case UiTheme::Light:        return "light";
+        case UiTheme::HighContrast: return "high_contrast";
+        default:                    return "system";
+    }
+}
+static UiTheme ParseTheme(const std::string& code) {
+    if (code == "dark") return UiTheme::Dark;
+    if (code == "light") return UiTheme::Light;
+    if (code == "high_contrast") return UiTheme::HighContrast;
+    return UiTheme::System;
 }
 
 // Compact dashboard header / splitter layout constants
 constexpr int kHeaderKpiTop      = 6;
-constexpr int kHeaderKpiBottom   = 64;
-constexpr int kToolbarTop        = 68;
+constexpr int kHeaderKpiBottom   = 54;
+constexpr int kToolbarTop        = 58;
 constexpr int kToolbarH          = 24;
-constexpr int kListTop           = 96;
+constexpr int kListTop           = 86;
 constexpr int kSplitterH         = 6;
 constexpr int kTabH              = 26;
 constexpr int kStatusBarH        = 26;
@@ -90,11 +279,19 @@ enum ControlId {
     IDC_BTN_GRID_VIEW = 1015,
     IDC_TAB_TERMINALS = 1016,
     IDC_BTN_HIDE_TRAY = 1017,
-    IDC_BTN_CONFIG = 1018,
     IDC_BTN_HIDE_ENDED = 1019,
     IDC_BTN_TOGGLE_LIST = 1020,
     IDC_BTN_TOGGLE_TERM = 1021,
-    IDC_BTN_RESET_IDS = 1022,
+    IDC_BTN_SETTINGS = 1023,
+    IDC_SET_LANG_JA = 6001,
+    IDC_SET_LANG_EN = 6002,
+    IDC_SET_LANG_ES = 6003,
+    IDC_SET_THEME_SYSTEM = 6010,
+    IDC_SET_THEME_DARK = 6011,
+    IDC_SET_THEME_LIGHT = 6012,
+    IDC_SET_THEME_HC = 6013,
+    IDC_SET_SHELL_CONFIG = 6022,
+    IDC_SET_RESET_IDS = 6021,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -128,7 +325,7 @@ struct DashboardState {
 
     HWND hwndMain = nullptr;
     HWND hwndBtnStart = nullptr;
-    HWND hwndBtnConfig = nullptr;
+    HWND hwndBtnSettings = nullptr;
     HWND hwndBtnKillSel = nullptr;
     HWND hwndBtnKillAll = nullptr;
     HWND hwndBtnClear = nullptr;
@@ -137,9 +334,11 @@ struct DashboardState {
     HWND hwndBtnHideTray = nullptr;
     HWND hwndBtnToggleList = nullptr;
     HWND hwndBtnToggleTerm = nullptr;
-    HWND hwndBtnResetIds = nullptr;
     HWND hwndList = nullptr;
     HWND hwndTab = nullptr;
+    HWND hwndKpiTip = nullptr;
+    RECT kpiCardRects[6] = {};
+    std::wstring kpiTipText[6];
 
     bool hideProcessList = false;
     bool hideTerminalGrid = false;
@@ -185,6 +384,20 @@ static DashboardState* GetState(HWND hwnd) {
     return reinterpret_cast<DashboardState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
 
+static std::wstring StateLabelWide(ProcState state, bool idleWarning) {
+    switch (state) {
+        case ProcState::Running:
+            return idleWarning ? Tr(L"アイドル / 待機", L"IDLE / WAITING", L"INACTIVO / ESPERANDO")
+                               : Tr(L"稼働中", L"RUNNING", L"EN EJECUCIÓN");
+        case ProcState::Completed:    return Tr(L"完了 (OK)", L"COMPLETED (OK)", L"COMPLETADO (OK)");
+        case ProcState::Failed:       return Tr(L"失敗", L"FAILED", L"FALLIDO");
+        case ProcState::TimedOut:     return Tr(L"タイムアウト", L"TIMEOUT", L"TIEMPO AGOTADO");
+        case ProcState::IdleTimedOut: return Tr(L"ハングタイムアウト", L"HANG TIMEOUT", L"TIEMPO DE INACTIVIDAD");
+        case ProcState::Killed:       return Tr(L"強制終了", L"KILLED", L"TERMINADO");
+    }
+    return Tr(L"不明", L"UNKNOWN", L"DESCONOCIDO");
+}
+
 static COLORREF GetStateBadgeColor(const ProcessSnapshot& s) {
     switch (s.state) {
         case ProcState::Running:
@@ -203,22 +416,22 @@ static COLORREF GetStateBadgeColor(const ProcessSnapshot& s) {
 static COLORREF GetStateRowBgColor(const ProcessSnapshot& s) {
     switch (s.state) {
         case ProcState::Running:
-            return (s.idleMs >= 10000) ? RGB(254, 243, 199) : RGB(220, 252, 231);
+            return (s.idleMs >= 10000) ? g_theme.rowIdle : g_theme.rowRunning;
         case ProcState::Completed:
-            return RGB(239, 246, 255);
+            return g_theme.rowCompleted;
         case ProcState::Failed:
         case ProcState::TimedOut:
         case ProcState::IdleTimedOut:
         case ProcState::Killed:
-            return RGB(254, 226, 226);
+            return g_theme.rowFailed;
     }
-    return RGB(255, 255, 255);
+    return g_theme.panel;
 }
 
 static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std::wstring& value,
-                        const std::wstring& subtext, COLORREF accentColor, HFONT hFontUi, HFONT hFontKpiVal) {
-    HBRUSH bgBrush = CreateSolidBrush(RGB(30, 41, 59));
-    HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(51, 65, 85));
+                        COLORREF accentColor, HFONT hFontUi, HFONT hFontKpiVal) {
+    HBRUSH bgBrush = CreateSolidBrush(g_theme.panel);
+    HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
     HGDIOBJ oldBrush = SelectObject(hdc, bgBrush);
     HGDIOBJ oldPen = SelectObject(hdc, borderPen);
     RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 8, 8);
@@ -235,21 +448,56 @@ static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std
     SetBkMode(hdc, TRANSPARENT);
 
     RECT rcTitle = {rc.left + 10, rc.top + 4, rc.right - 6, rc.top + 19};
-    SetTextColor(hdc, RGB(148, 163, 184));
+    SetTextColor(hdc, g_theme.muted);
     HGDIOBJ oldFont = SelectObject(hdc, hFontUi);
     DrawTextW(hdc, title, -1, &rcTitle, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-    RECT rcVal = {rc.left + 10, rc.top + 18, rc.right - 6, rc.top + 43};
-    SetTextColor(hdc, RGB(248, 250, 252));
+    RECT rcVal = {rc.left + 10, rc.top + 17, rc.right - 6, rc.bottom - 2};
+    SetTextColor(hdc, g_theme.text);
     SelectObject(hdc, hFontKpiVal);
     DrawTextW(hdc, value.c_str(), -1, &rcVal, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-    RECT rcSub = {rc.left + 10, rc.top + 41, rc.right - 6, rc.bottom - 2};
-    SetTextColor(hdc, accentColor);
-    SelectObject(hdc, hFontUi);
-    DrawTextW(hdc, subtext.c_str(), -1, &rcSub, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-
     SelectObject(hdc, oldFont);
+}
+
+static void UpdateKpiTooltips(DashboardState* st, uint32_t totalTreeProcs) {
+    if (!st || !st->hwndKpiTip) return;
+    st->kpiTipText[0] = Tr(
+        L"管理対象のターミナル/プロセスの総数。",
+        L"Total number of managed terminals/processes.",
+        L"Total de terminales/procesos gestionados.");
+    st->kpiTipText[1] = Tr(
+        L"出力またはCPU消費がある実行中プロセス。",
+        L"Running processes that are producing output or consuming CPU.",
+        L"Procesos en ejecución que producen salida o consumen CPU.");
+    st->kpiTipText[2] = Tr(
+        L"10秒以上、出力もCPU消費もない実行中プロセス。",
+        L"Running processes with no output or CPU activity for 10 seconds or more.",
+        L"Procesos en ejecución sin salida ni CPU durante 10 s o más.");
+    st->kpiTipText[3] = Tr(
+        L"正常終了したプロセス (終了コード 0)。",
+        L"Processes that exited successfully (exit code 0).",
+        L"Procesos finalizados correctamente (código 0).");
+    st->kpiTipText[4] = Tr(
+        L"失敗・タイムアウト・強制終了したプロセス。",
+        L"Processes that failed, timed out, or were killed.",
+        L"Procesos fallidos, agotados o terminados.");
+    st->kpiTipText[5] = Tr(
+        L"全 Job Object の合計メモリとプロセス数: ",
+        L"Memory and process count across all Job Objects: ",
+        L"Memoria y procesos de todos los Job Objects: ") +
+        std::to_wstring(totalTreeProcs) + Tr(L" プロセス", L" processes", L" procesos");
+
+    for (int i = 0; i < 6; ++i) {
+        TOOLINFOW ti = {};
+        ti.cbSize = sizeof(ti);
+        ti.hwnd = st->hwndMain;
+        ti.uId = static_cast<UINT_PTR>(i + 1);
+        ti.rect = st->kpiCardRects[i];
+        ti.lpszText = const_cast<wchar_t*>(st->kpiTipText[i].c_str());
+        SendMessageW(st->hwndKpiTip, TTM_NEWTOOLRECTW, ti.uId, reinterpret_cast<LPARAM>(&ti.rect));
+        SendMessageW(st->hwndKpiTip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
+    }
 }
 
 // Position the active tab's TerminalView Direct2D child window inside rcTerminalArea
@@ -259,7 +507,8 @@ static void LayoutTerminalViews(DashboardState* st) {
 
     g_appTabs.clear();
     std::vector<ProcessSnapshot> termProcs;
-    int activeTabIdx = 0;
+    int activeTabIdx = -1;
+    bool foundSelected = false;
 
     for (const auto& s : st->cachedSnapshots) {
         if (s.terminalHwnd && IsWindow(s.terminalHwnd)) {
@@ -273,14 +522,22 @@ static void LayoutTerminalViews(DashboardState* st) {
 
             if (s.id == st->selectedProcId) {
                 activeTabIdx = static_cast<int>(g_appTabs.size()) - 1;
+                foundSelected = true;
             }
             termProcs.push_back(s);
         }
     }
 
     if (!g_appTabs.empty()) {
-        g_activeAppTab = activeTabIdx;
-        st->selectedProcId = static_cast<int>(reinterpret_cast<intptr_t>(g_appTabs[g_activeAppTab].data));
+        if (foundSelected) {
+            g_activeAppTab = activeTabIdx;
+        } else if (st->selectedProcId <= 0) {
+            g_activeAppTab = 0;
+            st->selectedProcId = static_cast<int>(reinterpret_cast<intptr_t>(g_appTabs[g_activeAppTab].data));
+        } else if (g_activeAppTab < 0 || g_activeAppTab >= static_cast<int>(g_appTabs.size())) {
+            // Keep the current terminal when the selected process has no TerminalView.
+            g_activeAppTab = 0;
+        }
     } else {
         g_activeAppTab = 0;
     }
@@ -377,7 +634,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
     HBITMAP hbm = CreateCompatibleBitmap(hdcWindow, width, height);
     HGDIOBJ oldBm = SelectObject(hdc, hbm);
 
-    HBRUSH bgBrush = CreateSolidBrush(RGB(15, 23, 42));
+    HBRUSH bgBrush = CreateSolidBrush(g_theme.windowBg);
     FillRect(hdc, &rcClient, bgBrush);
     DeleteObject(bgBrush);
 
@@ -418,39 +675,40 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
         rcCard.right = (i == numCards - 1) ? (width - kpiMargin) : (rcCard.left + cardW);
         rcCard.top = cardTop;
         rcCard.bottom = cardBottom;
+        st->kpiCardRects[i] = rcCard;
 
         if (i == 0) {
-            DrawKpiCard(hdc, rcCard, L"TOTAL TERMINALS", std::to_wstring(totalCount),
-                        L"Direct2D TerminalView + ConPTY", RGB(148, 163, 184), st->hFontUi, st->hFontKpiVal);
+            DrawKpiCard(hdc, rcCard, Tr(L"総ターミナル数", L"TOTAL TERMINALS", L"TERMINALES TOTALES"), std::to_wstring(totalCount),
+                        RGB(148, 163, 184), st->hFontUi, st->hFontKpiVal);
         } else if (i == 1) {
-            DrawKpiCard(hdc, rcCard, L"ACTIVE RUNNING", std::to_wstring(activeRunning),
-                        L"Receiving live PTY stream", RGB(34, 197, 94), st->hFontUi, st->hFontKpiVal);
+            DrawKpiCard(hdc, rcCard, Tr(L"稼働中", L"ACTIVE RUNNING", L"EN EJECUCIÓN"), std::to_wstring(activeRunning),
+                        RGB(34, 197, 94), st->hFontUi, st->hFontKpiVal);
         } else if (i == 2) {
-            DrawKpiCard(hdc, rcCard, L"WAITING / IDLE", std::to_wstring(idleWaiting),
-                        L"Quiet >= 10s (Waiting input)", RGB(245, 158, 11), st->hFontUi, st->hFontKpiVal);
+            DrawKpiCard(hdc, rcCard, Tr(L"待機 / アイドル", L"WAITING / IDLE", L"ESPERANDO / INACTIVO"), std::to_wstring(idleWaiting),
+                        RGB(245, 158, 11), st->hFontUi, st->hFontKpiVal);
         } else if (i == 3) {
-            DrawKpiCard(hdc, rcCard, L"COMPLETED (OK)", std::to_wstring(completedOk),
-                        L"Exit code 0", RGB(59, 130, 246), st->hFontUi, st->hFontKpiVal);
+            DrawKpiCard(hdc, rcCard, Tr(L"完了 (OK)", L"COMPLETED (OK)", L"COMPLETADO (OK)"), std::to_wstring(completedOk),
+                        RGB(59, 130, 246), st->hFontUi, st->hFontKpiVal);
         } else if (i == 4) {
-            DrawKpiCard(hdc, rcCard, L"FAILED / KILLED", std::to_wstring(failedOrKilled),
-                        L"Error / Timeout / Kill", RGB(239, 68, 68), st->hFontUi, st->hFontKpiVal);
+            DrawKpiCard(hdc, rcCard, Tr(L"失敗 / 強制終了", L"FAILED / KILLED", L"FALLIDO / TERMINADO"), std::to_wstring(failedOrKilled),
+                        RGB(239, 68, 68), st->hFontUi, st->hFontKpiVal);
         } else if (i == 5) {
             std::wstring memStr = Utf8ToWide(FormatBytes(totalMemBytes));
-            std::wstring sub = std::to_wstring(totalTreeProcs) + L" processes in Job Objects";
-            DrawKpiCard(hdc, rcCard, L"TOTAL JOB MEMORY", memStr,
-                        sub, RGB(168, 85, 247), st->hFontUi, st->hFontKpiVal);
+            DrawKpiCard(hdc, rcCard, Tr(L"合計ジョブメモリ", L"TOTAL JOB MEMORY", L"MEMORIA TOTAL"), memStr,
+                        RGB(168, 85, 247), st->hFontUi, st->hFontKpiVal);
         }
     }
+    UpdateKpiTooltips(st, totalTreeProcs);
 
     // Draggable splitter between the process list and the terminal area
     if (st->rcSplitter.bottom > st->rcSplitter.top) {
-        HBRUSH spBrush = CreateSolidBrush(st->splitterDragging ? RGB(51, 65, 85) : RGB(30, 41, 59));
+        HBRUSH spBrush = CreateSolidBrush(st->splitterDragging ? g_theme.border : g_theme.panel);
         FillRect(hdc, &st->rcSplitter, spBrush);
         DeleteObject(spBrush);
 
         int gripY = (st->rcSplitter.top + st->rcSplitter.bottom) / 2;
         int gripCx = (st->rcSplitter.left + st->rcSplitter.right) / 2;
-        HPEN gripPen = CreatePen(PS_SOLID, 1, st->splitterDragging ? RGB(56, 189, 248) : RGB(100, 116, 139));
+        HPEN gripPen = CreatePen(PS_SOLID, 1, st->splitterDragging ? g_theme.accent : g_theme.muted);
         HGDIOBJ oldGripPen = SelectObject(hdc, gripPen);
         for (int dx = -14; dx <= 14; dx += 14) {
             MoveToEx(hdc, gripCx + dx - 5, gripY, nullptr);
@@ -461,24 +719,26 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
     }
 
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(203, 213, 225));
+    SetTextColor(hdc, g_theme.text);
     HGDIOBJ oldFont = SelectObject(hdc, st->hFontUiBold);
 
     // 2. Draw Headers & Borders around the active TerminalView tab
     if (st->termBanners.empty()) {
         if (st->rcTerminalArea.bottom > st->rcTerminalArea.top) {
             RECT rcEmpty = st->rcTerminalArea;
-            HBRUSH emptyBrush = CreateSolidBrush(RGB(17, 24, 39));
-            HPEN emptyPen = CreatePen(PS_SOLID, 1, RGB(51, 65, 85));
+            HBRUSH emptyBrush = CreateSolidBrush(g_theme.emptyBg);
+            HPEN emptyPen = CreatePen(PS_SOLID, 1, g_theme.border);
             SelectObject(hdc, emptyBrush);
             SelectObject(hdc, emptyPen);
             RoundRect(hdc, rcEmpty.left, rcEmpty.top, rcEmpty.right, rcEmpty.bottom, 6, 6);
             DeleteObject(emptyBrush);
             DeleteObject(emptyPen);
 
-            SetTextColor(hdc, RGB(148, 163, 184));
+            SetTextColor(hdc, g_theme.muted);
             SelectObject(hdc, st->hFontUiBold);
-            DrawTextW(hdc, L"No active TerminalView sessions. Click [+ New Shell] above or start via Claude CLI / MCP.",
+            DrawTextW(hdc, Tr(L"アクティブな TerminalView がありません。[+ Launch] または Claude CLI / MCP から起動してください。",
+                                  L"No active TerminalView sessions. Click [+ New Shell] above or start via Claude CLI / MCP.",
+                                  L"No hay sesiones TerminalView activas. Use [+ Launch] o inicie desde Claude CLI / MCP."),
                       -1, &rcEmpty, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
     } else {
@@ -490,11 +750,11 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
             if (!snap) continue;
 
             bool isSelected = (snap->id == st->selectedProcId);
-            COLORREF borderCol = isSelected ? RGB(56, 189, 248) : RGB(51, 65, 85);
+            COLORREF borderCol = isSelected ? g_theme.accent : g_theme.border;
 
             // Outer frame around TerminalView
             HPEN framePen = CreatePen(PS_SOLID, isSelected ? 2 : 1, borderCol);
-            HBRUSH frameBrush = CreateSolidBrush(RGB(30, 41, 59));
+            HBRUSH frameBrush = CreateSolidBrush(g_theme.panel);
             SelectObject(hdc, framePen);
             SelectObject(hdc, frameBrush);
             Rectangle(hdc, tb.rcBorder.left, tb.rcBorder.top, tb.rcBorder.right, tb.rcBorder.bottom);
@@ -510,23 +770,23 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 
             SetTextColor(hdc, RGB(255, 255, 255));
             SelectObject(hdc, st->hFontUiBold);
-            std::wstring stateStr = ProcStateToDisplayWide(snap->state, snap->idleMs >= 10000);
+            std::wstring stateStr = StateLabelWide(snap->state, snap->idleMs >= 10000);
             DrawTextW(hdc, stateStr.c_str(), -1, &rcBadge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             // Title text on left of banner (includes Start Time & Uptime HH:MM:SS)
             std::wstringstream ss;
             ss << L"#" << snap->id << L" [" << Utf8ToWide(snap->name) << L"]  PID: " << snap->rootPid
                << L" (" << snap->treeProcessCount << L" procs, " << Utf8ToWide(FormatBytes(snap->treeMemoryBytes))
-               << L")  Start: " << Utf8ToWide(snap->startTimeStr)
-               << L"  Uptime: " << Utf8ToWide(FormatUptimeHMS(snap->elapsedMs))
+               << Tr(L")  開始: ", L")  Start: ", L")  Inicio: ") << Utf8ToWide(snap->startTimeStr)
+               << Tr(L"  稼働時間: ", L"  Uptime: ", L"  Tiempo activo: ") << Utf8ToWide(FormatUptimeHMS(snap->elapsedMs))
                << L"  —  " << Utf8ToWide(snap->commandLine);
             RECT rcTitle = {tb.rcBanner.left + 8, tb.rcBanner.top + 2, rcBadge.left - 8, tb.rcBanner.bottom - 2};
-            SetTextColor(hdc, isSelected ? RGB(56, 189, 248) : RGB(226, 232, 240));
+            SetTextColor(hdc, isSelected ? g_theme.accent : g_theme.text);
             DrawTextW(hdc, ss.str().c_str(), -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
             // Terminal viewport backing (used when PrintWindow captures parent GDI surface)
             RECT rcTv = {tb.rcBorder.left + 2, tb.rcBanner.bottom, tb.rcBorder.right - 2, tb.rcBorder.bottom - 2};
-            HBRUSH tvBrush = CreateSolidBrush(RGB(12, 16, 23));
+            HBRUSH tvBrush = CreateSolidBrush(g_theme.terminalBg);
             FillRect(hdc, &rcTv, tvBrush);
             DeleteObject(tvBrush);
             if (st->pm) {
@@ -538,7 +798,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                                                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                                       FIXED_PITCH | FF_MODERN, L"Consolas");
                         HGDIOBJ oldMono = SelectObject(hdc, hFontMono);
-                        SetTextColor(hdc, RGB(226, 232, 240));
+                        SetTextColor(hdc, g_theme.text);
                         RECT rcPad = {rcTv.left + 8, rcTv.top + 6, rcTv.right - 8, rcTv.bottom - 6};
                         DrawTextW(hdc, termText.c_str(), -1, &rcPad, DT_LEFT | DT_TOP | DT_NOPREFIX);
                         SelectObject(hdc, oldMono);
@@ -551,11 +811,11 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 
     // 3. Bottom Status Bar (replaces the old Send Input / Ctrl+C / Focus Term area)
     RECT rcSb = st->rcStatusBar;
-    HBRUSH sbBrush = CreateSolidBrush(RGB(30, 41, 59));
+    HBRUSH sbBrush = CreateSolidBrush(g_theme.panel);
     FillRect(hdc, &rcSb, sbBrush);
     DeleteObject(sbBrush);
 
-    HPEN sbTopPen = CreatePen(PS_SOLID, 1, RGB(51, 65, 85));
+    HPEN sbTopPen = CreatePen(PS_SOLID, 1, g_theme.border);
     SelectObject(hdc, sbTopPen);
     MoveToEx(hdc, rcSb.left, rcSb.top, nullptr);
     LineTo(hdc, rcSb.right, rcSb.top);
@@ -568,39 +828,39 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 
     std::wstringstream sbLeft;
     if (selSnap) {
-        sbLeft << L"Selected: #" << selSnap->id << L" [" << Utf8ToWide(selSnap->name) << L"]  |  "
-               << ProcStateToDisplayWide(selSnap->state, selSnap->idleMs >= 10000)
-               << L"  |  " << Tr(L"起動時刻(Start): ", L"Start: ") << Utf8ToWide(selSnap->startTimeStr)
-               << L"  |  " << Tr(L"稼働時間(Uptime): ", L"Uptime: ") << Utf8ToWide(FormatUptimeHMS(selSnap->elapsedMs));
+        sbLeft << Tr(L"選択: #", L"Selected: #", L"Seleccionado: #") << selSnap->id << L" [" << Utf8ToWide(selSnap->name) << L"]  |  "
+               << StateLabelWide(selSnap->state, selSnap->idleMs >= 10000)
+               << L"  |  " << Tr(L"開始: ", L"Start: ", L"Inicio: ") << Utf8ToWide(selSnap->startTimeStr)
+               << L"  |  " << Tr(L"稼働時間: ", L"Uptime: ", L"Tiempo activo: ") << Utf8ToWide(FormatUptimeHMS(selSnap->elapsedMs));
         if (!selSnap->logFilePath.empty()) {
-            sbLeft << L"  |  Log: " << Utf8ToWide(selSnap->logFilePath);
+            sbLeft << L"  |  " << Tr(L"ログ: ", L"Log: ", L"Registro: ") << Utf8ToWide(selSnap->logFilePath);
         }
         if (st->pm) {
             TerminalView* tv = st->pm->GetTerminalView(selSnap->id);
             if (tv && !tv->Title().empty()) {
-                sbLeft << L"  |  Title: " << tv->Title();
+                sbLeft << L"  |  " << Tr(L"タイトル: ", L"Title: ", L"Título: ") << tv->Title();
             }
         }
         if (st->termProgressState > 0) {
-            sbLeft << L"  |  Progress: " << st->termProgressValue << L"%";
+            sbLeft << L"  |  " << Tr(L"進捗: ", L"Progress: ", L"Progreso: ") << st->termProgressValue << L"%";
         }
     } else {
-        sbLeft << L"Ready — Logs saved to: " << GetLogsDirectoryWide();
+        sbLeft << Tr(L"待機 — ログ保存先: ", L"Ready — Logs saved to: ", L"Listo — Registros en: ") << GetLogsDirectoryWide();
     }
 
     uint64_t dashElapsedMs = GetNowTickMs() - st->dashboardStartTickMs;
     std::wstringstream sbRight;
-    sbRight << Tr(L"Dashboard 起動時刻: ", L"Dashboard Started: ") << Utf8ToWide(st->dashboardStartTimeStr)
-            << L"  |  " << Tr(L"稼働時間: ", L"Uptime: ") << Utf8ToWide(FormatUptimeHMS(dashElapsedMs))
+    sbRight << Tr(L"ダッシュボード起動: ", L"Dashboard Started: ", L"Panel iniciado: ") << Utf8ToWide(st->dashboardStartTimeStr)
+            << L"  |  " << Tr(L"稼働時間: ", L"Uptime: ", L"Tiempo activo: ") << Utf8ToWide(FormatUptimeHMS(dashElapsedMs))
             << L"  |  IPC: \\\\.\\pipe\\ProcessCommanderIPC";
 
     SelectObject(hdc, st->hFontUi);
     RECT rcSbRight = {rcSb.right - 520, rcSb.top + 2, rcSb.right - 10, rcSb.bottom - 2};
-    SetTextColor(hdc, RGB(148, 163, 184));
+    SetTextColor(hdc, g_theme.muted);
     DrawTextW(hdc, sbRight.str().c_str(), -1, &rcSbRight, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     RECT rcSbLeft = {rcSb.left + 10, rcSb.top + 2, rcSbRight.left - 12, rcSb.bottom - 2};
-    SetTextColor(hdc, RGB(226, 232, 240));
+    SetTextColor(hdc, g_theme.text);
     DrawTextW(hdc, sbLeft.str().c_str(), -1, &rcSbLeft, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     SelectObject(hdc, oldFont);
@@ -611,39 +871,26 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 }
 
 static const wchar_t* ColumnTitle(int index) {
-    static const wchar_t* const ja[11] = {
-        L"ID",
-        L"Agent / Name",
-        L"Status",
-        L"Start Time (起動時刻)",
-        L"Uptime (稼働時間)",
-        L"PID (Tree)",
-        L"Memory",
-        L"CPU Time",
-        L"Idle",
-        L"Latest Output Preview",
-        L"Command Line"
+    static const wchar_t* const ja[12] = {
+        L"ID", L"エージェント / 名前", L"状態", L"開始時刻", L"終了時刻", L"稼働時間",
+        L"PID (ツリー)", L"メモリ", L"CPU時間", L"アイドル", L"最新出力プレビュー", L"コマンドライン"
     };
-    static const wchar_t* const en[11] = {
-        L"ID",
-        L"Agent / Name",
-        L"Status",
-        L"Start Time",
-        L"Uptime",
-        L"PID (Tree)",
-        L"Memory",
-        L"CPU Time",
-        L"Idle",
-        L"Latest Output Preview",
-        L"Command Line"
+    static const wchar_t* const en[12] = {
+        L"ID", L"Agent / Name", L"Status", L"Start Time", L"End Time", L"Uptime",
+        L"PID (Tree)", L"Memory", L"CPU Time", L"Idle", L"Latest Output Preview", L"Command Line"
     };
-    return UseEnglishUi() ? en[index] : ja[index];
+    static const wchar_t* const es[12] = {
+        L"ID", L"Agente / Nombre", L"Estado", L"Hora de inicio", L"Hora de fin", L"Tiempo activo",
+        L"PID (Árbol)", L"Memoria", L"Tiempo de CPU", L"Inactivo", L"Última salida", L"Línea de comandos"
+    };
+    if (g_uiLanguage == UiLanguage::Spanish) return es[index];
+    if (g_uiLanguage == UiLanguage::English) return en[index];
+    return ja[index];
 }
-
 static void UpdateListHeaderSortIndicator(DashboardState* st) {
     if (!st || !st->hwndList) return;
     HWND hHeader = ListView_GetHeader(st->hwndList);
-    for (int i = 0; i < 11; ++i) {
+    for (int i = 0; i < 12; ++i) {
         std::wstring title = ColumnTitle(i);
         if (i == st->sortColumn) {
             title += st->sortAscending ? L" ▲" : L" ▼";
@@ -670,17 +917,21 @@ static void UpdateListHeaderSortIndicator(DashboardState* st) {
 static void UpdateHideEndedButtonLabel(DashboardState* st) {
     if (!st || !st->hwndBtnHideEnded) return;
     SetWindowTextW(st->hwndBtnHideEnded,
-        st->hideEndedProcesses ? Tr(L"終了履歴を表示 (Show Ended)", L"Show Ended")
-                               : Tr(L"終了履歴を非表示 (Hide Ended)", L"Hide Ended"));
+        st->hideEndedProcesses ? Tr(L"終了履歴を表示", L"Show Ended", L"Mostrar finalizados")
+                               : Tr(L"終了履歴を非表示", L"Hide Ended", L"Ocultar finalizados"));
 }
 
 static void UpdatePanelToggleLabels(DashboardState* st) {
     if (!st) return;
     if (st->hwndBtnToggleList) {
-        SetWindowTextW(st->hwndBtnToggleList, st->hideProcessList ? L"Show List" : L"Hide List");
+        SetWindowTextW(st->hwndBtnToggleList,
+            st->hideProcessList ? Tr(L"リストを表示", L"Show List", L"Mostrar lista")
+                                : Tr(L"リストを非表示", L"Hide List", L"Ocultar lista"));
     }
     if (st->hwndBtnToggleTerm) {
-        SetWindowTextW(st->hwndBtnToggleTerm, st->hideTerminalGrid ? L"Show Terminal" : L"Hide Terminal");
+        SetWindowTextW(st->hwndBtnToggleTerm,
+            st->hideTerminalGrid ? Tr(L"ターミナルを表示", L"Show Terminal", L"Mostrar terminal")
+                                 : Tr(L"ターミナルを非表示", L"Hide Terminal", L"Ocultar terminal"));
     }
 }
 
@@ -701,25 +952,28 @@ static void SortSnapshots(std::vector<ProcessSnapshot>& snaps, int col, bool asc
             case 3: // Start Time
                 cmp = a.startTimeStr.compare(b.startTimeStr);
                 break;
-            case 4: // Uptime
+            case 4: // End Time
+                cmp = a.endTimeStr.compare(b.endTimeStr);
+                break;
+            case 5: // Uptime
                 cmp = (a.elapsedMs < b.elapsedMs) ? -1 : (a.elapsedMs > b.elapsedMs ? 1 : 0);
                 break;
-            case 5: // PID
+            case 6: // PID
                 cmp = (a.rootPid < b.rootPid) ? -1 : (a.rootPid > b.rootPid ? 1 : 0);
                 break;
-            case 6: // Memory
+            case 7: // Memory
                 cmp = (a.treeMemoryBytes < b.treeMemoryBytes) ? -1 : (a.treeMemoryBytes > b.treeMemoryBytes ? 1 : 0);
                 break;
-            case 7: // CPU Time
+            case 8: // CPU Time
                 cmp = (a.cpuTimeMs < b.cpuTimeMs) ? -1 : (a.cpuTimeMs > b.cpuTimeMs ? 1 : 0);
                 break;
-            case 8: // Idle
+            case 9: // Idle
                 cmp = (a.idleMs < b.idleMs) ? -1 : (a.idleMs > b.idleMs ? 1 : 0);
                 break;
-            case 9: // Latest Output Preview
+            case 10: // Latest Output Preview
                 cmp = _stricmp(a.lastLinePreview.c_str(), b.lastLinePreview.c_str());
                 break;
-            case 10: // Command Line
+            case 11: // Command Line
                 cmp = _stricmp(a.commandLine.c_str(), b.commandLine.c_str());
                 break;
             default:
@@ -745,16 +999,6 @@ static void RefreshDashboardData(DashboardState* st) {
     }
 
     SortSnapshots(st->cachedSnapshots, st->sortColumn, st->sortAscending);
-
-    HWND hFocus = GetFocus();
-    if (hFocus) {
-        for (const auto& s : st->cachedSnapshots) {
-            if (s.terminalHwnd && s.terminalHwnd == hFocus) {
-                st->selectedProcId = s.id;
-                break;
-            }
-        }
-    }
 
     auto getNewestId = [&]() -> int {
         int maxId = -1;
@@ -792,11 +1036,12 @@ static void RefreshDashboardData(DashboardState* st) {
         const auto& s = st->cachedSnapshots[i];
         std::wstring idStr = L"#" + std::to_wstring(s.id);
         std::wstring nameStr = Utf8ToWide(s.name);
-        std::wstring statusStr = ProcStateToDisplayWide(s.state, s.idleMs >= 10000);
+        std::wstring statusStr = StateLabelWide(s.state, s.idleMs >= 10000);
         if (s.state != ProcState::Running && s.exitCode != STILL_ACTIVE) {
             statusStr += L" (" + std::to_wstring(s.exitCode) + L")";
         }
         std::wstring startStr = Utf8ToWide(s.startTimeStr);
+        std::wstring endStr = (s.state == ProcState::Running || s.endTimeStr.empty()) ? L"-" : Utf8ToWide(s.endTimeStr);
         std::wstring uptimeStr = Utf8ToWide(FormatUptimeHMS(s.elapsedMs));
         if (s.timeoutSec > 0) {
             uptimeStr += L" / " + std::to_wstring(s.timeoutSec) + L"s";
@@ -828,13 +1073,28 @@ static void RefreshDashboardData(DashboardState* st) {
         ListView_SetItemText(st->hwndList, i, 1, nameStr.data());
         ListView_SetItemText(st->hwndList, i, 2, statusStr.data());
         ListView_SetItemText(st->hwndList, i, 3, startStr.data());
-        ListView_SetItemText(st->hwndList, i, 4, uptimeStr.data());
-        ListView_SetItemText(st->hwndList, i, 5, pidStr.data());
-        ListView_SetItemText(st->hwndList, i, 6, memStr.data());
-        ListView_SetItemText(st->hwndList, i, 7, cpuStr.data());
-        ListView_SetItemText(st->hwndList, i, 8, idleStr.data());
-        ListView_SetItemText(st->hwndList, i, 9, previewStr.data());
-        ListView_SetItemText(st->hwndList, i, 10, cmdStr.data());
+        ListView_SetItemText(st->hwndList, i, 4, endStr.data());
+        ListView_SetItemText(st->hwndList, i, 5, uptimeStr.data());
+        ListView_SetItemText(st->hwndList, i, 6, pidStr.data());
+        ListView_SetItemText(st->hwndList, i, 7, memStr.data());
+        ListView_SetItemText(st->hwndList, i, 8, cpuStr.data());
+        ListView_SetItemText(st->hwndList, i, 9, idleStr.data());
+        ListView_SetItemText(st->hwndList, i, 10, previewStr.data());
+        ListView_SetItemText(st->hwndList, i, 11, cmdStr.data());
+    }
+
+    int selIdx = -1;
+    for (int i = 0; i < targetCount; ++i) {
+        if (st->cachedSnapshots[i].id == st->selectedProcId) {
+            selIdx = i;
+            break;
+        }
+    }
+    if (selIdx >= 0) {
+        UINT selState = ListView_GetItemState(st->hwndList, selIdx, LVIS_SELECTED);
+        if (!(selState & LVIS_SELECTED)) {
+            ListView_SetItemState(st->hwndList, selIdx, LVIS_SELECTED, LVIS_SELECTED);
+        }
     }
 
     SendMessageW(st->hwndList, WM_SETREDRAW, TRUE, 0);
@@ -851,17 +1111,16 @@ static void LayoutControls(DashboardState* st, int width, int height) {
     // Toolbar buttons flow into multiple rows when the window is too narrow.
     struct ToolbarButton { HWND hwnd; int w; };
     const ToolbarButton buttons[] = {
-        {st->hwndBtnStart, 165},
-        {st->hwndBtnConfig, 74},
+        {st->hwndBtnStart, 160},
+        {st->hwndBtnSettings, 90},
         {st->hwndBtnKillSel, 82},
         {st->hwndBtnKillAll, 74},
-        {st->hwndBtnClear, 195},
-        {st->hwndBtnHideEnded, 215},
+        {st->hwndBtnClear, 185},
+        {st->hwndBtnHideEnded, 205},
         {st->hwndBtnGridView, 94},
         {st->hwndBtnToggleList, 90},
         {st->hwndBtnToggleTerm, 112},
-        {st->hwndBtnResetIds, 80},
-        {st->hwndBtnHideTray, 150}
+        {st->hwndBtnHideTray, 140}
     };
     const int gap = 7;
     int xCur = margin;
@@ -956,7 +1215,7 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             ds = reinterpret_cast<TaskDetailsDlgState*>(cs->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
 
-            HWND hLblCmd = CreateWindowExW(0, L"STATIC", Tr(L"Command Line (コマンドライン):", L"Command Line:"),
+            HWND hLblCmd = CreateWindowExW(0, L"STATIC", Tr(L"コマンドライン:", L"Command Line:", L"Línea de comandos:"),
                 WS_CHILD | WS_VISIBLE, 14, 12, 400, 20, hwnd, nullptr, nullptr, nullptr);
 
             std::wstring cmdW = Utf8ToWide(ds->snap.commandLine);
@@ -964,28 +1223,31 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
                 14, 34, 730, 82, hwnd, (HMENU)2001, nullptr, nullptr);
 
-            HWND hLblInfo = CreateWindowExW(0, L"STATIC", Tr(L"Task Details & Output Preview (タスク詳細・出力):", L"Task Details & Output Preview:"),
+            HWND hLblInfo = CreateWindowExW(0, L"STATIC", Tr(L"タスク詳細・出力:", L"Task Details & Output Preview:", L"Detalles de tarea y salida:"),
                 WS_CHILD | WS_VISIBLE, 14, 124, 400, 20, hwnd, nullptr, nullptr, nullptr);
 
             std::wstringstream ss;
-            ss << L"ID              : #" << ds->snap.id << L"\r\n"
-               << L"Name            : " << Utf8ToWide(ds->snap.name) << L"\r\n"
-               << L"Status          : " << ProcStateToDisplayWide(ds->snap.state, ds->snap.idleMs >= 10000);
+            ss << Tr(L"ID              : ", L"ID              : ", L"ID              : ") << L"#" << ds->snap.id << L"\r\n"
+               << Tr(L"名前            : ", L"Name            : ", L"Nombre          : ") << Utf8ToWide(ds->snap.name) << L"\r\n"
+               << Tr(L"状態            : ", L"Status          : ", L"Estado          : ") << StateLabelWide(ds->snap.state, ds->snap.idleMs >= 10000);
             if (ds->snap.state != ProcState::Running && ds->snap.exitCode != STILL_ACTIVE) {
-                ss << L" (Exit Code: " << ds->snap.exitCode << L")";
+                ss << Tr(L" (終了コード: ", L" (Exit Code: ", L" (Código de salida: ") << ds->snap.exitCode << L")";
             }
             ss << L"\r\n"
-               << L"Command Line    : " << Utf8ToWide(ds->snap.commandLine) << L"\r\n"
-               << L"Working Dir     : " << (ds->snap.workingDir.empty() ? L"(default)" : Utf8ToWide(ds->snap.workingDir)) << L"\r\n"
-               << L"Root PID        : " << ds->snap.rootPid << L" (" << ds->snap.treeProcessCount << L" processes in Job Object)\r\n"
-               << L"Memory Usage    : " << Utf8ToWide(FormatBytes(ds->snap.treeMemoryBytes)) << L"\r\n"
-               << L"Start Time      : " << Utf8ToWide(ds->snap.startTimeStr) << L"\r\n"
-               << L"End Time        : " << (ds->snap.endTimeStr.empty() ? L"(running)" : Utf8ToWide(ds->snap.endTimeStr)) << L"\r\n"
-               << Tr(L"Uptime (稼働時間): ", L"Uptime: ") << Utf8ToWide(FormatUptimeHMS(ds->snap.elapsedMs))
+               << Tr(L"コマンドライン  : ", L"Command Line    : ", L"Línea de comandos: ") << Utf8ToWide(ds->snap.commandLine) << L"\r\n"
+               << Tr(L"作業ディレクトリ: ", L"Working Dir     : ", L"Directorio      : ")
+               << (ds->snap.workingDir.empty() ? Tr(L"(既定)", L"(default)", L"(predeterminado)") : Utf8ToWide(ds->snap.workingDir)) << L"\r\n"
+               << Tr(L"ルート PID      : ", L"Root PID        : ", L"PID raíz        : ") << ds->snap.rootPid
+               << L" (" << ds->snap.treeProcessCount << Tr(L" プロセス (Job Object)", L" processes in Job Object", L" procesos en Job Object") << L")\r\n"
+               << Tr(L"メモリ使用量    : ", L"Memory Usage    : ", L"Uso de memoria  : ") << Utf8ToWide(FormatBytes(ds->snap.treeMemoryBytes)) << L"\r\n"
+               << Tr(L"開始時刻        : ", L"Start Time      : ", L"Hora de inicio  : ") << Utf8ToWide(ds->snap.startTimeStr) << L"\r\n"
+               << Tr(L"終了時刻        : ", L"End Time        : ", L"Hora de fin     : ")
+               << (ds->snap.endTimeStr.empty() ? Tr(L"(実行中)", L"(running)", L"(en ejecución)") : Utf8ToWide(ds->snap.endTimeStr)) << L"\r\n"
+               << Tr(L"稼働時間        : ", L"Uptime          : ", L"Tiempo activo   : ") << Utf8ToWide(FormatUptimeHMS(ds->snap.elapsedMs))
                << L" (" << Utf8ToWide(FormatDurationSec(ds->snap.elapsedMs)) << L")\r\n"
-               << L"CPU Time        : " << Utf8ToWide(FormatUptimeHMS(ds->snap.cpuTimeMs)) << L"\r\n"
-               << L"Log File        : " << Utf8ToWide(ds->snap.logFilePath) << L"\r\n"
-               << L"Done File       : " << Utf8ToWide(ds->snap.doneFilePath) << L"\r\n"
+               << Tr(L"CPU時間         : ", L"CPU Time        : ", L"Tiempo de CPU   : ") << Utf8ToWide(FormatUptimeHMS(ds->snap.cpuTimeMs)) << L"\r\n"
+               << Tr(L"ログファイル    : ", L"Log File        : ", L"Archivo de log  : ") << Utf8ToWide(ds->snap.logFilePath) << L"\r\n"
+               << Tr(L"完了ファイル    : ", L"Done File       : ", L"Archivo .done   : ") << Utf8ToWide(ds->snap.doneFilePath) << L"\r\n"
                << L"--------------------------------------------------------------------------------\r\n"
                << ds->fullOutput;
 
@@ -994,12 +1256,12 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY,
                 14, 146, 730, 310, hwnd, (HMENU)2002, nullptr, nullptr);
 
-            ds->hwndBtnCopyCmd = CreateWindowExW(0, L"BUTTON", Tr(L"コマンドラインをコピー (Copy Command Line)", L"Copy Command Line"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 14, 468, 250, 30, hwnd, (HMENU)2003, nullptr, nullptr);
-            ds->hwndBtnOpenLog = CreateWindowExW(0, L"BUTTON", Tr(L"ログファイルを開く (Open Log File)", L"Open Log File"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 274, 468, 220, 30, hwnd, (HMENU)2004, nullptr, nullptr);
-            ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる (Close)", L"Close"),
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 634, 468, 110, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
+            ds->hwndBtnCopyCmd = CreateWindowExW(0, L"BUTTON", Tr(L"コマンドラインをコピー", L"Copy Command Line", L"Copiar línea de comandos"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 14, 468, 250, 30, hwnd, (HMENU)2003, nullptr, nullptr);
+            ds->hwndBtnOpenLog = CreateWindowExW(0, L"BUTTON", Tr(L"ログファイルを開く", L"Open Log File", L"Abrir archivo de registro"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 274, 468, 220, 30, hwnd, (HMENU)2004, nullptr, nullptr);
+            ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる", L"Close", L"Cerrar"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 634, 468, 110, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
 
             SendMessageW(hLblCmd, WM_SETFONT, (WPARAM)ds->hFontBold, TRUE);
             SendMessageW(hLblInfo, WM_SETFONT, (WPARAM)ds->hFontBold, TRUE);
@@ -1007,6 +1269,7 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             for (HWND h : ctrls) {
                 SendMessageW(h, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
             }
+            ApplyNativeThemeToWindow(hwnd);
             return 0;
         }
         case WM_SIZE: {
@@ -1036,6 +1299,46 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 DestroyWindow(hwnd);
             }
             return 0;
+        }
+        case WM_DRAWITEM: {
+            auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!dis || !ds) break;
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bg = pressed ? g_theme.border : g_theme.panel;
+            HBRUSH bgBrush = CreateSolidBrush(bg);
+            FillRect(dis->hDC, &dis->rcItem, bgBrush);
+            DeleteObject(bgBrush);
+            HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+            HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+            HGDIOBJ oldBrush = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+            SelectObject(dis->hDC, oldBrush);
+            SelectObject(dis->hDC, oldPen);
+            DeleteObject(borderPen);
+            wchar_t text[256] = {};
+            GetWindowTextW(dis->hwndItem, text, 256);
+            RECT rc = dis->rcItem;
+            InflateRect(&rc, -4, 0);
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, g_theme.text);
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, ds->hFontUi));
+            DrawTextW(dis->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dis->hDC, oldFont);
+            return TRUE;
+        }
+        case WM_ERASEBKGND: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            RECT rc = {};
+            GetClientRect(hwnd, &rc);
+            FillRect(hdc, &rc, g_dialogBgBrush);
+            return 1;
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(hdc, g_theme.text);
+            SetBkColor(hdc, g_theme.panel);
+            return reinterpret_cast<LRESULT>(g_dialogBgBrush);
         }
         case WM_CLOSE:
             DestroyWindow(hwnd);
@@ -1077,7 +1380,7 @@ static void ShowTaskDetailsDialog(DashboardState* st, int procId) {
     st->pm->GetOutput(procId, true, 120, outUtf8);
     ds->fullOutput = NormalizeCrLfWide(outUtf8);
 
-    std::wstring title = std::wstring(Tr(L"Task Details (タスク詳細)", L"Task Details")) + L" — #" + std::to_wstring(snap.id) + L" [" + Utf8ToWide(snap.name) + L"]";
+    std::wstring title = std::wstring(Tr(L"タスク詳細", L"Task Details", L"Detalles de tarea")) + L" — #" + std::to_wstring(snap.id) + L" [" + Utf8ToWide(snap.name) + L"]";
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 775;
@@ -1107,17 +1410,17 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
     if (!st->pm->GetSnapshot(procId, snap)) return;
 
     HMENU hMenu = CreatePopupMenu();
-    AppendMenuW(hMenu, MF_STRING, 3001, Tr(L"詳細を表示 (Task Details & Command Line)...", L"Task Details & Command Line..."));
-    AppendMenuW(hMenu, MF_STRING, 3002, Tr(L"コマンドラインをコピー (Copy Command Line)", L"Copy Command Line"));
+    AppendMenuW(hMenu, MF_STRING, 3001, Tr(L"詳細を表示 (タスク詳細・コマンドライン)...", L"Task Details & Command Line...", L"Detalles de tarea y línea de comandos..."));
+    AppendMenuW(hMenu, MF_STRING, 3002, Tr(L"コマンドラインをコピー", L"Copy Command Line", L"Copiar línea de comandos"));
     if (!snap.logFilePath.empty()) {
-        AppendMenuW(hMenu, MF_STRING, 3003, Tr(L"ログファイルを開く (Open Log File)", L"Open Log File"));
+        AppendMenuW(hMenu, MF_STRING, 3003, Tr(L"ログファイルを開く", L"Open Log File", L"Abrir archivo de registro"));
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     if (snap.state == ProcState::Running) {
-        AppendMenuW(hMenu, MF_STRING, 3004, Tr(L"プロセスツリーを強制終了 (Kill Process Tree)", L"Kill Process Tree"));
+        AppendMenuW(hMenu, MF_STRING, 3004, Tr(L"プロセスツリーを強制終了", L"Kill Process Tree", L"Terminar árbol de procesos"));
     } else {
-        AppendMenuW(hMenu, MF_STRING, 3005, Tr(L"この履歴を削除 (Remove This Entry)", L"Remove This Entry"));
-        AppendMenuW(hMenu, MF_STRING, 3006, Tr(L"終了履歴をすべて消去 (Clear All Ended History)", L"Clear All Ended History"));
+        AppendMenuW(hMenu, MF_STRING, 3005, Tr(L"この履歴を削除", L"Remove This Entry", L"Eliminar esta entrada"));
+        AppendMenuW(hMenu, MF_STRING, 3006, Tr(L"終了履歴をすべて消去", L"Clear All Ended History", L"Borrar todo el historial finalizado"));
     }
 
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, ptScreen.x, ptScreen.y, 0, st->hwndMain, nullptr);
@@ -1179,6 +1482,11 @@ static void LoadShellConfig(DashboardState* st) {
     st->hideTerminalGrid = JsonGetBool(content, "hide_terminal_grid", false);
     int listH = static_cast<int>(JsonGetInt(content, "process_list_height", st->processListHeight));
     if (listH >= kMinListH && listH <= 4000) st->processListHeight = listH;
+    std::string langCode = JsonGetString(content, "language", "");
+    if (!langCode.empty()) g_uiLanguage = ParseLanguage(langCode);
+    std::string themeCode = JsonGetString(content, "theme", "");
+    if (!themeCode.empty()) g_uiTheme = ParseTheme(themeCode);
+    ApplyTheme();
 }
 
 static void SaveShellConfig(const DashboardState* st) {
@@ -1196,7 +1504,9 @@ static void SaveShellConfig(const DashboardState* st) {
        << "  \"hide_ended\": " << (st->hideEndedProcesses ? "true" : "false") << ",\n"
        << "  \"hide_process_list\": " << (st->hideProcessList ? "true" : "false") << ",\n"
        << "  \"hide_terminal_grid\": " << (st->hideTerminalGrid ? "true" : "false") << ",\n"
-       << "  \"process_list_height\": " << st->processListHeight << "\n"
+       << "  \"process_list_height\": " << st->processListHeight << ",\n"
+       << "  \"language\": \"" << LanguageCode(g_uiLanguage) << "\",\n"
+       << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\"\n"
        << "}\n";
 
     WriteFileAtomicWide(GetConfigFilePathWide(), ss.str());
@@ -1204,10 +1514,52 @@ static void SaveShellConfig(const DashboardState* st) {
 
 static void UpdateLaunchButtonLabel(DashboardState* st) {
     if (!st || !st->hwndBtnStart) return;
-    const wchar_t* label = L"+ Launch (powershell)";
-    if (st->defaultShell == ShellType::Cmd) label = L"+ Launch (cmd)";
-    else if (st->defaultShell == ShellType::Bash) label = L"+ Launch (bash)";
-    SetWindowTextW(st->hwndBtnStart, label);
+    std::wstring label = Tr(L"+ 起動 (", L"+ Launch (", L"+ Iniciar (");
+    if (st->defaultShell == ShellType::Cmd) label += L"cmd";
+    else if (st->defaultShell == ShellType::Bash) label += L"bash";
+    else label += L"powershell";
+    label += L")";
+    SetWindowTextW(st->hwndBtnStart, label.c_str());
+}
+
+static void ApplyListTheme(DashboardState* st) {
+    if (!st || !st->hwndList) return;
+    ListView_SetBkColor(st->hwndList, g_theme.panel);
+    ListView_SetTextBkColor(st->hwndList, g_theme.panel);
+    ListView_SetTextColor(st->hwndList, g_theme.listText);
+    InvalidateRect(st->hwndList, nullptr, TRUE);
+    if (st->hwndTab) InvalidateRect(st->hwndTab, nullptr, TRUE);
+}
+
+static void UpdateToolbarLabels(DashboardState* st) {
+    if (!st) return;
+    UpdateLaunchButtonLabel(st);
+    if (st->hwndBtnSettings)
+        SetWindowTextW(st->hwndBtnSettings, Tr(L"設定", L"Settings", L"Ajustes"));
+    if (st->hwndBtnKillSel)
+        SetWindowTextW(st->hwndBtnKillSel, Tr(L"ツリー終了", L"Kill Tree", L"Terminar árbol"));
+    if (st->hwndBtnKillAll)
+        SetWindowTextW(st->hwndBtnKillAll, Tr(L"全終了", L"Kill All", L"Terminar todo"));
+    if (st->hwndBtnClear)
+        SetWindowTextW(st->hwndBtnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
+    UpdateHideEndedButtonLabel(st);
+    if (st->hwndBtnGridView)
+        SetWindowTextW(st->hwndBtnGridView, Tr(L"グリッド表示", L"Grid View", L"Vista de cuadrícula"));
+    UpdatePanelToggleLabels(st);
+    if (st->hwndBtnHideTray)
+        SetWindowTextW(st->hwndBtnHideTray, Tr(L"トレイに格納", L"Tray", L"Bandeja"));
+}
+
+static void ApplyLanguageToUi(DashboardState* st) {
+    if (!st) return;
+    SetWindowTextW(st->hwndMain,
+        Tr(L"ProcessCommander — マルチターミナル ConPTY ダッシュボード (Direct2D TerminalView)",
+           L"ProcessCommander — Multi-Terminal ConPTY Dashboard (Direct2D TerminalView)",
+           L"ProcessCommander — Panel de terminales ConPTY (Direct2D TerminalView)"));
+    UpdateToolbarLabels(st);
+    UpdateListHeaderSortIndicator(st);
+    RefreshDashboardData(st);
+    InvalidateRect(st->hwndMain, nullptr, FALSE);
 }
 
 static void LaunchShellByType(DashboardState* st, ShellType type) {
@@ -1253,17 +1605,12 @@ struct ShellConfigDlgState {
     HWND hwndEditCmd = nullptr;
     HWND hwndEditPs = nullptr;
     HWND hwndEditBash = nullptr;
+    ShellType selectedShell = ShellType::PowerShell;
 };
 
 static void ApplyShellConfigFromDialog(HWND hwnd, ShellConfigDlgState* cs) {
     if (!cs || !cs->dash) return;
-    if (SendMessageW(cs->hwndRadCmd, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-        cs->dash->defaultShell = ShellType::Cmd;
-    } else if (SendMessageW(cs->hwndRadBash, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-        cs->dash->defaultShell = ShellType::Bash;
-    } else {
-        cs->dash->defaultShell = ShellType::PowerShell;
-    }
+    cs->dash->defaultShell = cs->selectedShell;
 
     wchar_t buf[1024] = {};
     GetWindowTextW(cs->hwndEditCmd, buf, 1023);
@@ -1287,18 +1634,19 @@ static LRESULT CALLBACK ShellConfigWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             DashboardState* st = cs->dash;
 
             HWND hTitle = CreateWindowExW(0, L"STATIC",
-                Tr(L"Launch Terminal のデフォルトシェル選択と起動コマンド設定:",
-                   L"Default shell and startup command for Launch Terminal:"),
+                Tr(L"Launch Terminal のデフォルトシェルと起動コマンド:",
+                   L"Default shell and startup command for Launch Terminal:",
+                   L"Shell predeterminado y comando de inicio para Launch Terminal:"),
                 WS_CHILD | WS_VISIBLE, 16, 14, 540, 20, hwnd, nullptr, nullptr, nullptr);
 
             cs->hwndRadCmd = CreateWindowExW(0, L"BUTTON", L"cmd (Command Prompt)",
-                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP,
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 16, 44, 190, 24, hwnd, (HMENU)5001, nullptr, nullptr);
             cs->hwndRadPs = CreateWindowExW(0, L"BUTTON", L"powershell (PowerShell)",
-                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 16, 84, 190, 24, hwnd, (HMENU)5002, nullptr, nullptr);
             cs->hwndRadBash = CreateWindowExW(0, L"BUTTON", L"bash (Git Bash / WSL)",
-                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 16, 124, 190, 24, hwnd, (HMENU)5003, nullptr, nullptr);
 
             cs->hwndEditCmd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", Utf8ToWide(st->cmdCommand).c_str(),
@@ -1308,25 +1656,22 @@ static LRESULT CALLBACK ShellConfigWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             cs->hwndEditBash = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", Utf8ToWide(st->bashCommand).c_str(),
                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 212, 124, 260, 24, hwnd, (HMENU)5013, nullptr, nullptr);
 
-            HWND hBtnRunCmd = CreateWindowExW(0, L"BUTTON", Tr(L"cmd を起動", L"Launch cmd"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 480, 44, 140, 24, hwnd, (HMENU)5021, nullptr, nullptr);
-            HWND hBtnRunPs = CreateWindowExW(0, L"BUTTON", Tr(L"powershell 起動", L"Launch powershell"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 480, 84, 140, 24, hwnd, (HMENU)5022, nullptr, nullptr);
-            HWND hBtnRunBash = CreateWindowExW(0, L"BUTTON", Tr(L"bash を起動", L"Launch bash"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 480, 124, 140, 24, hwnd, (HMENU)5023, nullptr, nullptr);
+            HWND hBtnRunCmd = CreateWindowExW(0, L"BUTTON", Tr(L"cmd を起動", L"Launch cmd", L"Iniciar cmd"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 480, 44, 140, 24, hwnd, (HMENU)5021, nullptr, nullptr);
+            HWND hBtnRunPs = CreateWindowExW(0, L"BUTTON", Tr(L"powershell を起動", L"Launch powershell", L"Iniciar powershell"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 480, 84, 140, 24, hwnd, (HMENU)5022, nullptr, nullptr);
+            HWND hBtnRunBash = CreateWindowExW(0, L"BUTTON", Tr(L"bash を起動", L"Launch bash", L"Iniciar bash"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 480, 124, 140, 24, hwnd, (HMENU)5023, nullptr, nullptr);
 
-            if (st->defaultShell == ShellType::Cmd) {
-                SendMessageW(cs->hwndRadCmd, BM_SETCHECK, BST_CHECKED, 0);
-            } else if (st->defaultShell == ShellType::Bash) {
-                SendMessageW(cs->hwndRadBash, BM_SETCHECK, BST_CHECKED, 0);
-            } else {
-                SendMessageW(cs->hwndRadPs, BM_SETCHECK, BST_CHECKED, 0);
-            }
+            cs->selectedShell = st->defaultShell;
+            SendMessageW(cs->hwndRadCmd, BM_SETCHECK, st->defaultShell == ShellType::Cmd ? BST_CHECKED : BST_UNCHECKED, 0);
+            SendMessageW(cs->hwndRadPs, BM_SETCHECK, st->defaultShell == ShellType::PowerShell ? BST_CHECKED : BST_UNCHECKED, 0);
+            SendMessageW(cs->hwndRadBash, BM_SETCHECK, st->defaultShell == ShellType::Bash ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            HWND hBtnSave = CreateWindowExW(0, L"BUTTON", Tr(L"保存して閉じる (Save)", L"Save and Close"),
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 330, 170, 140, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
-            HWND hBtnCancel = CreateWindowExW(0, L"BUTTON", Tr(L"キャンセル", L"Cancel"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 480, 170, 140, 30, hwnd, (HMENU)IDCANCEL, nullptr, nullptr);
+            HWND hBtnSave = CreateWindowExW(0, L"BUTTON", Tr(L"保存して閉じる", L"Save and Close", L"Guardar y cerrar"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 330, 170, 140, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
+            HWND hBtnCancel = CreateWindowExW(0, L"BUTTON", Tr(L"キャンセル", L"Cancel", L"Cancelar"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 480, 170, 140, 30, hwnd, (HMENU)IDCANCEL, nullptr, nullptr);
 
             SendMessageW(hTitle, WM_SETFONT, (WPARAM)st->hFontUiBold, TRUE);
             HWND ctrls[] = {
@@ -1337,6 +1682,7 @@ static LRESULT CALLBACK ShellConfigWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             for (HWND h : ctrls) {
                 SendMessageW(h, WM_SETFONT, (WPARAM)st->hFontUi, TRUE);
             }
+            ApplyNativeThemeToWindow(hwnd);
             return 0;
         }
         case WM_COMMAND: {
@@ -1346,16 +1692,26 @@ static LRESULT CALLBACK ShellConfigWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 DestroyWindow(hwnd);
             } else if (id == IDCANCEL) {
                 DestroyWindow(hwnd);
+            } else if ((id == 5001 || id == 5002 || id == 5003) && cs) {
+                cs->selectedShell = (id == 5001) ? ShellType::Cmd :
+                                    (id == 5003) ? ShellType::Bash : ShellType::PowerShell;
+                SendMessageW(cs->hwndRadCmd, BM_SETCHECK, id == 5001 ? BST_CHECKED : BST_UNCHECKED, 0);
+                SendMessageW(cs->hwndRadPs, BM_SETCHECK, id == 5002 ? BST_CHECKED : BST_UNCHECKED, 0);
+                SendMessageW(cs->hwndRadBash, BM_SETCHECK, id == 5003 ? BST_CHECKED : BST_UNCHECKED, 0);
+                InvalidateRect(hwnd, nullptr, TRUE);
             } else if ((id == 5021 || id == 5022 || id == 5023) && cs && cs->dash) {
                 if (id == 5021) {
+                    cs->selectedShell = ShellType::Cmd;
                     SendMessageW(cs->hwndRadCmd, BM_SETCHECK, BST_CHECKED, 0);
                     SendMessageW(cs->hwndRadPs, BM_SETCHECK, BST_UNCHECKED, 0);
                     SendMessageW(cs->hwndRadBash, BM_SETCHECK, BST_UNCHECKED, 0);
                 } else if (id == 5022) {
+                    cs->selectedShell = ShellType::PowerShell;
                     SendMessageW(cs->hwndRadCmd, BM_SETCHECK, BST_UNCHECKED, 0);
                     SendMessageW(cs->hwndRadPs, BM_SETCHECK, BST_CHECKED, 0);
                     SendMessageW(cs->hwndRadBash, BM_SETCHECK, BST_UNCHECKED, 0);
                 } else if (id == 5023) {
+                    cs->selectedShell = ShellType::Bash;
                     SendMessageW(cs->hwndRadCmd, BM_SETCHECK, BST_UNCHECKED, 0);
                     SendMessageW(cs->hwndRadPs, BM_SETCHECK, BST_UNCHECKED, 0);
                     SendMessageW(cs->hwndRadBash, BM_SETCHECK, BST_CHECKED, 0);
@@ -1367,6 +1723,72 @@ static LRESULT CALLBACK ShellConfigWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 LaunchShellByType(dash, target);
             }
             return 0;
+        }
+        case WM_DRAWITEM: {
+            auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!dis || !cs) break;
+            int id = static_cast<int>(dis->CtlID);
+            bool radio = (id == 5001 || id == 5002 || id == 5003);
+            bool checked = (id == 5001 && cs->selectedShell == ShellType::Cmd) ||
+                           (id == 5002 && cs->selectedShell == ShellType::PowerShell) ||
+                           (id == 5003 && cs->selectedShell == ShellType::Bash);
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bg = pressed ? g_theme.border : g_theme.panel;
+            HBRUSH bgBrush = CreateSolidBrush(bg);
+            FillRect(dis->hDC, &dis->rcItem, bgBrush);
+            DeleteObject(bgBrush);
+            HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+            HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+            HGDIOBJ oldBrush = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+            SelectObject(dis->hDC, oldBrush);
+            SelectObject(dis->hDC, oldPen);
+            DeleteObject(borderPen);
+
+            RECT textRc = dis->rcItem;
+            if (radio) {
+                int cx = dis->rcItem.left + 14;
+                int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
+                HPEN circlePen = CreatePen(PS_SOLID, 1, g_theme.muted);
+                HGDIOBJ op = SelectObject(dis->hDC, circlePen);
+                HGDIOBJ ob = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+                Ellipse(dis->hDC, cx - 6, cy - 6, cx + 6, cy + 6);
+                SelectObject(dis->hDC, ob);
+                SelectObject(dis->hDC, op);
+                DeleteObject(circlePen);
+                if (checked) {
+                    HBRUSH dot = CreateSolidBrush(g_theme.accent);
+                    HGDIOBJ ob2 = SelectObject(dis->hDC, dot);
+                    Ellipse(dis->hDC, cx - 3, cy - 3, cx + 3, cy + 3);
+                    SelectObject(dis->hDC, ob2);
+                    DeleteObject(dot);
+                }
+                textRc.left += 28;
+            }
+            InflateRect(&textRc, -4, 0);
+            wchar_t text[256] = {};
+            GetWindowTextW(dis->hwndItem, text, 256);
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, g_theme.text);
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, cs->dash->hFontUi));
+            UINT fmt = (radio ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+            DrawTextW(dis->hDC, text, -1, &textRc, fmt);
+            SelectObject(dis->hDC, oldFont);
+            return TRUE;
+        }
+        case WM_ERASEBKGND: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            RECT rc = {};
+            GetClientRect(hwnd, &rc);
+            FillRect(hdc, &rc, g_dialogBgBrush);
+            return 1;
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(hdc, g_theme.text);
+            SetBkColor(hdc, g_theme.panel);
+            return reinterpret_cast<LRESULT>(g_dialogBgBrush);
         }
         case WM_CLOSE:
             DestroyWindow(hwnd);
@@ -1411,7 +1833,7 @@ static void ShowShellConfigDialog(DashboardState* st) {
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
         L"ProcessCommanderShellConfigWnd",
-        Tr(L"Shell Config (cmd / powershell / bash 起動設定)", L"Shell Config (cmd / powershell / bash)"),
+        Tr(L"シェル設定 (cmd / powershell / bash)", L"Shell Config (cmd / powershell / bash)", L"Configuración de shell (cmd / powershell / bash)"),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         x, y, dlgW, dlgH,
         st->hwndMain, nullptr, hInst, cs
@@ -1474,13 +1896,13 @@ static void ShowTrayContextMenu(DashboardState* st) {
     GetCursorPos(&pt);
 
     HMENU hMenu = CreatePopupMenu();
-    AppendMenuW(hMenu, MF_STRING | MF_DEFAULT, IDM_TRAY_RESTORE, Tr(L"ダッシュボードを拡大・表示 (Restore Dashboard)", L"Restore Dashboard"));
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_GRID_VIEW, Tr(L"グリッド表示を開く (Open Grid View)", L"Open Grid View"));
+    AppendMenuW(hMenu, MF_STRING | MF_DEFAULT, IDM_TRAY_RESTORE, Tr(L"ダッシュボードを復元", L"Restore Dashboard", L"Restaurar panel"));
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_GRID_VIEW, Tr(L"グリッド表示を開く", L"Open Grid View", L"Abrir vista de cuadrícula"));
     if (IsWindowVisible(st->hwndMain)) {
-        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_HIDE, Tr(L"タスクトレイに格納 (Hide to Tray)", L"Hide to Tray"));
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_HIDE, Tr(L"タスクトレイに格納", L"Hide to Tray", L"Ocultar en bandeja"));
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, Tr(L"ProcessCommander を完全終了 (Exit)", L"Exit ProcessCommander"));
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, Tr(L"ProcessCommander を終了", L"Exit ProcessCommander", L"Salir de ProcessCommander"));
 
     SetForegroundWindow(st->hwndMain);
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, st->hwndMain, nullptr);
@@ -1503,6 +1925,297 @@ static void ShowTrayContextMenu(DashboardState* st) {
     }
 }
 
+static void ResetProcessIdsWithConfirm(DashboardState* st) {
+    if (!st || !st->pm || !st->hwndMain) return;
+    std::wstring title = Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs");
+    std::wstring msg = Tr(
+        L"プロセスIDをリセットしますか？ 終了済みプロセスは #1 から振り直されます。\n"
+        L"実行中のプロセスはすべて停止している必要があります。",
+        L"Reset process IDs? Finished processes will be renumbered from #1.\n"
+        L"All running processes must be stopped first.",
+        L"¿Restablecer los IDs? Los procesos finalizados se renumerarán desde #1.\n"
+        L"Primero debe detener todos los procesos en ejecución.");
+    if (MessageBoxW(st->hwndMain, msg.c_str(), title.c_str(), MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        return;
+    }
+    std::string err;
+    int count = st->pm->ResetProcessIds(err);
+    if (count < 0) {
+        MessageBoxW(st->hwndMain, Utf8ToWide(err).c_str(), title.c_str(), MB_ICONWARNING);
+    } else {
+        st->selectedProcId = -1;
+        RefreshDashboardData(st);
+    }
+}
+
+struct SettingsDlgState {
+    DashboardState* dash = nullptr;
+    HWND hwndTitle = nullptr;
+    HWND hwndLangLabel = nullptr;
+    HWND hwndThemeLabel = nullptr;
+    HWND btnJa = nullptr;
+    HWND btnEn = nullptr;
+    HWND btnEs = nullptr;
+    HWND btnSystem = nullptr;
+    HWND btnDark = nullptr;
+    HWND btnLight = nullptr;
+    HWND btnHc = nullptr;
+    HWND btnShell = nullptr;
+    HWND btnReset = nullptr;
+    HWND btnClose = nullptr;
+};
+
+static void UpdateSettingsDialogTexts(HWND hwnd) {
+    auto* ds = reinterpret_cast<SettingsDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (!ds) return;
+    SetWindowTextW(hwnd, Tr(L"設定", L"Settings", L"Ajustes"));
+    SetWindowTextW(ds->hwndTitle, Tr(L"表示と言語の設定", L"Appearance and language", L"Apariencia e idioma"));
+    SetWindowTextW(ds->hwndLangLabel, Tr(L"言語", L"Language", L"Idioma"));
+    SetWindowTextW(ds->hwndThemeLabel, Tr(L"テーマ (色)", L"Theme (colors)", L"Tema (colores)"));
+    SetWindowTextW(ds->btnSystem, L"Windows");
+    SetWindowTextW(ds->btnDark, Tr(L"ダーク", L"Dark", L"Oscuro"));
+    SetWindowTextW(ds->btnLight, Tr(L"ライト", L"Light", L"Claro"));
+    SetWindowTextW(ds->btnHc, Tr(L"ハイコントラスト", L"High Contrast", L"Alto contraste"));
+    SetWindowTextW(ds->btnShell, Tr(L"シェル構成...", L"Shell Config...", L"Configurar shell..."));
+    SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
+    SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
+    CheckRadioButton(hwnd, IDC_SET_LANG_JA, IDC_SET_LANG_ES,
+        g_uiLanguage == UiLanguage::Japanese ? IDC_SET_LANG_JA :
+        g_uiLanguage == UiLanguage::Spanish ? IDC_SET_LANG_ES : IDC_SET_LANG_EN);
+    CheckRadioButton(hwnd, IDC_SET_THEME_SYSTEM, IDC_SET_THEME_HC,
+        g_uiTheme == UiTheme::Dark ? IDC_SET_THEME_DARK :
+        g_uiTheme == UiTheme::Light ? IDC_SET_THEME_LIGHT :
+        g_uiTheme == UiTheme::HighContrast ? IDC_SET_THEME_HC : IDC_SET_THEME_SYSTEM);
+}
+
+static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ds = reinterpret_cast<SettingsDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            ds = reinterpret_cast<SettingsDlgState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+            HINSTANCE hInst = GetModuleHandleW(nullptr);
+
+            ds->hwndTitle = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 14, 440, 22, hwnd, nullptr, hInst, nullptr);
+            SendMessageW(ds->hwndTitle, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
+
+            ds->hwndLangLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 48, 200, 20, hwnd, nullptr, hInst, nullptr);
+            SendMessageW(ds->hwndLangLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
+
+            ds->btnJa = CreateWindowExW(0, L"BUTTON", L"日本語", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                18, 72, 120, 30, hwnd, (HMENU)IDC_SET_LANG_JA, hInst, nullptr);
+            ds->btnEn = CreateWindowExW(0, L"BUTTON", L"English", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                146, 72, 120, 30, hwnd, (HMENU)IDC_SET_LANG_EN, hInst, nullptr);
+            ds->btnEs = CreateWindowExW(0, L"BUTTON", L"Español", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                274, 72, 120, 30, hwnd, (HMENU)IDC_SET_LANG_ES, hInst, nullptr);
+
+            ds->hwndThemeLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 118, 200, 20, hwnd, nullptr, hInst, nullptr);
+            SendMessageW(ds->hwndThemeLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
+
+            ds->btnSystem = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                18, 142, 130, 30, hwnd, (HMENU)IDC_SET_THEME_SYSTEM, hInst, nullptr);
+            ds->btnDark = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                156, 142, 90, 30, hwnd, (HMENU)IDC_SET_THEME_DARK, hInst, nullptr);
+            ds->btnLight = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                254, 142, 90, 30, hwnd, (HMENU)IDC_SET_THEME_LIGHT, hInst, nullptr);
+            ds->btnHc = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                352, 142, 168, 30, hwnd, (HMENU)IDC_SET_THEME_HC, hInst, nullptr);
+
+            ds->btnShell = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                18, 200, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
+            ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                210, 200, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
+            ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                460, 250, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
+
+            HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnHc,
+                             ds->btnShell, ds->btnReset, ds->btnClose };
+            for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
+
+            UpdateSettingsDialogTexts(hwnd);
+            ApplyNativeThemeToWindow(hwnd);
+            return 0;
+        }
+        case WM_COMMAND: {
+            int id = LOWORD(wParam);
+            if (id == IDCANCEL || id == IDOK) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (!ds) return 0;
+            if (id == IDC_SET_LANG_JA || id == IDC_SET_LANG_EN || id == IDC_SET_LANG_ES) {
+                g_uiLanguage = (id == IDC_SET_LANG_JA) ? UiLanguage::Japanese :
+                               (id == IDC_SET_LANG_ES) ? UiLanguage::Spanish : UiLanguage::English;
+                SaveShellConfig(ds->dash);
+                ApplyLanguageToUi(ds->dash);
+                UpdateSettingsDialogTexts(hwnd);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+            if (id == IDC_SET_THEME_SYSTEM || id == IDC_SET_THEME_DARK ||
+                id == IDC_SET_THEME_LIGHT || id == IDC_SET_THEME_HC) {
+                g_uiTheme = (id == IDC_SET_THEME_LIGHT) ? UiTheme::Light :
+                            (id == IDC_SET_THEME_HC) ? UiTheme::HighContrast :
+                            (id == IDC_SET_THEME_DARK) ? UiTheme::Dark : UiTheme::System;
+                ApplyTheme();
+                SaveShellConfig(ds->dash);
+                ApplyListTheme(ds->dash);
+                ApplyNativeThemeToWindow(ds->dash->hwndMain);
+                ApplyNativeThemeToWindow(hwnd);
+                HWND shellDlg = FindWindowW(L"ProcessCommanderShellConfigWnd", nullptr);
+                if (shellDlg) ApplyNativeThemeToWindow(shellDlg);
+                HWND taskDlg = FindWindowW(L"ProcessCommanderTaskDetailsWnd", nullptr);
+                if (taskDlg) ApplyNativeThemeToWindow(taskDlg);
+                InvalidateRect(ds->dash->hwndMain, nullptr, TRUE);
+                UpdateSettingsDialogTexts(hwnd);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+            if (id == IDC_SET_SHELL_CONFIG) {
+                ShowShellConfigDialog(ds->dash);
+                return 0;
+            }
+            if (id == IDC_SET_RESET_IDS) {
+                ResetProcessIdsWithConfirm(ds->dash);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_DRAWITEM: {
+            auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!dis || !ds) break;
+            int id = static_cast<int>(dis->CtlID);
+            bool radio = (id >= IDC_SET_LANG_JA && id <= IDC_SET_LANG_ES) ||
+                         (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_HC);
+            bool checked = false;
+            if (id == IDC_SET_LANG_JA) checked = (g_uiLanguage == UiLanguage::Japanese);
+            else if (id == IDC_SET_LANG_EN) checked = (g_uiLanguage == UiLanguage::English);
+            else if (id == IDC_SET_LANG_ES) checked = (g_uiLanguage == UiLanguage::Spanish);
+            else if (id == IDC_SET_THEME_SYSTEM) checked = (g_uiTheme == UiTheme::System);
+            else if (id == IDC_SET_THEME_DARK) checked = (g_uiTheme == UiTheme::Dark);
+            else if (id == IDC_SET_THEME_LIGHT) checked = (g_uiTheme == UiTheme::Light);
+            else if (id == IDC_SET_THEME_HC) checked = (g_uiTheme == UiTheme::HighContrast);
+
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bg = pressed ? g_theme.border : g_theme.panel;
+            HBRUSH bgBrush = CreateSolidBrush(bg);
+            FillRect(dis->hDC, &dis->rcItem, bgBrush);
+            DeleteObject(bgBrush);
+            HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+            HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+            HGDIOBJ oldBrush = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+            SelectObject(dis->hDC, oldBrush);
+            SelectObject(dis->hDC, oldPen);
+            DeleteObject(borderPen);
+
+            RECT textRc = dis->rcItem;
+            if (radio) {
+                int cx = dis->rcItem.left + 16;
+                int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
+                HPEN circlePen = CreatePen(PS_SOLID, 1, g_theme.muted);
+                HGDIOBJ op = SelectObject(dis->hDC, circlePen);
+                HGDIOBJ ob = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+                Ellipse(dis->hDC, cx - 7, cy - 7, cx + 7, cy + 7);
+                SelectObject(dis->hDC, ob);
+                SelectObject(dis->hDC, op);
+                DeleteObject(circlePen);
+                if (checked) {
+                    HBRUSH dot = CreateSolidBrush(g_theme.accent);
+                    HGDIOBJ ob2 = SelectObject(dis->hDC, dot);
+                    Ellipse(dis->hDC, cx - 4, cy - 4, cx + 4, cy + 4);
+                    SelectObject(dis->hDC, ob2);
+                    DeleteObject(dot);
+                }
+                textRc.left += 30;
+            }
+            InflateRect(&textRc, -4, 0);
+            wchar_t text[256] = {};
+            GetWindowTextW(dis->hwndItem, text, 256);
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, g_theme.text);
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, ds->dash->hFontUi));
+            UINT fmt = (radio ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+            DrawTextW(dis->hDC, text, -1, &textRc, fmt);
+            SelectObject(dis->hDC, oldFont);
+            return TRUE;
+        }
+
+        case WM_ERASEBKGND: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            RECT rc = {};
+            GetClientRect(hwnd, &rc);
+            FillRect(hdc, &rc, g_dialogBgBrush);
+            return 1;
+        }
+        case WM_CTLCOLORSTATIC: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(hdc, g_theme.text);
+            SetBkColor(hdc, g_theme.panel);
+            return reinterpret_cast<LRESULT>(g_dialogBgBrush);
+        }
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void ShowSettingsDialog(DashboardState* st) {
+    if (!st || !st->hwndMain) return;
+    static bool regDone = false;
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    if (!regDone) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = SettingsWndProc;
+        wc.hInstance = hInst;
+        wc.hIcon = LoadAppIcon();
+        wc.hIconSm = LoadAppSmallIcon();
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"ProcessCommanderSettingsWnd";
+        RegisterClassExW(&wc);
+        regDone = true;
+    }
+
+    HWND existing = FindWindowW(L"ProcessCommanderSettingsWnd", nullptr);
+    if (existing) {
+        ShowWindow(existing, SW_SHOW);
+        SetForegroundWindow(existing);
+        return;
+    }
+
+    auto* ds = new SettingsDlgState();
+    ds->dash = st;
+    RECT rcParent = {};
+    GetWindowRect(st->hwndMain, &rcParent);
+    int dlgW = 600;
+    int dlgH = 340;
+    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
+    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
+
+    HWND hDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"ProcessCommanderSettingsWnd",
+        Tr(L"設定", L"Settings", L"Ajustes"),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        x, y, dlgW, dlgH,
+        st->hwndMain, nullptr, hInst, ds
+    );
+    if (hDlg) {
+        ShowWindow(hDlg, SW_SHOW);
+        SetForegroundWindow(hDlg);
+    } else {
+        delete ds;
+    }
+}
+
 static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     DashboardState* st = GetState(hwnd);
 
@@ -1522,40 +2235,41 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 
             st->hwndBtnStart = CreateWindowExW(0, L"BUTTON", L"+ Launch (powershell)",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 160, 24, hwnd, (HMENU)IDC_BTN_START, nullptr, nullptr);
-            st->hwndBtnConfig = CreateWindowExW(0, L"BUTTON", L"Config",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 74, 24, hwnd, (HMENU)IDC_BTN_CONFIG, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 160, 24, hwnd, (HMENU)IDC_BTN_START, nullptr, nullptr);
+            st->hwndBtnSettings = CreateWindowExW(0, L"BUTTON", Tr(L"設定", L"Settings", L"Ajustes"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 90, 24, hwnd, (HMENU)IDC_BTN_SETTINGS, nullptr, nullptr);
             st->hwndBtnKillSel = CreateWindowExW(0, L"BUTTON", L"Kill Tree",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 82, 24, hwnd, (HMENU)IDC_BTN_KILL_SEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 82, 24, hwnd, (HMENU)IDC_BTN_KILL_SEL, nullptr, nullptr);
             st->hwndBtnKillAll = CreateWindowExW(0, L"BUTTON", L"Kill All",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 74, 24, hwnd, (HMENU)IDC_BTN_KILL_ALL, nullptr, nullptr);
-            st->hwndBtnClear = CreateWindowExW(0, L"BUTTON", Tr(L"終了履歴を消去 (Clear Ended)", L"Clear Ended"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 165, 24, hwnd, (HMENU)IDC_BTN_CLEAR, nullptr, nullptr);
-            st->hwndBtnHideEnded = CreateWindowExW(0, L"BUTTON", Tr(L"終了履歴を非表示 (Hide Ended)", L"Hide Ended"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 185, 24, hwnd, (HMENU)IDC_BTN_HIDE_ENDED, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 74, 24, hwnd, (HMENU)IDC_BTN_KILL_ALL, nullptr, nullptr);
+            st->hwndBtnClear = CreateWindowExW(0, L"BUTTON", Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 165, 24, hwnd, (HMENU)IDC_BTN_CLEAR, nullptr, nullptr);
+            st->hwndBtnHideEnded = CreateWindowExW(0, L"BUTTON", Tr(L"終了履歴を非表示", L"Hide Ended", L"Ocultar finalizados"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 185, 24, hwnd, (HMENU)IDC_BTN_HIDE_ENDED, nullptr, nullptr);
             st->hwndBtnGridView = CreateWindowExW(0, L"BUTTON", L"Grid View",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 94, 24, hwnd, (HMENU)IDC_BTN_GRID_VIEW, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 94, 24, hwnd, (HMENU)IDC_BTN_GRID_VIEW, nullptr, nullptr);
             st->hwndBtnToggleList = CreateWindowExW(0, L"BUTTON", L"Hide List",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 90, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_LIST, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 90, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_LIST, nullptr, nullptr);
             st->hwndBtnToggleTerm = CreateWindowExW(0, L"BUTTON", L"Hide Terminal",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 112, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_TERM, nullptr, nullptr);
-            st->hwndBtnResetIds = CreateWindowExW(0, L"BUTTON", L"Reset IDs",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 80, 24, hwnd, (HMENU)IDC_BTN_RESET_IDS, nullptr, nullptr);
-            st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", Tr(L"トレイに格納 (Tray)", L"Tray"),
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 112, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_TERM, nullptr, nullptr);
+            st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", Tr(L"トレイに格納", L"Tray", L"Bandeja"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
 
             LoadShellConfig(st);
-            UpdateLaunchButtonLabel(st);
-            UpdateHideEndedButtonLabel(st);
-            UpdatePanelToggleLabels(st);
+            UpdateToolbarLabels(st);
+            SetWindowTextW(hwnd,
+                Tr(L"ProcessCommander — マルチターミナル ConPTY ダッシュボード (Direct2D TerminalView)",
+                   L"ProcessCommander — Multi-Terminal ConPTY Dashboard (Direct2D TerminalView)",
+                   L"ProcessCommander — Panel de terminales ConPTY (Direct2D TerminalView)"));
 
             st->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                 0, 0, 600, 160, hwnd, (HMENU)IDC_LIST_PROCS, nullptr, nullptr);
             ListView_SetExtendedListViewStyle(st->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            ApplyListTheme(st);
 
-            const int colWidths[11] = {56, 115, 125, 145, 110, 95, 80, 80, 60, 270, 280};
-            for (int i = 0; i < 11; ++i) {
+            const int colWidths[12] = {56, 115, 125, 145, 135, 110, 95, 80, 80, 60, 250, 250};
+            for (int i = 0; i < 12; ++i) {
                 LVCOLUMNW lvc = {};
                 lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
                 lvc.pszText = const_cast<wchar_t*>(ColumnTitle(i));
@@ -1566,14 +2280,15 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             UpdateListHeaderSortIndicator(st);
 
             st->hwndTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_SINGLELINE,
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_SINGLELINE | TCS_OWNERDRAWFIXED,
                 0, 0, 600, 26, hwnd, (HMENU)IDC_TAB_TERMINALS, nullptr, nullptr);
             g_tabHwnd = st->hwndTab;
+            SetWindowSubclass(st->hwndTab, TabSubclassProc, 1, 0);
 
             HWND uiCtrls[] = {
-                st->hwndBtnStart, st->hwndBtnConfig, st->hwndBtnKillSel, st->hwndBtnKillAll,
+                st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillSel, st->hwndBtnKillAll,
                 st->hwndBtnClear, st->hwndBtnHideEnded, st->hwndBtnGridView,
-                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnResetIds, st->hwndBtnHideTray,
+                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnHideTray,
                 st->hwndList, st->hwndTab
             };
             for (HWND h : uiCtrls) {
@@ -1583,7 +2298,28 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             st->gridView = std::make_unique<TerminalGridView>();
             st->gridView->Create(hwnd);
 
+            st->hwndKpiTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+            if (st->hwndKpiTip) {
+                SetWindowPos(st->hwndKpiTip, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                SendMessageW(st->hwndKpiTip, TTM_SETMAXTIPWIDTH, 0, 420);
+                for (int i = 0; i < 6; ++i) {
+                    TOOLINFOW ti = {};
+                    ti.cbSize = sizeof(ti);
+                    ti.uFlags = TTF_SUBCLASS;
+                    ti.hwnd = hwnd;
+                    ti.uId = static_cast<UINT_PTR>(i + 1);
+                    ti.rect = {0, 0, 0, 0};
+                    ti.lpszText = const_cast<wchar_t*>(L"");
+                    SendMessageW(st->hwndKpiTip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+                }
+            }
+
             InitTrayIcon(st);
+            ApplyNativeThemeToWindow(hwnd);
 
             SetTimer(hwnd, TIMER_REFRESH_ID, 250, nullptr);
             RefreshDashboardData(st);
@@ -1757,13 +2493,85 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             return 0;
         }
 
+        case WM_DRAWITEM: {
+            auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!dis) break;
+            if (dis->CtlType == ODT_TAB) {
+                wchar_t text[256] = {};
+                TCITEMW tie = {};
+                tie.mask = TCIF_TEXT;
+                tie.pszText = text;
+                tie.cchTextMax = 256;
+                TabCtrl_GetItem(dis->hwndItem, dis->itemID, &tie);
+                bool selected = (dis->itemState & ODS_SELECTED) != 0 ||
+                                TabCtrl_GetCurSel(dis->hwndItem) == static_cast<int>(dis->itemID);
+                COLORREF bg = selected ? g_theme.panel : g_theme.windowBg;
+                HBRUSH bgBrush = CreateSolidBrush(bg);
+                FillRect(dis->hDC, &dis->rcItem, bgBrush);
+                DeleteObject(bgBrush);
+                HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+                HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+                HGDIOBJ oldBrush = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+                Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+                SelectObject(dis->hDC, oldBrush);
+                SelectObject(dis->hDC, oldPen);
+                DeleteObject(borderPen);
+                if (selected) {
+                    RECT bar = dis->rcItem;
+                    bar.top = bar.bottom - 2;
+                    HBRUSH accentBrush = CreateSolidBrush(g_theme.accent);
+                    FillRect(dis->hDC, &bar, accentBrush);
+                    DeleteObject(accentBrush);
+                }
+                SetBkMode(dis->hDC, TRANSPARENT);
+                SetTextColor(dis->hDC, selected ? g_theme.accent : g_theme.text);
+                HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC,
+                    st ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT)));
+                RECT rcText = dis->rcItem;
+                InflateRect(&rcText, -6, 0);
+                DrawTextW(dis->hDC, text, -1, &rcText,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                SelectObject(dis->hDC, oldFont);
+                return TRUE;
+            }
+            if (dis->CtlType != ODT_BUTTON) break;
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bg = pressed ? g_theme.border : g_theme.panel;
+            HBRUSH bgBrush = CreateSolidBrush(bg);
+            FillRect(dis->hDC, &dis->rcItem, bgBrush);
+            DeleteObject(bgBrush);
+            HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+            HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+            HGDIOBJ oldBrush = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+            SelectObject(dis->hDC, oldBrush);
+            SelectObject(dis->hDC, oldPen);
+            DeleteObject(borderPen);
+
+            wchar_t text[256] = {};
+            GetWindowTextW(dis->hwndItem, text, 256);
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, (dis->itemState & ODS_DISABLED) ? g_theme.muted : g_theme.text);
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, st ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT)));
+            RECT rc = dis->rcItem;
+            InflateRect(&rc, -4, 0);
+            DrawTextW(dis->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dis->hDC, oldFont);
+            if (dis->itemState & ODS_FOCUS) {
+                RECT rcFocus = dis->rcItem;
+                InflateRect(&rcFocus, -3, -3);
+                DrawFocusRect(dis->hDC, &rcFocus);
+            }
+            return TRUE;
+        }
+
         case WM_COMMAND: {
             if (!st) return 0;
             int id = LOWORD(wParam);
             if (id == IDC_BTN_START) {
                 LaunchFromToolbar(st);
-            } else if (id == IDC_BTN_CONFIG) {
-                ShowShellConfigDialog(st);
+            } else if (id == IDC_BTN_SETTINGS) {
+                ShowSettingsDialog(st);
             } else if (id == IDC_BTN_KILL_SEL) {
                 if (st->selectedProcId > 0) {
                     std::string err;
@@ -1803,20 +2611,6 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 GetClientRect(hwnd, &rcClient);
                 LayoutControls(st, rcClient.right, rcClient.bottom);
                 InvalidateRect(hwnd, nullptr, FALSE);
-            } else if (id == IDC_BTN_RESET_IDS) {
-                if (MessageBoxW(hwnd,
-                        L"Reset process IDs? Finished processes will be renumbered from #1.\n"
-                        L"All running processes must be stopped first.",
-                        L"Reset Process IDs", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                    std::string err;
-                    int count = st->pm->ResetProcessIds(err);
-                    if (count < 0) {
-                        MessageBoxW(hwnd, Utf8ToWide(err).c_str(), L"Reset Process IDs", MB_ICONWARNING);
-                    } else {
-                        st->selectedProcId = -1;
-                        RefreshDashboardData(st);
-                    }
-                }
             } else if (id == IDC_BTN_HIDE_TRAY) {
                 HideToTray(st);
             }
@@ -1860,7 +2654,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 if (nmhdr->code == LVN_COLUMNCLICK) {
                     auto* nmlv = reinterpret_cast<NMLISTVIEW*>(lParam);
                     int clickedCol = nmlv->iSubItem;
-                    if (clickedCol >= 0 && clickedCol < 10) {
+                    if (clickedCol >= 0 && clickedCol < 12) {
                         if (st->sortColumn == clickedCol) {
                             st->sortAscending = !st->sortAscending;
                         } else {
@@ -1916,7 +2710,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         if (itemIdx >= 0 && itemIdx < static_cast<int>(st->cachedSnapshots.size())) {
                             const auto& snap = st->cachedSnapshots[itemIdx];
                             lvcd->clrTextBk = GetStateRowBgColor(snap);
-                            lvcd->clrText = RGB(15, 23, 42);
+                            lvcd->clrText = g_theme.listText;
                         }
                         return CDRF_NEWFONT;
                     }
@@ -1948,11 +2742,23 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             break;
         }
 
+        case WM_SETTINGCHANGE:
+        case 0x0320: { // WM_DWMCOLORIZATIONCOLORCHANGED
+            if (st && g_uiTheme == UiTheme::System) {
+                ApplyTheme();
+                ApplyListTheme(st);
+                ApplyNativeThemeToWindow(st->hwndMain);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
+
         case WM_CLOSE: {
             if (st && !st->allowExit) {
                 HideToTray(st);
                 return 0;
             }
+            if (st) SaveShellConfig(st);
             DestroyWindow(hwnd);
             return 0;
         }
@@ -2007,12 +2813,15 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc) {
 
     INITCOMMONCONTROLSEX icex = {};
     icex.dwSize = sizeof(icex);
-    icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_STANDARD_CLASSES;
+    icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
     InitCommonControlsEx(&icex);
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
     TerminalView::RegisterWindowClass(hInst);
     TerminalGridView::RegisterWindowClass(hInst);
+
+    g_uiLanguage = DetectDefaultLanguage();
+    ApplyTheme();
 
     DashboardState state;
     state.pm = &pm;
@@ -2066,6 +2875,7 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc) {
     ipc.SetNotifyHwnd(hwnd);
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+    ApplyNativeThemeToWindow(hwnd);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {

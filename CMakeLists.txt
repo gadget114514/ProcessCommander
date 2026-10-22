@@ -39,6 +39,7 @@ target_link_libraries(ProcessCommander PRIVATE
     user32
     gdi32
     comctl32
+    uxtheme
     shell32
     advapi32
     psapi
