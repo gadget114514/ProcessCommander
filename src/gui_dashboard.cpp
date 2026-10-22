@@ -70,6 +70,7 @@ struct ThemeColors {
     COLORREF terminalBg;
     COLORREF emptyBg;
     COLORREF listText;
+    COLORREF rowSelected;
     COLORREF rowRunning;
     COLORREF rowIdle;
     COLORREF rowCompleted;
@@ -130,23 +131,23 @@ static ThemeColors ThemeFor(UiTheme theme) {
             return {
                 RGB(241, 245, 249), RGB(255, 255, 255), RGB(203, 213, 225),
                 RGB(15, 23, 42), RGB(71, 85, 105), RGB(2, 132, 199),
-                RGB(15, 23, 42), RGB(226, 232, 240), RGB(15, 23, 42),
+                RGB(15, 23, 42), RGB(226, 232, 240), RGB(15, 23, 42), RGB(219, 234, 254),
                 RGB(220, 252, 231), RGB(254, 243, 199), RGB(219, 234, 254), RGB(254, 226, 226)
             };
         case UiTheme::HighContrast:
             return {
                 RGB(0, 0, 0), RGB(20, 20, 20), RGB(255, 255, 255),
                 RGB(255, 255, 255), RGB(220, 220, 220), RGB(255, 255, 0),
-                RGB(0, 0, 0), RGB(0, 0, 0), RGB(255, 255, 255),
+                RGB(0, 0, 0), RGB(0, 0, 0), RGB(255, 255, 255), RGB(0, 80, 160),
                 RGB(0, 40, 0), RGB(50, 40, 0), RGB(0, 20, 50), RGB(50, 0, 0)
             };
         case UiTheme::Dark:
         default:
             return {
-                RGB(2, 6, 14), RGB(8, 14, 24), RGB(30, 41, 59),
-                RGB(248, 250, 252), RGB(148, 163, 184), RGB(56, 189, 248),
-                RGB(0, 0, 0), RGB(4, 8, 14), RGB(255, 255, 255),
-                RGB(6, 40, 26), RGB(50, 38, 8), RGB(10, 28, 55), RGB(55, 14, 18)
+                RGB(10, 10, 12), RGB(18, 18, 20), RGB(50, 50, 54),
+                RGB(202, 202, 208), RGB(145, 145, 150), RGB(95, 125, 145),
+                RGB(0, 0, 0), RGB(12, 12, 14), RGB(202, 202, 208), RGB(30, 42, 52),
+                RGB(18, 30, 24), RGB(34, 30, 20), RGB(20, 28, 36), RGB(36, 22, 24)
             };
     }
 }
@@ -187,7 +188,7 @@ static void ApplyDarkModeApi(HWND hwnd, bool dark) {
 static void ApplyNativeControlTheme(HWND hwnd, bool dark) {
     if (!hwnd) return;
     ApplyDarkModeApi(hwnd, dark);
-    SetWindowTheme(hwnd, dark ? L"DarkMode_Explorer" : L"", dark ? L"DarkMode_Explorer" : L"");
+    SetWindowTheme(hwnd, dark ? L"DarkMode_Explorer" : L"", dark ? nullptr : L"");
 }
 
 static void ApplyNativeThemeToWindow(HWND hwnd) {
@@ -205,6 +206,63 @@ static void ApplyNativeThemeToWindow(HWND hwnd) {
             }
         }
     }
+}
+
+static void DrawHeaderItem(DRAWITEMSTRUCT* dis) {
+    if (!dis || !dis->hwndItem) return;
+    wchar_t text[256] = {};
+    HDITEMW hdiText = {};
+    hdiText.mask = HDI_TEXT;
+    hdiText.pszText = text;
+    hdiText.cchTextMax = 256;
+    SendMessageW(dis->hwndItem, HDM_GETITEMW, dis->itemID, reinterpret_cast<LPARAM>(&hdiText));
+    HBRUSH bgBrush = CreateSolidBrush(g_theme.windowBg);
+    FillRect(dis->hDC, &dis->rcItem, bgBrush);
+    DeleteObject(bgBrush);
+
+    SetBkMode(dis->hDC, TRANSPARENT);
+    SetTextColor(dis->hDC, g_theme.text);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(GetParent(dis->hwndItem), WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = SelectObject(dis->hDC, font ? font : GetStockObject(DEFAULT_GUI_FONT));
+    RECT rc = dis->rcItem;
+    InflateRect(&rc, -8, -1);
+    DrawTextW(dis->hDC, text, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dis->hDC, oldFont);
+
+    HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+    HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+    MoveToEx(dis->hDC, dis->rcItem.right - 1, dis->rcItem.top, nullptr);
+    LineTo(dis->hDC, dis->rcItem.right - 1, dis->rcItem.bottom);
+    MoveToEx(dis->hDC, dis->rcItem.left, dis->rcItem.bottom - 1, nullptr);
+    LineTo(dis->hDC, dis->rcItem.right, dis->rcItem.bottom - 1);
+    SelectObject(dis->hDC, oldPen);
+    DeleteObject(borderPen);
+}
+
+static LRESULT CALLBACK HeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                           UINT_PTR, DWORD_PTR) {
+    if (msg == WM_ERASEBKGND) {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        RECT rc = {};
+        GetClientRect(hwnd, &rc);
+        HBRUSH brush = CreateSolidBrush(g_theme.windowBg);
+        FillRect(hdc, &rc, brush);
+        DeleteObject(brush);
+        return 1;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                             UINT_PTR, DWORD_PTR) {
+    if (msg == WM_DRAWITEM) {
+        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+        if (dis && dis->CtlType == ODT_HEADER) {
+            DrawHeaderItem(dis);
+            return TRUE;
+        }
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 static LRESULT CALLBACK TabSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
@@ -399,6 +457,34 @@ static std::wstring StateLabelWide(ProcState state, bool idleWarning) {
 }
 
 static COLORREF GetStateBadgeColor(const ProcessSnapshot& s) {
+    if (g_uiTheme == UiTheme::HighContrast) {
+        switch (s.state) {
+            case ProcState::Running:
+                return (s.idleMs >= 10000) ? RGB(255, 255, 0) : RGB(0, 255, 0);
+            case ProcState::Completed:
+                return RGB(0, 200, 255);
+            case ProcState::Failed:
+            case ProcState::TimedOut:
+            case ProcState::IdleTimedOut:
+            case ProcState::Killed:
+                return RGB(255, 0, 0);
+        }
+        return RGB(255, 255, 255);
+    }
+    if (IsDarkThemeActive()) {
+        switch (s.state) {
+            case ProcState::Running:
+                return (s.idleMs >= 10000) ? RGB(118, 98, 64) : RGB(68, 100, 82);
+            case ProcState::Completed:
+                return RGB(68, 96, 124);
+            case ProcState::Failed:
+            case ProcState::TimedOut:
+            case ProcState::IdleTimedOut:
+            case ProcState::Killed:
+                return RGB(122, 74, 74);
+        }
+        return RGB(98, 98, 104);
+    }
     switch (s.state) {
         case ProcState::Running:
             return (s.idleMs >= 10000) ? RGB(217, 119, 6) : RGB(22, 163, 74);
@@ -426,6 +512,23 @@ static COLORREF GetStateRowBgColor(const ProcessSnapshot& s) {
             return g_theme.rowFailed;
     }
     return g_theme.panel;
+}
+
+static COLORREF KpiAccent(int index) {
+    static const COLORREF darkAccents[6] = {
+        RGB(125, 128, 134), RGB(78, 112, 92), RGB(120, 104, 74),
+        RGB(78, 104, 128), RGB(124, 84, 84), RGB(104, 94, 118)
+    };
+    static const COLORREF lightAccents[6] = {
+        RGB(100, 116, 139), RGB(22, 163, 74), RGB(217, 119, 6),
+        RGB(37, 99, 235), RGB(220, 38, 38), RGB(168, 85, 247)
+    };
+    static const COLORREF hcAccents[6] = {
+        RGB(255, 255, 255), RGB(0, 255, 0), RGB(255, 255, 0),
+        RGB(0, 200, 255), RGB(255, 0, 0), RGB(255, 0, 255)
+    };
+    if (g_uiTheme == UiTheme::HighContrast) return hcAccents[index];
+    return IsDarkThemeActive() ? darkAccents[index] : lightAccents[index];
 }
 
 static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std::wstring& value,
@@ -679,23 +782,23 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 
         if (i == 0) {
             DrawKpiCard(hdc, rcCard, Tr(L"総ターミナル数", L"TOTAL TERMINALS", L"TERMINALES TOTALES"), std::to_wstring(totalCount),
-                        RGB(148, 163, 184), st->hFontUi, st->hFontKpiVal);
+                        KpiAccent(0), st->hFontUi, st->hFontKpiVal);
         } else if (i == 1) {
             DrawKpiCard(hdc, rcCard, Tr(L"稼働中", L"ACTIVE RUNNING", L"EN EJECUCIÓN"), std::to_wstring(activeRunning),
-                        RGB(34, 197, 94), st->hFontUi, st->hFontKpiVal);
+                        KpiAccent(1), st->hFontUi, st->hFontKpiVal);
         } else if (i == 2) {
             DrawKpiCard(hdc, rcCard, Tr(L"待機 / アイドル", L"WAITING / IDLE", L"ESPERANDO / INACTIVO"), std::to_wstring(idleWaiting),
-                        RGB(245, 158, 11), st->hFontUi, st->hFontKpiVal);
+                        KpiAccent(2), st->hFontUi, st->hFontKpiVal);
         } else if (i == 3) {
             DrawKpiCard(hdc, rcCard, Tr(L"完了 (OK)", L"COMPLETED (OK)", L"COMPLETADO (OK)"), std::to_wstring(completedOk),
-                        RGB(59, 130, 246), st->hFontUi, st->hFontKpiVal);
+                        KpiAccent(3), st->hFontUi, st->hFontKpiVal);
         } else if (i == 4) {
             DrawKpiCard(hdc, rcCard, Tr(L"失敗 / 強制終了", L"FAILED / KILLED", L"FALLIDO / TERMINADO"), std::to_wstring(failedOrKilled),
-                        RGB(239, 68, 68), st->hFontUi, st->hFontKpiVal);
+                        KpiAccent(4), st->hFontUi, st->hFontKpiVal);
         } else if (i == 5) {
             std::wstring memStr = Utf8ToWide(FormatBytes(totalMemBytes));
             DrawKpiCard(hdc, rcCard, Tr(L"合計ジョブメモリ", L"TOTAL JOB MEMORY", L"MEMORIA TOTAL"), memStr,
-                        RGB(168, 85, 247), st->hFontUi, st->hFontKpiVal);
+                        KpiAccent(5), st->hFontUi, st->hFontKpiVal);
         }
     }
     UpdateKpiTooltips(st, totalTreeProcs);
@@ -2279,6 +2382,20 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             }
             UpdateListHeaderSortIndicator(st);
 
+            HWND hHeader = ListView_GetHeader(st->hwndList);
+            if (hHeader) {
+                for (int i = 0; i < 12; ++i) {
+                    HDITEMW hdi = {};
+                    hdi.mask = HDI_FORMAT;
+                    if (Header_GetItem(hHeader, i, &hdi)) {
+                        hdi.fmt |= HDF_OWNERDRAW;
+                        Header_SetItem(hHeader, i, &hdi);
+                    }
+                }
+                SetWindowSubclass(hHeader, HeaderSubclassProc, 1, 0);
+            }
+            SetWindowSubclass(st->hwndList, ListViewSubclassProc, 1, 0);
+
             st->hwndTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_SINGLELINE | TCS_OWNERDRAWFIXED,
                 0, 0, 600, 26, hwnd, (HMENU)IDC_TAB_TERMINALS, nullptr, nullptr);
@@ -2496,6 +2613,10 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         case WM_DRAWITEM: {
             auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
             if (!dis) break;
+            if (dis->CtlType == ODT_HEADER) {
+                DrawHeaderItem(dis);
+                return TRUE;
+            }
             if (dis->CtlType == ODT_TAB) {
                 wchar_t text[256] = {};
                 TCITEMW tie = {};
@@ -2557,11 +2678,6 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             InflateRect(&rc, -4, 0);
             DrawTextW(dis->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             SelectObject(dis->hDC, oldFont);
-            if (dis->itemState & ODS_FOCUS) {
-                RECT rcFocus = dis->rcItem;
-                InflateRect(&rcFocus, -3, -3);
-                DrawFocusRect(dis->hDC, &rcFocus);
-            }
             return TRUE;
         }
 
@@ -2709,7 +2825,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         int itemIdx = static_cast<int>(lvcd->nmcd.dwItemSpec);
                         if (itemIdx >= 0 && itemIdx < static_cast<int>(st->cachedSnapshots.size())) {
                             const auto& snap = st->cachedSnapshots[itemIdx];
-                            lvcd->clrTextBk = GetStateRowBgColor(snap);
+                            bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
+                            lvcd->clrTextBk = selected ? g_theme.rowSelected : GetStateRowBgColor(snap);
                             lvcd->clrText = g_theme.listText;
                         }
                         return CDRF_NEWFONT;
