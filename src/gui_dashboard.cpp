@@ -1540,6 +1540,13 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             SelectObject(dis->hDC, oldBrush);
             SelectObject(dis->hDC, oldPen);
             DeleteObject(borderPen);
+
+            if (dis->itemState & ODS_FOCUS) {
+                RECT rcFocus = dis->rcItem;
+                InflateRect(&rcFocus, -2, -2);
+                DrawFocusRect(dis->hDC, &rcFocus);
+            }
+
             wchar_t text[256] = {};
             GetWindowTextW(dis->hwndItem, text, 256);
             RECT rc = dis->rcItem;
@@ -1983,6 +1990,12 @@ static LRESULT CALLBACK ShellConfigWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             SelectObject(dis->hDC, oldBrush);
             SelectObject(dis->hDC, oldPen);
             DeleteObject(borderPen);
+
+            if (dis->itemState & ODS_FOCUS) {
+                RECT rcFocus = dis->rcItem;
+                InflateRect(&rcFocus, -2, -2);
+                DrawFocusRect(dis->hDC, &rcFocus);
+            }
 
             RECT textRc = dis->rcItem;
             if (radio) {
@@ -2428,6 +2441,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SelectObject(dis->hDC, oldBrush);
             SelectObject(dis->hDC, oldPen);
             DeleteObject(borderPen);
+
+            if (dis->itemState & ODS_FOCUS) {
+                RECT rcFocus = dis->rcItem;
+                InflateRect(&rcFocus, -2, -2);
+                DrawFocusRect(dis->hDC, &rcFocus);
+            }
 
             RECT textRc = dis->rcItem;
             if (radio) {
@@ -2894,6 +2913,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             SelectObject(dis->hDC, oldBrush);
             SelectObject(dis->hDC, oldPen);
             DeleteObject(borderPen);
+
+            if (dis->itemState & ODS_FOCUS) {
+                RECT rcFocus = dis->rcItem;
+                InflateRect(&rcFocus, -2, -2);
+                DrawFocusRect(dis->hDC, &rcFocus);
+            }
 
             wchar_t text[256] = {};
             GetWindowTextW(dis->hwndItem, text, 256);
