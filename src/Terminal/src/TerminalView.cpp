@@ -1901,25 +1901,38 @@ std::wstring TerminalView::ExtractScreenText(int maxLines) const {
 
     for (int r = 0; r < total; ++r) {
         const auto& line = buffer_.lineAt(r);
-        std::wstring rowStr;
-        rowStr.reserve(line.size());
-        for (const auto& cell : line) {
-            if (cell.wideContinuation) continue;
-            wchar_t c = (cell.ch == 0) ? L' ' : cell.ch;
-            rowStr.push_back(c);
+
+        // Fast-path scan from right-to-left to find actual content length.
+        // This avoids string allocations for empty lines and avoids O(2N) scans for dense lines.
+        int lastContentCol = -1;
+        for (int c = static_cast<int>(line.size()) - 1; c >= 0; --c) {
+            if (!line[c].wideContinuation && line[c].ch != 0 && line[c].ch != L' ') {
+                lastContentCol = c;
+                break;
+            }
         }
-        while (!rowStr.empty() && rowStr.back() == L' ') {
-            rowStr.pop_back();
-        }
-        if (rowStr.empty()) {
+
+        if (lastContentCol == -1) {
             if (!prevEmpty) {
                 lines.push_back(L"");
                 prevEmpty = true;
             }
-        } else {
-            lines.push_back(std::move(rowStr));
-            prevEmpty = false;
+            continue;
         }
+
+        std::wstring rowStr;
+        rowStr.reserve(lastContentCol + 1);
+        for (int c = 0; c <= lastContentCol; ++c) {
+            const auto& cell = line[c];
+            if (cell.wideContinuation) continue;
+            wchar_t ch = (cell.ch == 0) ? L' ' : cell.ch;
+            rowStr.push_back(ch);
+        }
+
+        // We know the string is not empty and the last char is not a space
+        // because lastContentCol points to a non-space, non-null char.
+        lines.push_back(std::move(rowStr));
+        prevEmpty = false;
     }
 
     while (!lines.empty() && lines.back().empty()) {
