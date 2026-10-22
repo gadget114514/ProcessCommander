@@ -65,10 +65,13 @@ void IpcServer::Stop() {
 
 void IpcServer::AcceptLoop() {
     while (!stop_) {
+        // Prevent remote attacks by appending PIPE_REJECT_REMOTE_CLIENTS
+        // Note: We do not use FILE_FLAG_FIRST_PIPE_INSTANCE here because
+        // we use PIPE_UNLIMITED_INSTANCES in a loop.
         HANDLE hPipe = CreateNamedPipeW(
             kPipeName,
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             256 * 1024,
             64 * 1024,
