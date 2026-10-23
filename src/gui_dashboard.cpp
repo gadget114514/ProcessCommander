@@ -2762,6 +2762,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
                     return TRUE;
                 }
+                for (const auto& tb : st->termBanners) {
+                    if (PtInRect(&tb.rcBorder, pt)) {
+                        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                }
             }
             break;
         }
