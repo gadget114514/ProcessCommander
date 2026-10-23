@@ -65,10 +65,12 @@ void IpcServer::Stop() {
 
 void IpcServer::AcceptLoop() {
     while (!stop_) {
+        // SECURITY (Sentinel): Reject remote clients to prevent unauthorized remote code execution.
+        // Without this flag, remote users might be able to connect to the named pipe and send commands.
         HANDLE hPipe = CreateNamedPipeW(
             kPipeName,
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             256 * 1024,
             64 * 1024,
