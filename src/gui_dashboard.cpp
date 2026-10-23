@@ -1233,8 +1233,6 @@ static void RefreshDashboardData(DashboardState* st) {
     int currentCount = ListView_GetItemCount(st->hwndList);
     int targetCount = static_cast<int>(st->cachedSnapshots.size());
 
-    SendMessageW(st->hwndList, WM_SETREDRAW, FALSE, 0);
-
     while (currentCount > targetCount) {
         ListView_DeleteItem(st->hwndList, currentCount - 1);
         currentCount--;
@@ -1321,8 +1319,6 @@ static void RefreshDashboardData(DashboardState* st) {
         }
     }
 
-    SendMessageW(st->hwndList, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(st->hwndList, nullptr, FALSE);
     InvalidateRect(st->hwndMain, nullptr, FALSE);
 }
 
