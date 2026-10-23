@@ -1659,15 +1659,27 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
         std::wstring logW = Utf8ToWide(snap.logFilePath);
         ShellExecuteW(st->hwndMain, L"open", L"notepad.exe", logW.c_str(), nullptr, SW_SHOWNORMAL);
     } else if (cmd == 3004) {
-        std::string err;
-        st->pm->KillProcess(procId, err);
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"このプロセスツリーを強制終了しますか？", L"Are you sure you want to kill this process tree?", L"¿Seguro que desea terminar este árbol de procesos?"),
+                Tr(L"終了の確認", L"Confirm Kill", L"Confirmar cierre"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            std::string err;
+            st->pm->KillProcess(procId, err);
+            RefreshDashboardData(st);
+        }
     } else if (cmd == 3005) {
-        st->pm->RemoveProcess(procId);
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"この履歴を削除しますか？", L"Are you sure you want to remove this entry?", L"¿Seguro que desea eliminar esta entrada?"),
+                Tr(L"削除の確認", L"Confirm Remove", L"Confirmar eliminación"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            st->pm->RemoveProcess(procId);
+            RefreshDashboardData(st);
+        }
     } else if (cmd == 3006) {
-        st->pm->ClearFinished();
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"終了済みプロセスの履歴を消去しますか？", L"Are you sure you want to clear finished process history?", L"¿Seguro que desea borrar el historial de procesos finalizados?"),
+                Tr(L"履歴消去の確認", L"Confirm Clear", L"Confirmar borrado"), MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            st->pm->ClearFinished();
+            RefreshDashboardData(st);
+        }
     }
 }
 
