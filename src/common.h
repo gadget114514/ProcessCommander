@@ -6,6 +6,10 @@
 #include <map>
 #include <cstdint>
 
+#ifndef IDC_HAND
+#define IDC_HAND MAKEINTRESOURCE(32649)
+#endif
+
 namespace pc {
 
 constexpr const wchar_t* kPipeName = L"\\\\.\\pipe\\ProcessCommander_IPC_v1";
