@@ -1975,25 +1975,24 @@ std::wstring TerminalView::ExtractLastNonEmptyLine() const {
     for (int r = total - 1; r >= 0; --r) {
         const auto& line = buffer_.lineAt(r);
 
-        // Fast-path: Skip line if it only contains whitespace
-        bool hasContent = false;
-        for (const auto& cell : line) {
-            if (!cell.wideContinuation && cell.ch != 0 && cell.ch != L' ' && cell.ch != L'\t') {
-                hasContent = true;
+        // Fast-path scan from right-to-left to find actual content length.
+        int lastContentCol = -1;
+        for (int c = static_cast<int>(line.size()) - 1; c >= 0; --c) {
+            if (!line[c].wideContinuation && line[c].ch != 0 && line[c].ch != L' ' && line[c].ch != L'\t') {
+                lastContentCol = c;
                 break;
             }
         }
-        if (!hasContent) continue;
+
+        if (lastContentCol == -1) continue;
 
         std::wstring rowStr;
-        rowStr.reserve(line.size());
-        for (const auto& cell : line) {
+        rowStr.reserve(lastContentCol + 1);
+        for (int c = 0; c <= lastContentCol; ++c) {
+            const auto& cell = line[c];
             if (cell.wideContinuation) continue;
-            wchar_t c = (cell.ch == 0) ? L' ' : cell.ch;
-            rowStr.push_back(c);
-        }
-        while (!rowStr.empty() && rowStr.back() == L' ') {
-            rowStr.pop_back();
+            wchar_t ch = (cell.ch == 0) ? L' ' : cell.ch;
+            rowStr.push_back(ch);
         }
         size_t first = rowStr.find_first_not_of(L" \t");
         if (first != std::wstring::npos) {
