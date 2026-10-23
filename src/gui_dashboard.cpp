@@ -2601,6 +2601,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             HWND hHeader = ListView_GetHeader(st->hwndList);
             if (hHeader) {
+                DWORD style = GetWindowLongW(hHeader, GWL_STYLE);
+                SetWindowLongW(hHeader, GWL_STYLE, style | HDS_DOUBLEBUFFER);
                 for (int i = 0; i < 12; ++i) {
                     HDITEMW hdi = {};
                     hdi.mask = HDI_FORMAT;
