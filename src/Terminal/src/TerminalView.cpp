@@ -1911,15 +1911,15 @@ std::wstring TerminalView::ExtractScreenText(int maxLines) const {
     int total = buffer_.totalLineCount();
     if (total <= 0) return L"";
 
+    int limit = (maxLines > 0) ? std::min(maxLines, total) : total;
     std::vector<std::wstring> lines;
-    lines.reserve(total);
-    bool prevEmpty = true;
+    lines.reserve(limit);
+    bool trailingEmptySkipped = false;
 
-    for (int r = 0; r < total; ++r) {
+    // Scan backwards from the newest line
+    for (int r = total - 1; r >= 0; --r) {
         const auto& line = buffer_.lineAt(r);
 
-        // Fast-path scan from right-to-left to find actual content length.
-        // This avoids string allocations for empty lines and avoids O(2N) scans for dense lines.
         int lastContentCol = -1;
         for (int c = static_cast<int>(line.size()) - 1; c >= 0; --c) {
             if (!line[c].wideContinuation && line[c].ch != 0 && line[c].ch != L' ') {
@@ -1929,12 +1929,17 @@ std::wstring TerminalView::ExtractScreenText(int maxLines) const {
         }
 
         if (lastContentCol == -1) {
-            if (!prevEmpty) {
-                lines.push_back(L"");
-                prevEmpty = true;
+            if (trailingEmptySkipped) {
+                // Ensure we do not add consecutive empty lines, but keeping one if next is not empty
+                if (lines.empty() || !lines.back().empty()) {
+                    lines.push_back(L"");
+                    if (lines.size() >= static_cast<size_t>(limit)) break;
+                }
             }
             continue;
         }
+
+        trailingEmptySkipped = true;
 
         std::wstring rowStr;
         rowStr.reserve(lastContentCol + 1);
@@ -1945,24 +1950,21 @@ std::wstring TerminalView::ExtractScreenText(int maxLines) const {
             rowStr.push_back(ch);
         }
 
-        // We know the string is not empty and the last char is not a space
-        // because lastContentCol points to a non-space, non-null char.
         lines.push_back(std::move(rowStr));
-        prevEmpty = false;
+        if (lines.size() >= static_cast<size_t>(limit)) break;
     }
 
-    while (!lines.empty() && lines.back().empty()) {
-        lines.pop_back();
+    // Since we scanned backwards, reverse to restore chronological order
+    std::reverse(lines.begin(), lines.end());
+
+    // Remove leading empty line that could've been added from the consecutive check
+    if (!lines.empty() && lines.front().empty()) {
+        lines.erase(lines.begin());
     }
     if (lines.empty()) return L"";
 
-    size_t startIdx = 0;
-    if (maxLines > 0 && lines.size() > static_cast<size_t>(maxLines)) {
-        startIdx = lines.size() - static_cast<size_t>(maxLines);
-    }
-
     std::wstring result;
-    for (size_t i = startIdx; i < lines.size(); ++i) {
+    for (size_t i = 0; i < lines.size(); ++i) {
         result += lines[i];
         result += L"\n";
     }
@@ -1975,30 +1977,28 @@ std::wstring TerminalView::ExtractLastNonEmptyLine() const {
     for (int r = total - 1; r >= 0; --r) {
         const auto& line = buffer_.lineAt(r);
 
-        // Fast-path: Skip line if it only contains whitespace
-        bool hasContent = false;
-        for (const auto& cell : line) {
+        int firstContent = -1;
+        int lastContent = -1;
+
+        // Fast-path: find first and last non-empty columns directly
+        for (int c = 0; c < static_cast<int>(line.size()); ++c) {
+            const auto& cell = line[c];
             if (!cell.wideContinuation && cell.ch != 0 && cell.ch != L' ' && cell.ch != L'\t') {
-                hasContent = true;
-                break;
+                if (firstContent == -1) firstContent = c;
+                lastContent = c;
             }
         }
-        if (!hasContent) continue;
+
+        if (firstContent == -1) continue;
 
         std::wstring rowStr;
-        rowStr.reserve(line.size());
-        for (const auto& cell : line) {
-            if (cell.wideContinuation) continue;
-            wchar_t c = (cell.ch == 0) ? L' ' : cell.ch;
-            rowStr.push_back(c);
+        rowStr.reserve(lastContent - firstContent + 1);
+        for (int c = firstContent; c <= lastContent; ++c) {
+            if (line[c].wideContinuation) continue;
+            wchar_t ch = (line[c].ch == 0) ? L' ' : line[c].ch;
+            rowStr.push_back(ch);
         }
-        while (!rowStr.empty() && rowStr.back() == L' ') {
-            rowStr.pop_back();
-        }
-        size_t first = rowStr.find_first_not_of(L" \t");
-        if (first != std::wstring::npos) {
-            return rowStr.substr(first);
-        }
+        return rowStr;
     }
     return L"";
 }
