@@ -5,3 +5,7 @@
 ## 2024-10-21 - [Extracting Text on Large Screen Grids]
 **Learning:** Terminal emulation often maintains 2D grids (like TerminalBuffer) pre-filled with empty/space characters. Converting these raw cell grids into strings blindly iterates over all allocated cells regardless of actual content. In high-frequency calls like `ExtractLastNonEmptyLine` (which runs per-process, per-tick for dashboards), doing this string allocation causes noticeable CPU overhead.
 **Action:** When working with 2D character grids, always implement a fast-path scan to check for non-empty content before allocating objects or strings for that row.
+
+## 2024-10-24 - [Extracting Text on Large Screen Grids Reverse Scan]
+**Learning:** Terminal emulation `ExtractScreenText` might need to extract a small slice of lines from a massive terminal buffer. Scanning from the top (O(totalLines)) can cause massive overhead.
+**Action:** When extracting latest text lines from a large terminal buffer, always scan backwards from newest lines (bottom-to-top) and break early once `maxLines` is reached to maintain O(maxLines) execution time.
