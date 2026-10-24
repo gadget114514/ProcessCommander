@@ -23,7 +23,7 @@
 - **Up to 16 Parallel Terminals in Live Grid View (`[Grid View]`)**:
   - Click **`[Grid View]`** to open a live DWM thumbnail & snapshot grid (up to **16 parallel terminals** in a `4×4` matrix). Click any cell or use arrow keys + Enter to jump directly to that terminal tab.
 
-![Terminal Grid View](docs/images/grid_view.png)
+
 
 ### 2. Multi-Shell Launcher & `[Config]` Dialog (`cmd` / `powershell` / `bash`)
 - Click **`[+ Launch (...)]`** on the toolbar to immediately spawn a new interactive ConPTY terminal tab.
