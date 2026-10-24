@@ -68,8 +68,9 @@ void IpcServer::AcceptLoop() {
         HANDLE hPipe = CreateNamedPipeW(
             kPipeName,
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-            PIPE_UNLIMITED_INSTANCES,
+            // SECURITY: PIPE_REJECT_REMOTE_CLIENTS prevents unauthorized remote connections
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES, // Cannot use FILE_FLAG_FIRST_PIPE_INSTANCE here due to unlimited instances
             256 * 1024,
             64 * 1024,
             0,
