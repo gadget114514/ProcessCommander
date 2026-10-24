@@ -239,8 +239,10 @@ HRESULT ConPtySession::SetUpPseudoConsole(int cols, int rows) {
     // Input pipe: server end = inputWriteSide_ (we write, OVERLAPPED)
     //             client end = inputReadSide_  (PTY reads, inheritable)
     inputWriteSide_ = CreateNamedPipeW(inName,
-        PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        // SECURITY: FILE_FLAG_FIRST_PIPE_INSTANCE prevents pipe squatting
+        PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        // SECURITY: PIPE_REJECT_REMOTE_CLIENTS prevents unauthorized remote connections
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
         1, 4096, 4096, 0, nullptr);
     if (inputWriteSide_ == INVALID_HANDLE_VALUE) {
         lastError_ = L"CreateNamedPipe(in) failed: " + Win32Error();
@@ -250,8 +252,10 @@ HRESULT ConPtySession::SetUpPseudoConsole(int cols, int rows) {
     // Output pipe: server end = outputReadSide_ (we read, OVERLAPPED)
     //              client end = outputWriteSide_ (PTY writes, inheritable)
     outputReadSide_ = CreateNamedPipeW(outName,
-        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        // SECURITY: FILE_FLAG_FIRST_PIPE_INSTANCE prevents pipe squatting
+        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        // SECURITY: PIPE_REJECT_REMOTE_CLIENTS prevents unauthorized remote connections
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
         1, 4096, 4096, 0, nullptr);
     if (outputReadSide_ == INVALID_HANDLE_VALUE) {
         lastError_ = L"CreateNamedPipe(out) failed: " + Win32Error();
