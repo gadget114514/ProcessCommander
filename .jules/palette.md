@@ -1,3 +1,3 @@
-## 2024-05-18 - Destructive Action Confirmation
-**Learning:** Found that "Kill All" acts immediately without user confirmation, which could be surprising and potentially destructive. It's a key UX pattern to add confirmation dialogs for destructive actions.
-**Action:** Always verify if destructive bulk actions have confirmations, and add them using MessageBoxW with MB_YESNO | MB_ICONQUESTION if they don't.
+## 2024-05-24 - Default Focus for Destructive Win32 Dialogs
+**Learning:** Destructive UI actions in Win32 applications (such as killing processes or clearing history) using `MessageBoxW` with `MB_YESNO` should default to 'No' to prevent accidental data loss or disruption from users pressing Enter too quickly.
+**Action:** Always append the `MB_DEFBUTTON2` flag alongside `MB_YESNO` in `MessageBoxW` when asking for confirmation of a destructive or irreversible action.
