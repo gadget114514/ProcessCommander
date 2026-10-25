@@ -1985,19 +1985,29 @@ std::wstring TerminalView::ExtractLastNonEmptyLine() const {
         }
         if (!hasContent) continue;
 
-        std::wstring rowStr;
-        rowStr.reserve(line.size());
-        for (const auto& cell : line) {
-            if (cell.wideContinuation) continue;
-            wchar_t c = (cell.ch == 0) ? L' ' : cell.ch;
-            rowStr.push_back(c);
+        int lastCol = static_cast<int>(line.size()) - 1;
+        while (lastCol >= 0) {
+            wchar_t c = (line[lastCol].ch == 0) ? L' ' : line[lastCol].ch;
+            if (!line[lastCol].wideContinuation && c != L' ') break;
+            --lastCol;
         }
-        while (!rowStr.empty() && rowStr.back() == L' ') {
-            rowStr.pop_back();
+
+        int firstCol = 0;
+        while (firstCol <= lastCol) {
+            wchar_t c = (line[firstCol].ch == 0) ? L' ' : line[firstCol].ch;
+            if (!line[firstCol].wideContinuation && c != L' ' && c != L'\t') break;
+            ++firstCol;
         }
-        size_t first = rowStr.find_first_not_of(L" \t");
-        if (first != std::wstring::npos) {
-            return rowStr.substr(first);
+
+        if (firstCol <= lastCol) {
+            std::wstring rowStr;
+            rowStr.reserve(lastCol - firstCol + 1);
+            for (int c = firstCol; c <= lastCol; ++c) {
+                if (line[c].wideContinuation) continue;
+                wchar_t ch = (line[c].ch == 0) ? L' ' : line[c].ch;
+                rowStr.push_back(ch);
+            }
+            return rowStr;
         }
     }
     return L"";
