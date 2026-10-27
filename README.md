@@ -1,6 +1,6 @@
 # ProcessCommander
 
-**[English](README.md) | [日本語 (Japanese)](README-ja.md)**
+**[English](README.md) | [Japanese](README-ja.md)**
 
 **ProcessCommander** is a native Win32 C++ Multi-Terminal ConPTY Process Manager and Dashboard designed for orchestrating, monitoring, and interacting with multiple parallel CLI agents (`claude`, `opencode`, build scripts, and interactive shells) via both **Model Context Protocol (MCP)** and **CLI commands**.
 
@@ -71,13 +71,13 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 ![Shell Config Dialog](docs/images/config_dialog.png)
 
 ### 3. History Management & Task Details Dialog
-- **`[終了履歴を消去 (Clear Ended)]`**: Deletes all completed/killed/failed process entries from history and updates `logs/processes_state.json`.
-- **`[終了履歴を非表示 (Hide Ended)]`**: Toggles hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
+- **`[Clear Ended]`**: Deletes all completed/killed/failed process entries from history and updates `logs/processes_state.json`.
+- **`[Hide Ended]`**: Toggles hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
 - **`[Reset Process IDs]`** (Settings dialog): Renumbers finished processes sequentially from `#1` and resets the next process ID. All running processes must be stopped first.
 - **Right-Click Context Menu & Task Details Dialog**: Right-click any process row or terminal tab (or double-click a row) to inspect the full command line, working directory, PID/Job metrics, log file path, `.done` file path, and output preview, or copy the command line to the clipboard.
 
 ### 4. System Tray Integration
-- Click **`[トレイに格納 (Tray)]`**, minimize the window, or press the window close button (`[X]`) to hide ProcessCommander into the **Windows System Tray** while keeping all background ConPTY processes and IPC/MCP services running.
+- Click **`[Tray]`**, minimize the window, or press the window close button (`[X]`) to hide ProcessCommander into the **Windows System Tray** while keeping all background ConPTY processes and IPC/MCP services running.
 - Left-click or double-click the tray icon (or right-click to open the tray menu) to restore and expand the dashboard at any time.
 
 ### 5. Persistent Logs, State Recovery & `.done` Completion Marker Files
@@ -90,7 +90,7 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 
 ### 7. Settings Dialog, Theme & Localization
 - Click **`[Settings]`** to open the settings dialog.
-- **Language**: switch between **日本語 / English / Español** buttons; the dashboard, dialogs, menus, and status bar update immediately.
+- **Language**: switch between **Japanese / English / Español** buttons; the dashboard, dialogs, menus, and status bar update immediately.
 - **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, or **High Contrast**. Buttons, list headers, scrollbars, and tab labels follow the dark theme.
 - **`[Shell Config...]`** and **`[Reset Process IDs]`** are available here (previously toolbar buttons).
 - Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
@@ -209,7 +209,7 @@ pcder.exe start --name "oc-run" --close-stdin --cmd "opencode run OK" --timeout 
 
 For an interactive TUI such as `opencode` (without `run`), prefer `--pty`. The MCP equivalent of `--close-stdin` is `open_stdin: false`.
 
-While a process is running, the **End Time** column shows an estimated finish time in gray. Pass `--eta "18:30"` (or `--estimate-end`) to set it explicitly; otherwise `--timeout` makes the column show remaining seconds (e.g. `残り 120 秒` / `120s left`).
+While a process is running, the **End Time** column shows an estimated finish time in gray. Pass `--eta "18:30"` (or `--estimate-end`) to set it explicitly; otherwise `--timeout` makes the column show remaining seconds (e.g. `120s left`).
 
 If `--cwd` is omitted, `pcder.exe` uses the directory where it was invoked and resolves it to an absolute path. ProcessCommander sets the child's actual working directory and its `PWD` / `INIT_CWD` environment variables to that path (removing `OLDPWD`), so tools such as opencode that resolve their project directory from `PWD` operate on the intended folder.
 
