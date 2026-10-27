@@ -131,7 +131,7 @@ Output binaries:
 - **`ProcessCommander.exe`** starts the dashboard with `gui` (the default if no command is given). If the dashboard is already running, `gui` restores it from the System Tray instead of starting a second instance. Use `mcp` to expose ProcessCommander as an MCP stdio server (it auto-starts the dashboard when needed).
 - **`pcder.exe`** is the recommended console interface for humans, scripts, and LLM agents. It communicates with the dashboard over `\\.\pipe\ProcessCommander_IPC_v1`, auto-starts `ProcessCommander.exe` when the dashboard is not running, and locates the GUI binary in the same directory. Keep both `.exe` files together.
 - **Legacy CLI compatibility**: `ProcessCommander.exe <command> [options]` forwards `start`, `list`, `logs`, `send`, `wait`, `kill`, `kill-all`, and `clear` to the same handler as `pcder.exe`. Prefer `pcder.exe` for new usage.
-- **LLM discovery**: `pcder.exe help --json` returns the full command reference plus ready-to-use CLI and MCP setup instructions as JSON.
+- **LLM discovery**: `pcder.exe help --json` is the canonical machine-readable guide. It includes `concepts` (IDs, modes, stdin, logs, `.done` files, cwd/env, data directory), `cli_exit_codes`, `environment_variables`, `common_examples`, `data_dir_option` with the resolved `effective_data_dir`, every command (including the `taskqueue` subcommands and `mcp install`), `setup.mcp.auto_install`, and an `agent` object with `working_model`, `data_dir_consistency`, `decision`, `states`, and `quick_start`.
 
 ---
 
@@ -245,7 +245,21 @@ pcder.exe mcp install --client opencode   # opencode.json
 pcder.exe mcp install --dry-run --json    # preview without writing
 ```
 
-`pcder.exe help` lists all commands and options. `pcder.exe help --json` returns the same reference plus CLI and MCP setup instructions as machine-readable JSON (including the resolved `ProcessCommander.exe` path and a ready-to-use MCP config), making it easy for LLM agents to learn how to configure the tool. The legacy `ProcessCommander.exe <command>` form remains available for compatibility, but `pcder.exe` is the recommended console interface.
+`pcder.exe help` is a complete, self-contained usage guide. It covers **PCDER CONCEPTS** (process IDs, modes, stdin, logs, `.done` files, cwd/env), **exit codes**, **environment variables**, **examples**, the **per-invocation `--data-dir`** and how to keep one project's data consistent, the **task queue**, **MCP auto-registration**, the **LLM orchestration model**, and the full **19-tool MCP list**.
+
+`pcder.exe help --json` returns the same material as machine-readable JSON:
+
+| Key | Contents |
+| :--- | :--- |
+| `concepts` | Process IDs, modes, stdin, logs, `.done` files, cwd/env, data directory, lifecycle |
+| `cli_exit_codes`, `environment_variables` | Exit codes and `PROCESS_COMMANDER_LOG_DIR` |
+| `data_dir_option`, `effective_data_dir` | Per-invocation `--data-dir`, its resolved absolute path for this call, and project consistency rules |
+| `common_examples` | Ready-to-run `pcder.exe` commands |
+| `commands` | Every command and option, including `taskqueue add/list/get/retry/cancel/pause/resume/graph/wait/purge` and `mcp install` |
+| `setup.mcp` | MCP registration, a ready-to-use config, and `auto_install` (`argv` + `command`) |
+| `agent` | `working_model` (supervisor → ProcessCommander → worker LLM), `data_dir_consistency`, `decision`, `states`, `quick_start` |
+
+This makes it possible for an LLM to read `help --json`, register the MCP server, pick the right execution model, and start using the tool without extra instructions. The legacy `ProcessCommander.exe <command>` form remains available for compatibility, but `pcder.exe` is the recommended console interface. `ProcessCommander.exe --help` documents the GUI/MCP server, the working model, and the same per-launch `--data-dir` option (see the appendix).
 
 ---
 
