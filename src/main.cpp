@@ -53,8 +53,37 @@ MCP SERVER SETUP:
     pcder.exe mcp install                    (writes .mcp.json in the current directory)
     pcder.exe mcp install --client opencode  (writes/updates opencode.json)
 
-  MCP tools: start_process, list_processes, get_process_output, send_process_input,
-             wait_process, kill_process, taskqueue_*.
+  PRECONDITIONS (LLM agents):
+    - Windows 10/11 x64, same user session as the dashboard; no admin required.
+    - The dashboard auto-starts on first use and owns the Named Pipe server.
+    - Logs, state and task queues live under logs/ (override: PROCESS_COMMANDER_LOG_DIR).
+
+  MCP tools (19):
+    Process (6):
+      start_process, list_processes, get_process_output, send_process_input,
+      wait_process, kill_process
+    Task queue (13):
+      taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
+      taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
+      taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,
+      taskqueue_graph
+
+  HOW TO USE (decision guide):
+    - One command, e.g. a build script, CLI agent or shell -> start_process
+    - Multiple steps, order, dependencies or retries      -> taskqueue_add + dependsOn
+    - Never write &&, ||, a single &, PowerShell ';', newline chains or polling
+      loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
+    - Required taskqueue job fields: id, command, summary, timeoutSec.
+      Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
+      killExclude, priority, instructionsFile / instructionsText.
+    - Success is verified: exit code AND optional filesNewer / outputRegex.
+    - States: waiting = queued and ready; pending = dependencies not satisfied;
+      blocked = a dependency failed; running; succeeded; failed; cancelled.
+    - Observe with taskqueue_wait / taskqueue_list / taskqueue_graph; after fixing
+      the cause use taskqueue_retry (blocked dependents resume automatically).
+
+  For the full machine-readable guide (agent.quick_start, decision, states):
+    pcder.exe help --json
 )";
 }
 
