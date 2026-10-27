@@ -49,8 +49,12 @@ MCP SERVER SETUP:
         }
       }
     }
+  Auto-register (recommended for LLM agents):
+    pcder.exe mcp install                    (writes .mcp.json in the current directory)
+    pcder.exe mcp install --client opencode  (writes/updates opencode.json)
+
   MCP tools: start_process, list_processes, get_process_output, send_process_input,
-             wait_process, kill_process.
+             wait_process, kill_process, taskqueue_*.
 )";
 }
 

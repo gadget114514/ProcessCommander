@@ -30,6 +30,134 @@ std::string ResolveGuiExePathUtf8() {
     return WideToUtf8(current);
 }
 
+
+struct McpInstallOutcome {
+    bool ok = false;
+    bool changed = false;
+    bool dryRun = false;
+    std::string error;
+    std::string targetPath;
+    std::string entryJson;
+};
+
+bool FindJsonContainerBounds(const std::string& json, const std::string& key, size_t& outOpen, size_t& outClose) {
+    std::string pattern = "\"" + key + "\"";
+    size_t pos = 0;
+    while ((pos = json.find(pattern, pos)) != std::string::npos) {
+        size_t after = pos + pattern.size();
+        while (after < json.size() && std::isspace(static_cast<unsigned char>(json[after]))) after++;
+        if (after < json.size() && json[after] == ':') {
+            after++;
+            while (after < json.size() && std::isspace(static_cast<unsigned char>(json[after]))) after++;
+            if (after < json.size() && json[after] == '{') {
+                int depth = 0;
+                bool inStr = false;
+                bool esc = false;
+                for (size_t i = after; i < json.size(); ++i) {
+                    char c = json[i];
+                    if (inStr) {
+                        if (esc) esc = false;
+                        else if (c == '\\') esc = true;
+                        else if (c == '"') inStr = false;
+                        continue;
+                    }
+                    if (c == '"') { inStr = true; continue; }
+                    if (c == '{') depth++;
+                    else if (c == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            outOpen = after;
+                            outClose = i;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        pos += pattern.size();
+    }
+    return false;
+}
+
+bool JsonContainerHasKey(const std::string& json, size_t open, size_t close, const std::string& name) {
+    std::string pattern = "\"" + name + "\"";
+    size_t pos = open + 1;
+    while (true) {
+        size_t found = json.find(pattern, pos);
+        if (found == std::string::npos || found >= close) return false;
+        size_t after = found + pattern.size();
+        while (after < close && std::isspace(static_cast<unsigned char>(json[after]))) after++;
+        if (after < close && json[after] == ':') return true;
+        pos = found + pattern.size();
+    }
+}
+
+std::string InsertJsonEntry(const std::string& json, size_t open, size_t close,
+                            const std::string& name, const std::string& entryBody) {
+    size_t p = open + 1;
+    while (p < close && std::isspace(static_cast<unsigned char>(json[p]))) p++;
+    bool empty = (p >= close);
+    std::string insertion = "\n    \"" + name + "\": " + entryBody;
+    if (!empty) insertion += ",";
+    std::string out = json;
+    out.insert(open + 1, insertion);
+    return out;
+}
+
+McpInstallOutcome InstallMcpConfig(const std::string& client, const std::string& explicitPath,
+                                   const std::string& serverName, bool dryRun, const std::string& exePath) {
+    McpInstallOutcome out;
+    out.dryRun = dryRun;
+
+    bool opencode = (client == "opencode");
+    std::string container = opencode ? "mcp" : "mcpServers";
+    out.entryJson = opencode
+        ? "{\"type\":\"local\",\"command\":[\"" + JsonEscape(exePath) + "\",\"mcp\"],\"enabled\":true}"
+        : "{\"command\":\"" + JsonEscape(exePath) + "\",\"args\":[\"mcp\"]}";
+
+    std::string target = explicitPath;
+    if (target.empty()) {
+        if (opencode) {
+            if (GetFileAttributesW(L"opencode.json") != INVALID_FILE_ATTRIBUTES) target = "opencode.json";
+            else if (GetFileAttributesW(L"opencode.jsonc") != INVALID_FILE_ATTRIBUTES) target = "opencode.jsonc";
+            else target = "opencode.json";
+        } else {
+            target = ".mcp.json";
+        }
+    }
+
+    std::wstring targetW = ResolveAbsolutePathWide(Utf8ToWide(target));
+    out.targetPath = WideToUtf8(targetW);
+
+    std::string content = ReadFileUtf8Wide(targetW);
+    if (content.empty()) {
+        std::string fresh = "{\n  \"" + container + "\": {\n    \"" + serverName + "\": " +
+                            out.entryJson + "\n  }\n}\n";
+        if (!dryRun) WriteFileAtomicWide(targetW, fresh);
+        out.ok = true;
+        out.changed = true;
+        return out;
+    }
+
+    size_t open = 0;
+    size_t close = 0;
+    if (!FindJsonContainerBounds(content, container, open, close)) {
+        out.error = "config file exists but has no \"" + container + "\" object: " + out.targetPath +
+                    " -- add this entry manually: \"" + serverName + "\": " + out.entryJson;
+        return out;
+    }
+    if (JsonContainerHasKey(content, open, close, serverName)) {
+        out.ok = true;
+        out.changed = false;
+        return out;
+    }
+    std::string updated = InsertJsonEntry(content, open, close, serverName, out.entryJson);
+    if (!dryRun) WriteFileAtomicWide(targetW, updated);
+    out.ok = true;
+    out.changed = true;
+    return out;
+}
+
 } // namespace
 
 void PrintCliUsage() {
@@ -91,6 +219,11 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
+  mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--dry-run]
+      Register ProcessCommander as an MCP server automatically. Writes or updates
+      .mcp.json (Claude Code, default) or opencode.json (--client opencode).
+      --json prints the machine-readable result; --dry-run previews without writing.
+
 TASK QUEUE:
   taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]
       Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
@@ -143,8 +276,13 @@ SETUP FOR LLM AGENTS:
 "        }\n"
 "      }\n"
 "\n"
+"    AUTO-REGISTER (for LLM agents; no manual JSON editing):\n"
+"      pcder.exe mcp install                    # .mcp.json (Claude Code)\n"
+"      pcder.exe mcp install --client opencode  # opencode.json\n"
+"      pcder.exe mcp install --path <file> --json --dry-run\n"
+"\n"
 "    MCP tools: start_process, list_processes, get_process_output,\n"
-"               send_process_input, wait_process, kill_process.\n"
+"               send_process_input, wait_process, kill_process, taskqueue_*.\n"
 "\n"
 "NOTE:\n"
 "  The GUI dashboard is provided by ProcessCommander.exe, which is auto-started\n"
@@ -250,6 +388,17 @@ void PrintCliUsageJson() {
       "options": []
     },
     {
+      "name": "mcp install",
+      "description": "Register ProcessCommander as an MCP server by writing or updating a client config file (.mcp.json for Claude Code, opencode.json for opencode).",
+      "usage": "pcder mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--dry-run] [--json]",
+      "options": [
+        {"name": "--client", "value": "<claude|opencode>", "description": "Target client. Default: claude."},
+        {"name": "--path", "value": "<file>", "description": "Config file to write. Default: .mcp.json (claude) or opencode.json (opencode)."},
+        {"name": "--name", "value": "<name>", "description": "MCP server name. Default: process-commander."},
+        {"name": "--dry-run", "description": "Report the change without writing the file."}
+      ]
+    },
+    {
       "name": "help",
       "description": "Show command usage.",
       "usage": "pcder help [--json]",
@@ -282,6 +431,15 @@ void PrintCliUsageJson() {
       "config_files": [".mcp.json", "claude_desktop_config.json"],
       "command": ")" << guiExe << R"(",
       "args": ["mcp"],
+      "auto_install": {
+        "description": "Writes or updates the MCP server entry automatically. Recommended for LLM agents.",
+        "argv": [")" << guiExe << R"(", "mcp", "install"],
+        "command": ")" << guiExe << R"( mcp install",
+        "clients": {
+          "claude": {"default_path": ".mcp.json", "container": "mcpServers"},
+          "opencode": {"default_path": "opencode.json", "container": "mcp"}
+        }
+      },
       "config_example": {
         "mcpServers": {
           "process-commander": {
@@ -290,7 +448,7 @@ void PrintCliUsageJson() {
           }
         }
       },
-      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process"]
+      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph"]
     }
   },
   "notes": [
@@ -825,6 +983,65 @@ int RunCli(const std::vector<std::string>& rawArgs) {
     }
     else if (subcmd == "clear") {
         reqJson << "{\"action\":\"clear\"}";
+    }
+    else if (subcmd == "mcp") {
+        std::string op = (args.size() >= 3) ? args[2] : "";
+        if (op != "install") {
+            std::string msg = "usage: pcder mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--dry-run]";
+            if (jsonOutput) std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(msg) << "\"}\n";
+            else std::cerr << msg << "\n";
+            return 1;
+        }
+        std::string client = "claude";
+        std::string installPath;
+        std::string serverName = "process-commander";
+        bool dryRun = false;
+        for (size_t i = 3; i < args.size(); ++i) {
+            if ((args[i] == "--client" || args[i] == "-c") && i + 1 < args.size()) client = args[++i];
+            else if ((args[i] == "--path" || args[i] == "-p") && i + 1 < args.size()) installPath = args[++i];
+            else if (args[i] == "--name" && i + 1 < args.size()) serverName = args[++i];
+            else if (args[i] == "--dry-run") dryRun = true;
+        }
+        if (client != "claude" && client != "opencode") {
+            std::string msg = "unknown client '" + client + "' (expected claude or opencode)";
+            if (jsonOutput) std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(msg) << "\"}\n";
+            else std::cerr << "Error: " << msg << "\n";
+            return 1;
+        }
+        McpInstallOutcome outcome = InstallMcpConfig(client, installPath, serverName, dryRun,
+                                                     ResolveGuiExePathUtf8());
+        if (!outcome.ok) {
+            if (jsonOutput) {
+                std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(outcome.error) << "\"}\n";
+            } else {
+                std::cerr << "Error: " << outcome.error << "\n";
+            }
+            return 1;
+        }
+        if (jsonOutput) {
+            std::cout << "{\"ok\":true"
+                      << ",\"client\":\"" << JsonEscape(client) << "\""
+                      << ",\"path\":\"" << JsonEscape(outcome.targetPath) << "\""
+                      << ",\"server\":\"" << JsonEscape(serverName) << "\""
+                      << ",\"changed\":" << (outcome.changed ? "true" : "false")
+                      << ",\"dry_run\":" << (outcome.dryRun ? "true" : "false")
+                      << ",\"entry\":" << outcome.entryJson
+                      << "}\n";
+        } else {
+            if (outcome.dryRun) {
+                std::cout << "[dry-run] Would " << (outcome.changed ? "register" : "keep")
+                          << " MCP server '" << serverName << "' in " << outcome.targetPath << "\n";
+            } else if (outcome.changed) {
+                std::cout << "Registered MCP server '" << serverName << "' in " << outcome.targetPath << "\n";
+            } else {
+                std::cout << "MCP server '" << serverName << "' is already registered in " << outcome.targetPath << "\n";
+            }
+            std::cout << "Entry: " << outcome.entryJson << "\n";
+            if (outcome.changed && !outcome.dryRun) {
+                std::cout << "Restart your LLM client (or reload its MCP servers) to pick it up.\n";
+            }
+        }
+        return 0;
     }
     else if (subcmd == "taskqueue") {
         std::string op = (args.size() >= 3) ? args[2] : "";

@@ -1030,6 +1030,9 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
     } else {
         sbLeft << Tr(L"待機 — ログ保存先: ", L"Ready — Logs saved to: ", L"Listo — Registros en: ") << GetLogsDirectoryWide();
     }
+    sbLeft << Tr(L"  |  Ctrl+T: プロセス / タスクキュー切替",
+                 L"  |  Ctrl+T: switch Processes / Task Queue",
+                 L"  |  Ctrl+T: cambiar Procesos / Cola de tareas");
 
     uint64_t dashElapsedMs = GetNowTickMs() - st->dashboardStartTickMs;
     std::wstringstream sbRight;
@@ -1527,6 +1530,7 @@ static void LayoutControls(DashboardState* st, int width, int height) {
     // Toolbar buttons flow into multiple rows when the window is too narrow.
     struct ToolbarButton { HWND hwnd; int w; };
     const ToolbarButton buttons[] = {
+        {st->hwndBtnViewTasks, 150},
         {st->hwndBtnStart, 160},
         {st->hwndBtnSettings, 90},
         {st->hwndBtnKillSel, 82},
@@ -1537,7 +1541,6 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnToggleList, 90},
         {st->hwndBtnToggleTerm, 112},
         {st->hwndBtnHideTray, 140},
-        {st->hwndBtnViewTasks, 110},
         {st->hwndClock, 80}
     };
     const int gap = 7;
@@ -1985,8 +1988,8 @@ static void UpdateToolbarLabels(DashboardState* st) {
         SetWindowTextW(st->hwndBtnHideTray, Tr(L"トレイに格納", L"Tray", L"Bandeja"));
     if (st->hwndBtnViewTasks)
         SetWindowTextW(st->hwndBtnViewTasks, st->showTaskQueue
-            ? Tr(L"プロセス表示", L"Processes", L"Procesos")
-            : Tr(L"タスクキュー", L"Task Queue", L"Cola de tareas"));
+            ? Tr(L"プロセスを表示", L"Show Processes", L"Ver procesos")
+            : Tr(L"タスクキューを表示", L"Show Task Queue", L"Ver cola de tareas"));
 }
 
 static void ApplyLanguageToUi(DashboardState* st) {
@@ -2773,7 +2776,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", Tr(L"トレイに格納", L"Tray", L"Bandeja"),
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
             st->hwndBtnViewTasks = CreateWindowExW(0, L"BUTTON", L"Task Queue",
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 110, 24, hwnd, (HMENU)IDC_BTN_VIEW_TASKS, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_VIEW_TASKS, nullptr, nullptr);
             st->hwndClock = CreateWindowExW(0, L"BUTTON", L"",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDC_CLOCK, nullptr, nullptr);
 
@@ -3514,11 +3517,21 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc, TaskQueueManager& tqm) {
     UpdateWindow(hwnd);
     ApplyNativeThemeToWindow(hwnd);
 
+    ACCEL accel = {};
+    accel.fVirt = FVIRTKEY | FCONTROL;
+    accel.key = 'T';
+    accel.cmd = IDC_BTN_VIEW_TASKS;
+    HACCEL hAccel = CreateAcceleratorTableW(&accel, 1);
+
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
+        if (hAccel && TranslateAcceleratorW(hwnd, hAccel, &msg)) {
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (hAccel) DestroyAcceleratorTable(hAccel);
 
     pm.SetTerminalCallbacks(nullptr, nullptr);
     ipc.SetNotifyHwnd(nullptr);
