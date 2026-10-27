@@ -362,6 +362,8 @@ enum ControlId {
     IDC_BTN_TOGGLE_TERM = 1021,
     IDC_BTN_SETTINGS = 1023,
     IDC_CLOCK = 1024,
+    IDC_BTN_VIEW_TASKS = 1025,
+    IDC_LIST_TASKS = 1026,
     IDC_SET_LANG_JA = 6001,
     IDC_SET_LANG_EN = 6002,
     IDC_SET_LANG_ES = 6003,
@@ -405,6 +407,7 @@ struct TermSlotBanner {
 struct DashboardState {
     ProcessManager* pm = nullptr;
     IpcServer* ipc = nullptr;
+    TaskQueueManager* tqm = nullptr;
     DWORD guiThreadId = 0;
 
     HWND hwndMain = nullptr;
@@ -419,6 +422,11 @@ struct DashboardState {
     HWND hwndBtnToggleList = nullptr;
     HWND hwndBtnToggleTerm = nullptr;
     HWND hwndList = nullptr;
+    HWND hwndTaskList = nullptr;
+    HWND hwndBtnViewTasks = nullptr;
+    bool showTaskQueue = false;
+    std::vector<std::string> taskJobIds;
+    std::vector<std::string> taskJobStates;
     HWND hwndTab = nullptr;
     HWND hwndClock = nullptr;
     HWND hwndKpiTip = nullptr;
@@ -1046,17 +1054,20 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 }
 
 static const wchar_t* ColumnTitle(int index) {
-    static const wchar_t* const ja[12] = {
+    static const wchar_t* const ja[13] = {
         L"ID", L"エージェント / 名前", L"状態", L"開始時刻", L"終了時刻", L"稼働時間",
-        L"PID (ツリー)", L"メモリ", L"CPU時間", L"アイドル", L"最新出力プレビュー", L"コマンドライン"
+        L"PID (ツリー)", L"メモリ", L"CPU時間", L"アイドル", L"最新出力プレビュー",
+        L"コマンドライン", L"ジョブ"
     };
-    static const wchar_t* const en[12] = {
+    static const wchar_t* const en[13] = {
         L"ID", L"Agent / Name", L"Status", L"Start Time", L"End Time", L"Uptime",
-        L"PID (Tree)", L"Memory", L"CPU Time", L"Idle", L"Latest Output Preview", L"Command Line"
+        L"PID (Tree)", L"Memory", L"CPU Time", L"Idle", L"Latest Output Preview",
+        L"Command Line", L"Job"
     };
-    static const wchar_t* const es[12] = {
+    static const wchar_t* const es[13] = {
         L"ID", L"Agente / Nombre", L"Estado", L"Hora de inicio", L"Hora de fin", L"Tiempo activo",
-        L"PID (Árbol)", L"Memoria", L"Tiempo de CPU", L"Inactivo", L"Última salida", L"Línea de comandos"
+        L"PID (Árbol)", L"Memoria", L"Tiempo de CPU", L"Inactivo", L"Última salida",
+        L"Línea de comandos", L"Trabajo"
     };
     if (g_uiLanguage == UiLanguage::Spanish) return es[index];
     if (g_uiLanguage == UiLanguage::English) return en[index];
@@ -1065,7 +1076,7 @@ static const wchar_t* ColumnTitle(int index) {
 static void UpdateListHeaderSortIndicator(DashboardState* st) {
     if (!st || !st->hwndList) return;
     HWND hHeader = ListView_GetHeader(st->hwndList);
-    for (int i = 0; i < 12; ++i) {
+    for (int i = 0; i < 13; ++i) {
         std::wstring title = ColumnTitle(i);
         if (i == st->sortColumn) {
             title += st->sortAscending ? L" ▲" : L" ▼";
@@ -1178,6 +1189,181 @@ static void PlayCompletionSound(const DashboardState& st) {
     }
 }
 
+
+static void RefreshDashboardData(DashboardState* st);
+
+static std::vector<std::string> SplitJsonObjectArray(const std::string& json, const std::string& key) {
+    std::vector<std::string> objs;
+    std::string pattern = "\"" + key + "\"";
+    size_t keyPos = json.find(pattern);
+    if (keyPos == std::string::npos) return objs;
+    size_t arr = json.find('[', keyPos);
+    if (arr == std::string::npos) return objs;
+    int depth = 0;
+    bool inStr = false;
+    bool esc = false;
+    size_t objStart = std::string::npos;
+    for (size_t i = arr; i < json.size(); ++i) {
+        char ch = json[i];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (ch == '\\') esc = true;
+            else if (ch == '"') inStr = false;
+            continue;
+        }
+        if (ch == '"') { inStr = true; continue; }
+        if (ch == '{') {
+            if (depth == 0) objStart = i;
+            depth++;
+        } else if (ch == '}') {
+            if (depth > 0) depth--;
+            if (depth == 0 && objStart != std::string::npos) {
+                objs.push_back(json.substr(objStart, i - objStart + 1));
+                objStart = std::string::npos;
+            }
+        } else if (ch == ']' && depth == 0) {
+            break;
+        }
+    }
+    return objs;
+}
+
+static std::string ExtractJsonArrayText(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\"";
+    size_t keyPos = json.find(pattern);
+    if (keyPos == std::string::npos) return "";
+    size_t arr = json.find('[', keyPos);
+    if (arr == std::string::npos) return "";
+    int depth = 0;
+    bool inStr = false;
+    bool esc = false;
+    for (size_t i = arr; i < json.size(); ++i) {
+        char ch = json[i];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (ch == '\\') esc = true;
+            else if (ch == '"') inStr = false;
+            continue;
+        }
+        if (ch == '"') { inStr = true; continue; }
+        if (ch == '[') depth++;
+        else if (ch == ']') { depth--; if (depth == 0) return json.substr(arr, i - arr + 1); }
+    }
+    return "";
+}
+
+static std::wstring TaskQueueDepsDisplay(const std::string& jobJson) {
+    std::string raw = ExtractJsonArrayText(jobJson, "depends_on");
+    std::wstring out;
+    size_t pos = 0;
+    while ((pos = raw.find("\"id\":\"", pos)) != std::string::npos) {
+        pos += 6;
+        size_t endQuote = raw.find('"', pos);
+        if (endQuote == std::string::npos) break;
+        if (!out.empty()) out += L", ";
+        out += Utf8ToWide(raw.substr(pos, endQuote - pos));
+        pos = endQuote;
+    }
+    return out;
+}
+
+static void ShowTaskQueueJobDetails(DashboardState* st, const std::string& jobId) {
+    if (!st || !st->tqm || jobId.empty()) return;
+    std::string err;
+    std::string resp = st->tqm->TaskQueueGet(jobId, true, 0, err);
+    MessageBoxW(st->hwndMain, Utf8ToWide(resp).c_str(), Utf8ToWide(jobId).c_str(), MB_OK | MB_ICONINFORMATION);
+}
+
+static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobId, POINT ptScreen) {
+    if (!st || !st->tqm || jobId.empty()) return;
+    HMENU hMenu = CreatePopupMenu();
+    AppendMenuW(hMenu, MF_STRING, 3101, Tr(L"再実行 (Retry)", L"Retry", L"Reintentar"));
+    AppendMenuW(hMenu, MF_STRING, 3102, Tr(L"キャンセル (Cancel)", L"Cancel", L"Cancelar"));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, 3103, Tr(L"キューを一時停止", L"Pause queue", L"Pausar cola"));
+    AppendMenuW(hMenu, MF_STRING, 3104, Tr(L"キューを再開", L"Resume queue", L"Reanudar cola"));
+    AppendMenuW(hMenu, MF_STRING, 3105, Tr(L"終了済みを消去", L"Purge finished", L"Purgar finalizados"));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, 3106, Tr(L"詳細を表示", L"Show details", L"Ver detalles"));
+
+    int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, ptScreen.x, ptScreen.y, 0, st->hwndMain, nullptr);
+    DestroyMenu(hMenu);
+
+    std::string err;
+    if (cmd == 3101) {
+        st->tqm->TaskQueueRetry(jobId, true, true, err);
+    } else if (cmd == 3102) {
+        st->tqm->TaskQueueCancel(jobId, err);
+    } else if (cmd == 3103 || cmd == 3104) {
+        std::string resp = st->tqm->TaskQueueGet(jobId, false, 0, err);
+        std::string tqName = JsonGetString(resp, "taskqueue", "");
+        if (!tqName.empty()) st->tqm->TaskQueuePause(tqName, cmd == 3103, err);
+    } else if (cmd == 3105) {
+        std::string resp = st->tqm->TaskQueueList("", "", err);
+        auto jobs = SplitJsonObjectArray(resp, "jobs");
+        std::vector<std::string> queuesDone;
+        for (const auto& j : jobs) {
+            std::string tqName = JsonGetString(j, "taskqueue", "");
+            if (tqName.empty()) continue;
+            if (std::find(queuesDone.begin(), queuesDone.end(), tqName) != queuesDone.end()) continue;
+            queuesDone.push_back(tqName);
+            st->tqm->TaskQueuePurge(tqName, "[\"succeeded\",\"failed\",\"cancelled\"]", err);
+        }
+    } else if (cmd == 3106) {
+        ShowTaskQueueJobDetails(st, jobId);
+    }
+    RefreshDashboardData(st);
+}
+
+static void RefreshTaskQueueData(DashboardState* st) {
+    if (!st || !st->tqm || !st->hwndTaskList) return;
+    if (!st->showTaskQueue) return;
+    std::string err;
+    std::string resp = st->tqm->TaskQueueList("", "", err);
+    auto jobs = SplitJsonObjectArray(resp, "jobs");
+
+    st->taskJobIds.clear();
+    st->taskJobStates.clear();
+    SendMessageW(st->hwndTaskList, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(st->hwndTaskList);
+    int row = 0;
+    for (const auto& j : jobs) {
+        std::string jobId = JsonGetString(j, "id", "");
+        std::string state = JsonGetString(j, "state", "");
+        st->taskJobIds.push_back(jobId);
+        st->taskJobStates.push_back(state);
+
+        std::wstring idStr = Utf8ToWide(jobId);
+        std::wstring summaryStr = Utf8ToWide(JsonGetString(j, "summary", ""));
+        std::wstring stateStr = Utf8ToWide(state);
+        std::wstring attemptsStr = std::to_wstring(JsonGetInt(j, "max_attempts", 0));
+        std::wstring timeoutStr = std::to_wstring(JsonGetInt(j, "timeout_sec", 0)) + L"s";
+        std::wstring depsStr = TaskQueueDepsDisplay(j);
+        std::string blockedBy = JsonGetString(j, "blocked_by", "");
+        if (!blockedBy.empty()) {
+            if (!depsStr.empty()) depsStr += L" ";
+            depsStr += L"<- " + Utf8ToWide(blockedBy);
+        }
+        std::wstring queueStr = Utf8ToWide(JsonGetString(j, "taskqueue", ""));
+
+        LVITEMW lvi = {};
+        lvi.mask = LVIF_TEXT;
+        lvi.iItem = row;
+        lvi.iSubItem = 0;
+        lvi.pszText = idStr.data();
+        ListView_InsertItem(st->hwndTaskList, &lvi);
+        ListView_SetItemText(st->hwndTaskList, row, 1, summaryStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 2, stateStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 3, attemptsStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 4, timeoutStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 5, depsStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 6, queueStr.data());
+        row++;
+    }
+    SendMessageW(st->hwndTaskList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(st->hwndTaskList, nullptr, FALSE);
+}
+
 static void RefreshDashboardData(DashboardState* st) {
     if (!st || !st->pm) return;
     st->allSnapshots = st->pm->GetAllSnapshots();
@@ -1276,6 +1462,10 @@ static void RefreshDashboardData(DashboardState* st) {
         std::wstring idleStr = (s.state == ProcState::Running) ? Utf8ToWide(FormatDurationSec(s.idleMs)) : L"-";
         std::wstring previewStr = Utf8ToWide(s.lastLinePreview);
         std::wstring cmdStr = Utf8ToWide(s.commandLine);
+        std::wstring jobStr = L"-";
+        if (!s.jobKey.empty()) {
+            jobStr = Utf8ToWide(s.jobKey) + L" #" + std::to_wstring(s.attemptN);
+        }
 
         if (i >= currentCount) {
             LVITEMW lvi = {};
@@ -1305,6 +1495,7 @@ static void RefreshDashboardData(DashboardState* st) {
         ListView_SetItemText(st->hwndList, i, 9, idleStr.data());
         ListView_SetItemText(st->hwndList, i, 10, previewStr.data());
         ListView_SetItemText(st->hwndList, i, 11, cmdStr.data());
+        ListView_SetItemText(st->hwndList, i, 12, jobStr.data());
     }
 
     int selIdx = -1;
@@ -1323,6 +1514,7 @@ static void RefreshDashboardData(DashboardState* st) {
 
     SendMessageW(st->hwndList, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(st->hwndList, nullptr, FALSE);
+    RefreshTaskQueueData(st);
     InvalidateRect(st->hwndMain, nullptr, FALSE);
 }
 
@@ -1345,6 +1537,7 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnToggleList, 90},
         {st->hwndBtnToggleTerm, 112},
         {st->hwndBtnHideTray, 140},
+        {st->hwndBtnViewTasks, 110},
         {st->hwndClock, 80}
     };
     const int gap = 7;
@@ -1364,9 +1557,9 @@ static void LayoutControls(DashboardState* st, int width, int height) {
     int topList = st->processListTop;
     if (st->hideProcessList) {
         ShowWindow(st->hwndList, SW_HIDE);
+        if (st->hwndTaskList) ShowWindow(st->hwndTaskList, SW_HIDE);
         st->rcSplitter = {};
     } else {
-        ShowWindow(st->hwndList, SW_SHOW);
         int availVert = height - topList - kStatusBarH - margin;
         int maxListH = (std::max)(kMinListH, availVert - kTabH - 2 - kMinTerminalH);
         int listH = st->processListHeight;
@@ -1377,7 +1570,10 @@ static void LayoutControls(DashboardState* st, int width, int height) {
             if (listH > maxListH) listH = maxListH;
             st->processListHeight = listH;
         }
-        MoveWindow(st->hwndList, margin, topList, width - margin * 2, listH, TRUE);
+        HWND activeList = (st->showTaskQueue && st->hwndTaskList) ? st->hwndTaskList : st->hwndList;
+        if (st->hwndList) ShowWindow(st->hwndList, st->showTaskQueue ? SW_HIDE : SW_SHOW);
+        if (st->hwndTaskList) ShowWindow(st->hwndTaskList, st->showTaskQueue ? SW_SHOW : SW_HIDE);
+        MoveWindow(activeList, margin, topList, width - margin * 2, listH, TRUE);
         st->rcSplitter = {margin, topList + listH + 1, width - margin, topList + listH + 1 + kSplitterH};
         if (st->hideTerminalGrid) st->rcSplitter = {};
     }
@@ -1787,6 +1983,10 @@ static void UpdateToolbarLabels(DashboardState* st) {
     UpdatePanelToggleLabels(st);
     if (st->hwndBtnHideTray)
         SetWindowTextW(st->hwndBtnHideTray, Tr(L"トレイに格納", L"Tray", L"Bandeja"));
+    if (st->hwndBtnViewTasks)
+        SetWindowTextW(st->hwndBtnViewTasks, st->showTaskQueue
+            ? Tr(L"プロセス表示", L"Processes", L"Procesos")
+            : Tr(L"タスクキュー", L"Task Queue", L"Cola de tareas"));
 }
 
 static void ApplyLanguageToUi(DashboardState* st) {
@@ -2572,6 +2772,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 112, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_TERM, nullptr, nullptr);
             st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", Tr(L"トレイに格納", L"Tray", L"Bandeja"),
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
+            st->hwndBtnViewTasks = CreateWindowExW(0, L"BUTTON", L"Task Queue",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 110, 24, hwnd, (HMENU)IDC_BTN_VIEW_TASKS, nullptr, nullptr);
             st->hwndClock = CreateWindowExW(0, L"BUTTON", L"",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDC_CLOCK, nullptr, nullptr);
 
@@ -2588,8 +2790,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ListView_SetExtendedListViewStyle(st->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
             ApplyListTheme(st);
 
-            const int colWidths[12] = {56, 115, 125, 145, 135, 110, 95, 80, 80, 60, 250, 250};
-            for (int i = 0; i < 12; ++i) {
+            const int colWidths[13] = {56, 115, 125, 145, 135, 110, 95, 80, 80, 60, 250, 250, 120};
+            for (int i = 0; i < 13; ++i) {
                 LVCOLUMNW lvc = {};
                 lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
                 lvc.pszText = const_cast<wchar_t*>(ColumnTitle(i));
@@ -2601,7 +2803,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             HWND hHeader = ListView_GetHeader(st->hwndList);
             if (hHeader) {
-                for (int i = 0; i < 12; ++i) {
+                for (int i = 0; i < 13; ++i) {
                     HDITEMW hdi = {};
                     hdi.mask = HDI_FORMAT;
                     if (Header_GetItem(hHeader, i, &hdi)) {
@@ -2613,6 +2815,34 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             }
             SetWindowSubclass(st->hwndList, ListViewSubclassProc, 1, 0);
 
+            st->hwndTaskList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+                0, 0, 600, 160, hwnd, (HMENU)IDC_LIST_TASKS, nullptr, nullptr);
+            ListView_SetExtendedListViewStyle(st->hwndTaskList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            ListView_SetBkColor(st->hwndTaskList, g_theme.panel);
+            ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
+            ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
+            {
+                const wchar_t* taskCols[] = {
+                    Tr(L"ID", L"ID", L"ID"),
+                    Tr(L"サマリ", L"Summary", L"Resumen"),
+                    Tr(L"状態", L"State", L"Estado"),
+                    Tr(L"試行上限", L"Max Attempts", L"Intentos"),
+                    Tr(L"タイムアウト", L"Timeout", L"Tiempo limite"),
+                    Tr(L"依存 / 理由", L"Depends / Reason", L"Dependencias"),
+                    Tr(L"キュー", L"Queue", L"Cola")
+                };
+                const int taskWidths[7] = {120, 320, 100, 100, 110, 260, 140};
+                for (int i = 0; i < 7; ++i) {
+                    LVCOLUMNW lvc = {};
+                    lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                    lvc.pszText = const_cast<wchar_t*>(taskCols[i]);
+                    lvc.cx = taskWidths[i];
+                    lvc.iSubItem = i;
+                    ListView_InsertColumn(st->hwndTaskList, i, &lvc);
+                }
+            }
+
             st->hwndTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_SINGLELINE | TCS_OWNERDRAWFIXED,
                 0, 0, 600, 26, hwnd, (HMENU)IDC_TAB_TERMINALS, nullptr, nullptr);
@@ -2623,7 +2853,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillSel, st->hwndBtnKillAll,
                 st->hwndBtnClear, st->hwndBtnHideEnded, st->hwndBtnGridView,
                 st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnHideTray, st->hwndClock,
-                st->hwndList, st->hwndTab
+                st->hwndBtnViewTasks, st->hwndList, st->hwndTaskList, st->hwndTab
             };
             for (HWND h : uiCtrls) {
                 if (h) SendMessageW(h, WM_SETFONT, (WPARAM)st->hFontUi, TRUE);
@@ -2943,6 +3173,14 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 UpdateHideEndedButtonLabel(st);
                 SaveShellConfig(st);
                 RefreshDashboardData(st);
+            } else if (id == IDC_BTN_VIEW_TASKS) {
+                st->showTaskQueue = !st->showTaskQueue;
+                UpdateToolbarLabels(st);
+                RECT rcClient = {};
+                GetClientRect(hwnd, &rcClient);
+                LayoutControls(st, rcClient.right, rcClient.bottom);
+                RefreshDashboardData(st);
+                InvalidateRect(hwnd, nullptr, FALSE);
             } else if (id == IDC_BTN_GRID_VIEW) {
                 if (st->gridView) {
                     LayoutTerminalViews(st);
@@ -3004,11 +3242,44 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         }
                     }
                 }
+            } else if (nmhdr->idFrom == IDC_LIST_TASKS) {
+                if (nmhdr->code == NM_RCLICK) {
+                    auto* nmia = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+                    int idx = nmia->iItem;
+                    if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size())) {
+                        POINT ptScreen = {};
+                        GetCursorPos(&ptScreen);
+                        ShowTaskQueueContextMenu(st, st->taskJobIds[idx], ptScreen);
+                    }
+                } else if (nmhdr->code == NM_DBLCLK) {
+                    auto* nmia = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+                    int idx = nmia->iItem;
+                    if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size())) {
+                        ShowTaskQueueJobDetails(st, st->taskJobIds[idx]);
+                    }
+                } else if (nmhdr->code == NM_CUSTOMDRAW) {
+                    auto* lvcd = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
+                    if (lvcd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+                        return CDRF_NOTIFYITEMDRAW;
+                    }
+                    if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                        int idx = static_cast<int>(lvcd->nmcd.dwItemSpec);
+                        if (idx >= 0 && idx < static_cast<int>(st->taskJobStates.size())) {
+                            const std::string& sstate = st->taskJobStates[idx];
+                            if (sstate == "succeeded") lvcd->clrText = RGB(60, 160, 80);
+                            else if (sstate == "running") lvcd->clrText = RGB(40, 120, 220);
+                            else if (sstate == "blocked") lvcd->clrText = RGB(190, 140, 20);
+                            else if (sstate == "failed") lvcd->clrText = RGB(200, 60, 60);
+                            else lvcd->clrText = g_theme.listText;
+                        }
+                        return CDRF_NEWFONT;
+                    }
+                }
             } else if (nmhdr->idFrom == IDC_LIST_PROCS) {
                 if (nmhdr->code == LVN_COLUMNCLICK) {
                     auto* nmlv = reinterpret_cast<NMLISTVIEW*>(lParam);
                     int clickedCol = nmlv->iSubItem;
-                    if (clickedCol >= 0 && clickedCol < 12) {
+                    if (clickedCol >= 0 && clickedCol < 13) {
                         if (st->sortColumn == clickedCol) {
                             st->sortAscending = !st->sortAscending;
                         } else {
@@ -3173,7 +3444,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc) {
+int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc, TaskQueueManager& tqm) {
     SetProcessDPIAware();
 
     INITCOMMONCONTROLSEX icex = {};
@@ -3191,6 +3462,7 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc) {
     DashboardState state;
     state.pm = &pm;
     state.ipc = &ipc;
+    state.tqm = &tqm;
     state.guiThreadId = GetCurrentThreadId();
     state.dashboardStartTimeStr = GetCurrentTimestampStr();
     state.dashboardStartTickMs = GetNowTickMs();

@@ -1,6 +1,7 @@
 #include "common.h"
 #include "process_manager.h"
 #include "ipc_server.h"
+#include "taskqueue.h"
 #include "mcp_server.h"
 #include "gui_dashboard.h"
 #include "cli.h"
@@ -108,10 +109,17 @@ int main() {
         }
 
         ProcessManager pm;
-        IpcServer ipc(pm);
+        TaskQueueManager tqm;
+        tqm.SetProcessManager(&pm);
+        pm.SetProcessFinishedCallback([&tqm](int pid, int ec, const std::string& kind) {
+            tqm.OnProcessFinished(pid, ec, kind);
+        });
+        IpcServer ipc(pm, tqm);
         ipc.Start();
-        int rc = RunGuiDashboard(pm, ipc);
+        int rc = RunGuiDashboard(pm, ipc, tqm);
         ipc.Stop();
+        pm.SetProcessFinishedCallback(nullptr);
+        tqm.ShutdownTaskQueueManager();
         if (hMutex) CloseHandle(hMutex);
         return rc;
     }

@@ -58,6 +58,50 @@ static std::string ExtractArgumentsJson(const std::string& json) {
     return json.substr(pos);
 }
 
+// Extract a raw JSON value (object, array, string or scalar) for a top-level key.
+static std::string ExtractRawJsonValue(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\"";
+    size_t keyPos = json.find(pattern);
+    if (keyPos == std::string::npos) return "";
+    size_t colon = json.find(':', keyPos + pattern.size());
+    if (colon == std::string::npos) return "";
+    size_t p = colon + 1;
+    while (p < json.size() && std::isspace(static_cast<unsigned char>(json[p]))) p++;
+    if (p >= json.size()) return "";
+    char open = json[p];
+    if (open == '[' || open == '{') {
+        char close = (open == '[') ? ']' : '}';
+        int depth = 0;
+        bool inStr = false;
+        bool escaped = false;
+        for (size_t i = p; i < json.size(); ++i) {
+            char c = json[i];
+            if (inStr) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') inStr = false;
+                continue;
+            }
+            if (c == '"') { inStr = true; continue; }
+            if (c == open) depth++;
+            else if (c == close) { depth--; if (depth == 0) return json.substr(p, i - p + 1); }
+        }
+        return "";
+    }
+    size_t end = p;
+    if (open == '"') {
+        end = p + 1;
+        while (end < json.size()) {
+            if (json[end] == '"' && json[end - 1] != '\\') { end++; break; }
+            end++;
+        }
+        return json.substr(p, end - p);
+    }
+    while (end < json.size() && json[end] != ',' && json[end] != '}' && json[end] != ']' &&
+           !std::isspace(static_cast<unsigned char>(json[end]))) end++;
+    return json.substr(p, end - p);
+}
+
 static std::string BuildMcpToolResult(const std::string& rpcIdRaw, const std::string& contentText, bool isError = false) {
     std::ostringstream oss;
     oss << "{\"jsonrpc\":\"2.0\",\"id\":" << rpcIdRaw
@@ -107,7 +151,7 @@ int RunMcpServer() {
             oss << "{\"jsonrpc\":\"2.0\",\"id\":" << rpcId << ",\"result\":{\"tools\":["
                 << "{"
                 << "\"name\":\"start_process\","
-                << "\"description\":\"Start and manage an external LLM CLI or program (e.g. claude, opencode) under a Win32 Job Object and display it on the ProcessCommander GUI Dashboard. Automatically writes live output to log_file and creates done_file atomically when the process exits. Set wait=true and wait_ms=0 to block until completion.\","
+                << "\"description\":\"Start and manage an external LLM CLI or program (e.g. claude, opencode) under a Win32 Job Object and display it on the ProcessCommander GUI Dashboard. Automatically writes live output to log_file and creates done_file atomically when the process exits. Set wait=true and wait_ms=0 to block until completion. To run multiple commands in order, use taskqueue_add instead; chained commands such as '&&' are rejected.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"cmd\":{\"type\":\"string\",\"description\":\"Command line to execute (e.g. 'claude -p ...' or 'opencode')\"},"
                 << "\"name\":{\"type\":\"string\",\"description\":\"Friendly display label for the dashboard\"},"
@@ -164,6 +208,121 @@ int RunMcpServer() {
                 << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID\"},"
                 << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"Max milliseconds to wait (default 30000)\"}"
                 << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_add\","
+                << "\"description\":\"Register one or more jobs in a task queue. ProcessCommander decides execution order, timeouts, success checks and automatic retries. Each job must have a one-line summary and its own timeoutSec. Use dependsOn to chain jobs instead of shell '&&'.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Task queue name, e.g. 'main'\"},"
+                << "\"jobs\":{\"type\":\"array\",\"description\":\"Job objects: id, command, summary, timeoutSec (required); cwd, env, dependsOn (['id'] or [{id,on}]), idle {outputSec,cpuSec}, maxAttempts, retryDelaySec, success {exitCode,filesNewer,outputRegex}, killExclude, priority, instructionsFile or instructionsText\",\"items\":{\"type\":\"object\"}},"
+                << "\"concurrency\":{\"type\":\"integer\",\"description\":\"Max jobs running at the same time for this queue (default 1)\"},"
+                << "\"notifyFile\":{\"type\":\"string\",\"description\":\"Optional file updated on jobFailed / taskqueueStalled / taskqueueDrained\"}"
+                << "},\"required\":[\"taskqueue\",\"jobs\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_list\","
+                << "\"description\":\"List task queue jobs with state, attempts, last reason and blockedBy.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Optional task queue name (all queues when omitted)\"},"
+                << "\"state\":{\"type\":\"string\",\"description\":\"Optional state filter: pending, running, succeeded, failed, blocked, cancelled\"}"
+                << "}}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_get\","
+                << "\"description\":\"Get a job with attempt history, instructions text, and sourceChanged/sourceMissing flags.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Job id\"},"
+                << "\"includeInstructions\":{\"type\":\"boolean\",\"description\":\"Include instructions text (default true)\"},"
+                << "\"rev\":{\"type\":\"integer\",\"description\":\"Optional instructions revision to return\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_retry\","
+                << "\"description\":\"Move a failed/blocked/cancelled job back to pending, optionally refreshing its instructions from the source file. Blocked dependents become pending automatically.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Job id\"},"
+                << "\"resetAttempts\":{\"type\":\"boolean\",\"description\":\"Reset the attempt counter (default true)\"},"
+                << "\"refreshInstructions\":{\"type\":\"boolean\",\"description\":\"Reload instructions from the source file (default true)\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_update\","
+                << "\"description\":\"Update a pending/failed/blocked job (summary, command, timeoutSec, idle, maxAttempts, success, env, instructions). Dependencies are changed with taskqueue_link/unlink.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Job id\"},"
+                << "\"summary\":{\"type\":\"string\"},"
+                << "\"command\":{\"type\":\"string\"},"
+                << "\"timeoutSec\":{\"type\":\"integer\"},"
+                << "\"idle\":{\"type\":\"object\"},"
+                << "\"maxAttempts\":{\"type\":\"integer\"},"
+                << "\"success\":{\"type\":\"object\"},"
+                << "\"env\":{\"type\":\"object\"},"
+                << "\"instructionsFile\":{\"type\":\"string\"},"
+                << "\"instructionsText\":{\"type\":\"string\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_cancel\","
+                << "\"description\":\"Cancel a job. A running attempt is killed and is not retried.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Job id\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_pause\","
+                << "\"description\":\"Stop starting new jobs in a task queue (running jobs continue).\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"taskqueue\":{\"type\":\"string\"}"
+                << "},\"required\":[\"taskqueue\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_resume\","
+                << "\"description\":\"Resume a paused task queue.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"taskqueue\":{\"type\":\"string\"}"
+                << "},\"required\":[\"taskqueue\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_wait\","
+                << "\"description\":\"Wait until a task queue version changes (long poll) and return its jobs.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"taskqueue\":{\"type\":\"string\"},"
+                << "\"sinceVersion\":{\"type\":\"integer\",\"description\":\"Version last seen by the caller\"},"
+                << "\"timeoutMs\":{\"type\":\"integer\",\"description\":\"Max wait in milliseconds (default 30000)\"}"
+                << "},\"required\":[\"taskqueue\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_purge\","
+                << "\"description\":\"Remove finished jobs from a task queue.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"taskqueue\":{\"type\":\"string\"},"
+                << "\"states\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"States to purge (default succeeded, failed, cancelled)\"}"
+                << "},\"required\":[\"taskqueue\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_link\","
+                << "\"description\":\"Add one dependency to an existing pending/blocked/failed job.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"job\":{\"type\":\"string\",\"description\":\"Job that gains the dependency\"},"
+                << "\"dependsOn\":{\"type\":\"string\",\"description\":\"Dependency job id\"},"
+                << "\"on\":{\"type\":\"string\",\"enum\":[\"success\",\"done\"],\"description\":\"Start condition (default success)\"}"
+                << "},\"required\":[\"job\",\"dependsOn\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_unlink\","
+                << "\"description\":\"Remove one dependency from an existing pending/blocked/failed job.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"job\":{\"type\":\"string\"},"
+                << "\"dependsOn\":{\"type\":\"string\"}"
+                << "},\"required\":[\"job\",\"dependsOn\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"taskqueue_graph\","
+                << "\"description\":\"Return the dependency graph with each job's state, ready/waiting/blocked status and dependents.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Optional task queue filter\"},"
+                << "\"root\":{\"type\":\"string\",\"description\":\"Optional job id: return only its upstream/downstream component\"}"
+                << "}}"
                 << "}"
                 << "]}}";
             std::cout << oss.str() << "\n" << std::flush;
@@ -240,6 +399,88 @@ int RunMcpServer() {
                 int64_t id = JsonGetInt(argsJson, "id", 0);
                 int64_t waitMs = JsonGetInt(argsJson, "wait_ms", 30000);
                 ipcReq << "{\"action\":\"wait\",\"id\":" << id << ",\"wait_ms\":" << waitMs << "}";
+            }
+            else if (toolName == "taskqueue_add") {
+                std::string tqName = JsonGetString(argsJson, "taskqueue", "");
+                std::string jobsRaw = ExtractRawJsonValue(argsJson, "jobs");
+                std::string notifyFile = JsonGetString(argsJson, "notifyFile", "");
+                if (notifyFile.empty()) notifyFile = JsonGetString(argsJson, "notify_file", "");
+                ipcReq << "{\"action\":\"taskqueue_add\",\"taskqueue\":\"" << JsonEscape(tqName) << "\""
+                       << ",\"jobs\":" << (jobsRaw.empty() ? "[]" : jobsRaw)
+                       << ",\"concurrency\":" << JsonGetInt(argsJson, "concurrency", 0)
+                       << ",\"notify_file\":\"" << JsonEscape(notifyFile) << "\"}";
+            }
+            else if (toolName == "taskqueue_list") {
+                ipcReq << "{\"action\":\"taskqueue_list\""
+                       << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
+                       << ",\"state\":\"" << JsonEscape(JsonGetString(argsJson, "state", "")) << "\"}";
+            }
+            else if (toolName == "taskqueue_get") {
+                bool includeInstr = JsonGetBool(argsJson, "includeInstructions",
+                                                JsonGetBool(argsJson, "include_instructions", true));
+                ipcReq << "{\"action\":\"taskqueue_get\""
+                       << ",\"id\":\"" << JsonEscape(JsonGetString(argsJson, "id", "")) << "\""
+                       << ",\"include_instructions\":" << (includeInstr ? "true" : "false")
+                       << ",\"rev\":" << JsonGetInt(argsJson, "rev", 0) << "}";
+            }
+            else if (toolName == "taskqueue_retry") {
+                bool resetAttempts = JsonGetBool(argsJson, "resetAttempts",
+                                                 JsonGetBool(argsJson, "reset_attempts", true));
+                bool refreshInstr = JsonGetBool(argsJson, "refreshInstructions",
+                                                JsonGetBool(argsJson, "refresh_instructions", true));
+                ipcReq << "{\"action\":\"taskqueue_retry\""
+                       << ",\"id\":\"" << JsonEscape(JsonGetString(argsJson, "id", "")) << "\""
+                       << ",\"reset_attempts\":" << (resetAttempts ? "true" : "false")
+                       << ",\"refresh_instructions\":" << (refreshInstr ? "true" : "false") << "}";
+            }
+            else if (toolName == "taskqueue_update") {
+                ipcReq << "{\"action\":\"taskqueue_update\""
+                       << ",\"id\":\"" << JsonEscape(JsonGetString(argsJson, "id", "")) << "\""
+                       << ",\"patch\":" << argsJson << "}";
+            }
+            else if (toolName == "taskqueue_cancel") {
+                ipcReq << "{\"action\":\"taskqueue_cancel\",\"id\":\""
+                       << JsonEscape(JsonGetString(argsJson, "id", "")) << "\"}";
+            }
+            else if (toolName == "taskqueue_pause" || toolName == "taskqueue_resume") {
+                ipcReq << "{\"action\":\"" << toolName << "\",\"taskqueue\":\""
+                       << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\"}";
+            }
+            else if (toolName == "taskqueue_wait") {
+                int64_t sinceVersion = JsonGetInt(argsJson, "sinceVersion",
+                                                  JsonGetInt(argsJson, "since_version", 0));
+                int64_t timeoutMs = JsonGetInt(argsJson, "timeoutMs",
+                                               JsonGetInt(argsJson, "timeout_ms", 30000));
+                ipcReq << "{\"action\":\"taskqueue_wait\""
+                       << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
+                       << ",\"since_version\":" << sinceVersion
+                       << ",\"timeout_ms\":" << timeoutMs << "}";
+            }
+            else if (toolName == "taskqueue_purge") {
+                std::string statesRaw = ExtractRawJsonValue(argsJson, "states");
+                ipcReq << "{\"action\":\"taskqueue_purge\""
+                       << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
+                       << ",\"states\":" << (statesRaw.empty() ? "[]" : statesRaw) << "}";
+            }
+            else if (toolName == "taskqueue_link") {
+                std::string dep = JsonGetString(argsJson, "dependsOn", "");
+                if (dep.empty()) dep = JsonGetString(argsJson, "depends_on", "");
+                ipcReq << "{\"action\":\"taskqueue_link\""
+                       << ",\"job\":\"" << JsonEscape(JsonGetString(argsJson, "job", "")) << "\""
+                       << ",\"depends_on\":\"" << JsonEscape(dep) << "\""
+                       << ",\"on\":\"" << JsonEscape(JsonGetString(argsJson, "on", "")) << "\"}";
+            }
+            else if (toolName == "taskqueue_unlink") {
+                std::string dep = JsonGetString(argsJson, "dependsOn", "");
+                if (dep.empty()) dep = JsonGetString(argsJson, "depends_on", "");
+                ipcReq << "{\"action\":\"taskqueue_unlink\""
+                       << ",\"job\":\"" << JsonEscape(JsonGetString(argsJson, "job", "")) << "\""
+                       << ",\"depends_on\":\"" << JsonEscape(dep) << "\"}";
+            }
+            else if (toolName == "taskqueue_graph") {
+                ipcReq << "{\"action\":\"taskqueue_graph\""
+                       << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
+                       << ",\"root\":\"" << JsonEscape(JsonGetString(argsJson, "root", "")) << "\"}";
             }
             else {
                 std::cout << BuildMcpToolResult(rpcId, "Unknown tool: " + toolName, true) << "\n" << std::flush;

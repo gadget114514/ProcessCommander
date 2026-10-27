@@ -19,8 +19,14 @@ struct StartProcessRequest {
     ExecMode mode = ExecMode::Pipe;
     bool openStdin = true;   // pipe mode: keep stdin writable; false closes it after launch so children see EOF
     int timeoutSec = 0;      // 0 = no limit
-    int idleTimeoutSec = 0;  // 0 = no limit
+    int idleTimeoutSec = 0;  // 0 = no limit (output idle)
+    int idleCpuSec = 0;      // if > 0, require CPU idle too (AND with output idle)
     std::string estimatedEndTimeStr;  // optional estimated end time for display
+    std::map<std::string, std::string> env;  // extra environment variables (UTF-8)
+    std::vector<std::string> killExclude;    // image names excluded from tree kill (reserved)
+    std::string jobKey;      // taskqueue job id (display / callback correlation)
+    int jobId = 0;           // taskqueue numeric job id
+    int attemptN = 0;        // taskqueue attempt number
 };
 
 struct ProcessSnapshot {
@@ -52,6 +58,9 @@ struct ProcessSnapshot {
     std::string logFilePath;
     std::string doneFilePath;
     HWND terminalHwnd = nullptr;
+    std::string jobKey;
+    int jobId = 0;
+    int attemptN = 0;
 };
 
 class ProcessManager {
@@ -62,9 +71,17 @@ public:
         std::function<void(const char*, size_t)> onOutput,
         std::wstring& outError)>;
     using DestroyTerminalCallback = std::function<void(TerminalView*)>;
+    // Invoked on the monitor thread when a managed process reaches a terminal
+    // state. endKind is one of: completed, failed, timed_out, idle_timed_out, killed.
+    using ProcessFinishedCallback = std::function<void(int processId, int exitCode, const std::string& endKind)>;
 
     ProcessManager();
     ~ProcessManager();
+
+    void SetProcessFinishedCallback(ProcessFinishedCallback cb) {
+        std::lock_guard<std::mutex> lock(cbMutex_);
+        finishedCb_ = std::move(cb);
+    }
 
     void SetTerminalCallbacks(CreateTerminalCallback createCb, DestroyTerminalCallback destroyCb) {
         createTerminalCb_ = std::move(createCb);
@@ -147,6 +164,10 @@ private:
         std::atomic<uint64_t> lastCpuActivityTickMs{0};
         int timeoutSec = 0;
         int idleTimeoutSec = 0;
+        int idleCpuSec = 0;
+        std::string jobKey;
+        int jobId = 0;
+        int attemptN = 0;
 
         std::atomic<uint32_t> treeProcessCount{0};
         std::atomic<uint64_t> treeMemoryBytes{0};
@@ -172,6 +193,7 @@ private:
     void MonitorThreadFunc();
     void UpdateJobMetrics(ManagedProcess& proc);
     void TerminateJobInternal(ManagedProcess& proc, ProcState finalState, const std::string& reasonMsg);
+    void NotifyProcessFinished(ManagedProcess& proc, int exitCode, const std::string& endKind);
     static void WriteDoneFile(ManagedProcess& proc, ProcState finalState, DWORD exitCode, const std::string& endTimeStr, uint64_t elapsedMs, const std::string& reasonMsg);
     static ProcessSnapshot BuildSnapshot(ManagedProcess& p, uint64_t now);
     void SaveState();
@@ -184,6 +206,8 @@ private:
     std::thread monitorThread_;
     CreateTerminalCallback createTerminalCb_;
     DestroyTerminalCallback destroyTerminalCb_;
+    ProcessFinishedCallback finishedCb_;
+    std::mutex cbMutex_;
 };
 
 } // namespace pc

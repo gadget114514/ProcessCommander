@@ -91,6 +91,26 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
+TASK QUEUE:
+  taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]
+      Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
+      Each job needs id, command, summary, timeoutSec; dependsOn replaces '&&'.
+
+  taskqueue list [<name>] [--state <state>]
+      List jobs with state, queue, summary and blockedBy.
+
+  taskqueue get <id> [--rev <n>] [--no-instructions]
+  taskqueue retry <id>
+  taskqueue cancel <id>
+  taskqueue pause|resume <name>
+  taskqueue graph [<name>] [--root <id>]
+  taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]
+  taskqueue purge <name> [--states succeeded,failed,cancelled]
+
+  start/run ... --allow-chain
+      Allow a chained command (&&, ||, &, ';') as a single process. Task-queue
+      jobs never allow chains; use dependsOn instead.
+
 COMPLETION / BACKGROUND TASKS:
   Use --wait to keep pcder.exe alive until the managed process exits. Add
   --wait-ms 0 for an unlimited wait (or a positive value for a maximum).
@@ -483,6 +503,30 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
         return 1;
     }
 
+    if (action.rfind("taskqueue_", 0) == 0) {
+        if (action == "taskqueue_list") {
+            auto jobs = ExtractJsonObjectArray(respJson, "jobs");
+            if (jobs.empty()) {
+                std::cout << "No task queue jobs found.\n";
+                return 0;
+            }
+            std::cout << "Task queue jobs (" << jobs.size() << "):\n\n";
+            for (const auto& j : jobs) {
+                std::cout << "  " << JsonGetString(j, "id", "")
+                          << " [" << JsonGetString(j, "state", "") << "]"
+                          << " queue=" << JsonGetString(j, "taskqueue", "")
+                          << " max_attempts=" << JsonGetInt(j, "max_attempts", 0)
+                          << " :: " << JsonGetString(j, "summary", "");
+                std::string blockedBy = JsonGetString(j, "blocked_by", "");
+                if (!blockedBy.empty()) std::cout << " (blocked by " << blockedBy << ")";
+                std::cout << "\n";
+            }
+            return 0;
+        }
+        std::cout << respJson << "\n";
+        return 0;
+    }
+
     if (action == "list") {
         auto processes = ExtractJsonObjectArray(respJson, "processes");
         if (processes.empty()) {
@@ -623,6 +667,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
         std::string estimateEnd;
         bool waitFinish = false;
         bool waitMsExplicit = false;
+        bool allowChain = false;
         int waitMs = 500;
 
         for (size_t i = 2; i < args.size(); ++i) {
@@ -654,6 +699,8 @@ int RunCli(const std::vector<std::string>& rawArgs) {
             } else if (a == "--wait") {
                 waitFinish = true;
                 waitForCompletion = true;
+            } else if (a == "--allow-chain") {
+                allowChain = true;
             } else if (a == "--wait-ms" && i + 1 < args.size()) {
                 waitMs = std::stoi(args[++i]);
                 waitMsExplicit = true;
@@ -700,7 +747,8 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 << ",\"idle_timeout_sec\":" << idleTimeoutSec
                 << ",\"estimate_end\":\"" << JsonEscape(estimateEnd) << "\""
                 << ",\"wait\":" << (waitFinish ? "true" : "false")
-                << ",\"wait_ms\":" << waitMs << "}";
+                << ",\"wait_ms\":" << waitMs
+                << ",\"allow_chain\":" << (allowChain ? "true" : "false") << "}";
     }
     else if (subcmd == "list" || subcmd == "status") {
         int id = 0;
@@ -777,6 +825,142 @@ int RunCli(const std::vector<std::string>& rawArgs) {
     }
     else if (subcmd == "clear") {
         reqJson << "{\"action\":\"clear\"}";
+    }
+    else if (subcmd == "taskqueue") {
+        std::string op = (args.size() >= 3) ? args[2] : "";
+        auto argVal = [&args](const std::string& flag, const std::string& def) -> std::string {
+            for (size_t i = 3; i + 1 < args.size(); ++i) {
+                if (args[i] == flag) return args[i + 1];
+            }
+            return def;
+        };
+        auto firstPositional = [&args](size_t startIdx) -> std::string {
+            for (size_t i = startIdx; i < args.size(); ++i) {
+                if (!args[i].empty() && args[i][0] != '-') return args[i];
+            }
+            return "";
+        };
+        auto failWith = [&](const std::string& msg) {
+            if (jsonOutput) std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(msg) << "\"}\n";
+            else std::cerr << "Error: " << msg << "\n";
+            return 1;
+        };
+
+        if (op == "add") {
+            std::string file = argVal("--file", "");
+            std::string tqName = argVal("--taskqueue", "main");
+            int concurrency = 0;
+            std::string concStr = argVal("--concurrency", "");
+            if (!concStr.empty()) {
+                try { concurrency = std::stoi(concStr); } catch (...) { concurrency = 0; }
+            }
+            std::string notifyFile = argVal("--notify-file", "");
+            if (file.empty()) return failWith("--file is required.");
+            std::string content = ReadFileUtf8Wide(ResolveAbsolutePathWide(Utf8ToWide(file)));
+            if (content.empty()) return failWith("cannot read jobs file: " + file);
+
+            std::string jobsRaw;
+            size_t first = content.find_first_not_of(" \t\r\n");
+            if (first != std::string::npos && content[first] == '[') {
+                jobsRaw = content.substr(first);
+            } else {
+                auto objs = ExtractJsonObjectArray(content, "jobs");
+                if (objs.empty()) return failWith("jobs array not found in " + file);
+                std::ostringstream ja;
+                ja << "[";
+                for (size_t k = 0; k < objs.size(); ++k) {
+                    if (k) ja << ",";
+                    ja << objs[k];
+                }
+                ja << "]";
+                jobsRaw = ja.str();
+                if (notifyFile.empty()) notifyFile = JsonGetString(content, "notify_file", "");
+                if (tqName == "main") {
+                    std::string t = JsonGetString(content, "taskqueue", "");
+                    if (!t.empty()) tqName = t;
+                }
+                if (concurrency == 0) concurrency = static_cast<int>(JsonGetInt(content, "concurrency", 0));
+            }
+            reqJson << "{\"action\":\"taskqueue_add\",\"taskqueue\":\"" << JsonEscape(tqName) << "\""
+                    << ",\"jobs\":" << jobsRaw
+                    << ",\"concurrency\":" << concurrency
+                    << ",\"notify_file\":\"" << JsonEscape(notifyFile) << "\"}";
+            subcmd = "taskqueue_add";
+        } else if (op == "list") {
+            std::string tqName = firstPositional(3);
+            std::string state = argVal("--state", "");
+            reqJson << "{\"action\":\"taskqueue_list\",\"taskqueue\":\"" << JsonEscape(tqName)
+                    << "\",\"state\":\"" << JsonEscape(state) << "\"}";
+            subcmd = "taskqueue_list";
+        } else if (op == "get") {
+            std::string id = firstPositional(3);
+            int rev = 0;
+            std::string revStr = argVal("--rev", "");
+            if (!revStr.empty()) { try { rev = std::stoi(revStr); } catch (...) {} }
+            bool includeInstr = true;
+            for (size_t i = 3; i < args.size(); ++i) {
+                if (args[i] == "--no-instructions") includeInstr = false;
+            }
+            reqJson << "{\"action\":\"taskqueue_get\",\"id\":\"" << JsonEscape(id)
+                    << "\",\"include_instructions\":" << (includeInstr ? "true" : "false")
+                    << ",\"rev\":" << rev << "}";
+            subcmd = "taskqueue_get";
+        } else if (op == "retry") {
+            std::string id = firstPositional(3);
+            reqJson << "{\"action\":\"taskqueue_retry\",\"id\":\"" << JsonEscape(id)
+                    << "\",\"reset_attempts\":true,\"refresh_instructions\":true}";
+            subcmd = "taskqueue_retry";
+        } else if (op == "cancel") {
+            std::string id = firstPositional(3);
+            reqJson << "{\"action\":\"taskqueue_cancel\",\"id\":\"" << JsonEscape(id) << "\"}";
+            subcmd = "taskqueue_cancel";
+        } else if (op == "pause" || op == "resume") {
+            std::string tqName = firstPositional(3);
+            reqJson << "{\"action\":\"taskqueue_" << op << "\",\"taskqueue\":\"" << JsonEscape(tqName) << "\"}";
+            subcmd = "taskqueue_" + op;
+        } else if (op == "graph") {
+            std::string tqName = firstPositional(3);
+            std::string root = argVal("--root", "");
+            reqJson << "{\"action\":\"taskqueue_graph\",\"taskqueue\":\"" << JsonEscape(tqName)
+                    << "\",\"root\":\"" << JsonEscape(root) << "\"}";
+            subcmd = "taskqueue_graph";
+        } else if (op == "wait") {
+            std::string tqName = firstPositional(3);
+            int since = 0;
+            int timeoutMs = 30000;
+            std::string sinceStr = argVal("--since", "");
+            if (!sinceStr.empty()) { try { since = std::stoi(sinceStr); } catch (...) {} }
+            std::string tmoStr = argVal("--timeout-ms", "");
+            if (!tmoStr.empty()) { try { timeoutMs = std::stoi(tmoStr); } catch (...) {} }
+            reqJson << "{\"action\":\"taskqueue_wait\",\"taskqueue\":\"" << JsonEscape(tqName)
+                    << "\",\"since_version\":" << since << ",\"timeout_ms\":" << timeoutMs << "}";
+            subcmd = "taskqueue_wait";
+        } else if (op == "purge") {
+            std::string tqName = firstPositional(3);
+            std::string statesStr = argVal("--states", "succeeded,failed,cancelled");
+            std::ostringstream ja;
+            ja << "[";
+            size_t pos = 0;
+            bool firstState = true;
+            while (pos <= statesStr.size()) {
+                size_t comma = statesStr.find(',', pos);
+                std::string st = statesStr.substr(pos, (comma == std::string::npos) ? std::string::npos : comma - pos);
+                if (!st.empty()) {
+                    if (!firstState) ja << ",";
+                    firstState = false;
+                    ja << "\"" << JsonEscape(st) << "\"";
+                }
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+            ja << "]";
+            reqJson << "{\"action\":\"taskqueue_purge\",\"taskqueue\":\"" << JsonEscape(tqName)
+                    << "\",\"states\":" << ja.str() << "}";
+            subcmd = "taskqueue_purge";
+        } else {
+            return failWith("unknown taskqueue command: " + op +
+                            " (add, list, get, retry, cancel, pause, resume, graph, wait, purge)");
+        }
     }
     else {
         if (jsonOutput) {

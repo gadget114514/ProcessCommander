@@ -10,6 +10,8 @@ add_executable(ProcessCommander
     src/main.cpp
     src/common.cpp
     src/process_manager.cpp
+    src/taskqueue.cpp
+    src/chain_guard.cpp
     src/ipc_server.cpp
     src/ipc_client.cpp
     src/cli.cpp
@@ -90,4 +92,57 @@ target_link_libraries(pcder PRIVATE
     user32
     shell32
     advapi32
+)
+
+# Headless smoke test for the task queue engine (deps, retries, chain guard, persistence).
+add_executable(taskqueue_smoke
+    tests/taskqueue_smoke.cpp
+    src/taskqueue.cpp
+    src/chain_guard.cpp
+    src/process_manager.cpp
+    src/common.cpp
+    src/Terminal/src/ConPtySession.cpp
+    src/Terminal/src/ImageManager.cpp
+    src/Terminal/src/TerminalBuffer.cpp
+    src/Terminal/src/TerminalEmulator.cpp
+    src/Terminal/src/TerminalView.cpp
+)
+
+target_include_directories(taskqueue_smoke PRIVATE
+    src
+    include
+    src/Terminal/include
+    src/Terminal/src
+)
+
+if(MSVC)
+    target_compile_options(taskqueue_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(taskqueue_smoke PRIVATE
+    user32
+    gdi32
+    comctl32
+    shell32
+    advapi32
+    psapi
+    ole32
+    shlwapi
+    imm32
+    winmm
+    d2d1
+    dwrite
+    dwmapi
+    windowscodecs
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/libsixel.lib"
+)
+
+add_custom_command(TARGET taskqueue_smoke POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib/conpty.dll"
+        "$<TARGET_FILE_DIR:taskqueue_smoke>/conpty.dll"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib/OpenConsole.exe"
+        "$<TARGET_FILE_DIR:taskqueue_smoke>/OpenConsole.exe"
+    COMMENT "Copying lib/conpty.dll and lib/OpenConsole.exe for taskqueue_smoke"
 )

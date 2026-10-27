@@ -52,11 +52,19 @@ static std::wstring ResolveCommandLineForWin32(const std::string& rawCmdUtf8) {
     return cmd;
 }
 
-static std::vector<wchar_t> BuildChildEnvironment(const std::wstring& cwd) {
+static std::vector<wchar_t> BuildChildEnvironment(const std::wstring& cwd, const std::map<std::string, std::string>& extra) {
     std::vector<wchar_t> block;
     auto append = [&block](const std::wstring& entry) {
         block.insert(block.end(), entry.begin(), entry.end());
         block.push_back(L'\0');
+    };
+
+    auto isOverridden = [&extra](const std::wstring& key) {
+        std::string k = WideToUtf8(key);
+        for (const auto& kv : extra) {
+            if (_stricmp(kv.first.c_str(), k.c_str()) == 0) return true;
+        }
+        return false;
     };
 
     LPWCH env = GetEnvironmentStringsW();
@@ -72,6 +80,9 @@ static std::vector<wchar_t> BuildChildEnvironment(const std::wstring& cwd) {
                     _wcsicmp(key.c_str(), L"INIT_CWD") == 0) {
                     continue;
                 }
+                if (isOverridden(key)) {
+                    continue;
+                }
             }
             append(entry);
         }
@@ -82,6 +93,11 @@ static std::vector<wchar_t> BuildChildEnvironment(const std::wstring& cwd) {
         append(L"PWD=" + cwd);
         append(L"INIT_CWD=" + cwd);
     }
+
+    for (const auto& kv : extra) {
+        append(Utf8ToWide(kv.first) + L"=" + Utf8ToWide(kv.second));
+    }
+
     block.push_back(L'\0');
     return block;
 }
@@ -158,7 +174,7 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
 
     std::wstring cwdWide = ResolveAbsolutePathWide(Utf8ToWide(req.workingDir));
     const wchar_t* cwdPtr = cwdWide.c_str();
-    std::vector<wchar_t> childEnv = BuildChildEnvironment(cwdWide);
+    std::vector<wchar_t> childEnv = BuildChildEnvironment(cwdWide, req.env);
 
     // Create Win32 Job Object with KILL_ON_JOB_CLOSE
     HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
@@ -177,6 +193,10 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
     proc->mode = req.mode;
     proc->timeoutSec = req.timeoutSec;
     proc->idleTimeoutSec = req.idleTimeoutSec;
+    proc->idleCpuSec = req.idleCpuSec;
+    proc->jobKey = req.jobKey;
+    proc->jobId = req.jobId;
+    proc->attemptN = req.attemptN;
     proc->estimatedEndTimeStr = req.estimatedEndTimeStr;
     proc->hJob = hJob;
     proc->destroyTerminalCb = destroyTerminalCb_;
@@ -597,6 +617,19 @@ void ProcessManager::TerminateJobInternal(ManagedProcess& proc, ProcState finalS
     WriteAuditLog("PROCESS_TERMINATED",
                   "Process #" + std::to_string(proc.id) + " [" + proc.name + "] State=" + ProcStateToString(finalState) +
                   " Uptime=" + FormatUptimeHMS(elapsedMs) + " Reason=\"" + reasonMsg + "\" DoneFile=\"" + proc.doneFilePath + "\"");
+
+    NotifyProcessFinished(proc, 1, ProcStateToString(finalState));
+}
+
+void ProcessManager::NotifyProcessFinished(ManagedProcess& proc, int exitCode, const std::string& endKind) {
+    ProcessFinishedCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cbMutex_);
+        cb = finishedCb_;
+    }
+    if (cb) {
+        cb(proc.id, exitCode, endKind);
+    }
 }
 
 void ProcessManager::MonitorThreadFunc() {
@@ -667,6 +700,7 @@ void ProcessManager::MonitorThreadFunc() {
                                   "Process #" + std::to_string(proc->id) + " [" + proc->name + "] exited with code " +
                                   std::to_string(code) + " Uptime=" + FormatUptimeHMS(elapsedMs) +
                                   " DoneFile=\"" + proc->doneFilePath + "\"");
+                    NotifyProcessFinished(*proc, static_cast<int>(code), ProcStateToString(finalSt));
                     SaveState();
                     continue;
                 }
@@ -685,9 +719,20 @@ void ProcessManager::MonitorThreadFunc() {
             }
 
             if (proc->idleTimeoutSec > 0) {
-                uint64_t lastActivity = (std::max)(proc->lastOutputTickMs.load(), proc->lastCpuActivityTickMs.load());
-                uint64_t idleSec = (now - lastActivity) / 1000;
-                if (idleSec >= static_cast<uint64_t>(proc->idleTimeoutSec)) {
+                uint64_t lastOutput = proc->lastOutputTickMs.load();
+                uint64_t lastCpu = proc->lastCpuActivityTickMs.load();
+                uint64_t outputIdleSec = (now >= lastOutput) ? (now - lastOutput) / 1000 : 0;
+                uint64_t cpuIdleSec = (now >= lastCpu) ? (now - lastCpu) / 1000 : 0;
+                bool hung = false;
+                if (proc->idleCpuSec > 0) {
+                    hung = outputIdleSec >= static_cast<uint64_t>(proc->idleTimeoutSec) &&
+                           cpuIdleSec >= static_cast<uint64_t>(proc->idleCpuSec);
+                } else {
+                    uint64_t lastActivity = (std::max)(lastOutput, lastCpu);
+                    hung = (now >= lastActivity) &&
+                           ((now - lastActivity) / 1000 >= static_cast<uint64_t>(proc->idleTimeoutSec));
+                }
+                if (hung) {
                     TerminateJobInternal(*proc, ProcState::IdleTimedOut,
                         "Process tree terminated: Exceeded idle/hang timeout (" + std::to_string(proc->idleTimeoutSec) + "s without output or CPU activity)");
                     SaveState();
@@ -968,6 +1013,9 @@ ProcessSnapshot ProcessManager::BuildSnapshot(ProcessManager::ManagedProcess& p,
     snap.treeProcessCount = p.treeProcessCount.load();
     snap.treeMemoryBytes = p.treeMemoryBytes.load();
     snap.terminalHwnd = p.terminalView ? p.terminalView->Hwnd() : nullptr;
+    snap.jobKey = p.jobKey;
+    snap.jobId = p.jobId;
+    snap.attemptN = p.attemptN;
 
     {
         std::lock_guard<std::mutex> outLock(p.outputMutex);
@@ -1112,7 +1160,10 @@ void ProcessManager::SaveState() {
             << "\"total_bytes_read\":" << s.totalBytesRead << ","
             << "\"log_file\":\"" << JsonEscape(s.logFilePath) << "\","
             << "\"done_file\":\"" << JsonEscape(s.doneFilePath) << "\","
-            << "\"last_line\":\"" << JsonEscape(s.lastLinePreview) << "\""
+            << "\"last_line\":\"" << JsonEscape(s.lastLinePreview) << "\","
+            << "\"job_key\":\"" << JsonEscape(s.jobKey) << "\","
+            << "\"job_id\":" << s.jobId << ","
+            << "\"attempt_n\":" << s.attemptN
             << "}" << (i + 1 < snaps.size() ? "," : "") << "\r\n";
     }
     oss << "  ]\r\n}\r\n";
@@ -1197,6 +1248,9 @@ void ProcessManager::LoadState() {
         proc->doneFilePath = JsonGetString(itemJson, "done_file", "");
         proc->doneFilePathWide = Utf8ToWide(proc->doneFilePath);
         proc->lastLinePreview = JsonGetString(itemJson, "last_line", "");
+        proc->jobKey = JsonGetString(itemJson, "job_key", "");
+        proc->jobId = static_cast<int>(JsonGetInt(itemJson, "job_id", 0));
+        proc->attemptN = static_cast<int>(JsonGetInt(itemJson, "attempt_n", 0));
 
         processes_.push_back(proc);
     }

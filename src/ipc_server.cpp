@@ -1,5 +1,7 @@
 #include "ipc_server.h"
+#include "chain_guard.h"
 #include <sstream>
+#include <cctype>
 
 namespace pc {
 
@@ -33,13 +35,60 @@ std::string SnapshotToJson(const ProcessSnapshot& s) {
         << "\"total_bytes_read\":" << s.totalBytesRead << ","
         << "\"log_file\":\"" << JsonEscape(s.logFilePath) << "\","
         << "\"done_file\":\"" << JsonEscape(s.doneFilePath) << "\","
-        << "\"last_line\":\"" << JsonEscape(s.lastLinePreview) << "\""
+        << "\"last_line\":\"" << JsonEscape(s.lastLinePreview) << "\","
+        << "\"job_key\":\"" << JsonEscape(s.jobKey) << "\","
+        << "\"job_id\":" << s.jobId
+        << ",\"attempt\":" << s.attemptN
         << "}";
     return oss.str();
 }
 
-IpcServer::IpcServer(ProcessManager& pm, HWND notifyHwnd)
-    : pm_(pm), notifyHwnd_(notifyHwnd) {}
+
+static std::string ExtractRawJsonValue(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\"";
+    size_t keyPos = json.find(pattern);
+    if (keyPos == std::string::npos) return "";
+    size_t colon = json.find(':', keyPos + pattern.size());
+    if (colon == std::string::npos) return "";
+    size_t p = colon + 1;
+    while (p < json.size() && std::isspace(static_cast<unsigned char>(json[p]))) p++;
+    if (p >= json.size()) return "";
+    char open = json[p];
+    if (open == '[' || open == '{') {
+        char close = (open == '[') ? ']' : '}';
+        int depth = 0;
+        bool inStr = false;
+        bool escaped = false;
+        for (size_t i = p; i < json.size(); ++i) {
+            char c = json[i];
+            if (inStr) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') inStr = false;
+                continue;
+            }
+            if (c == '"') { inStr = true; continue; }
+            if (c == open) depth++;
+            else if (c == close) { depth--; if (depth == 0) return json.substr(p, i - p + 1); }
+        }
+        return "";
+    }
+    size_t end = p;
+    if (open == '"') {
+        end = p + 1;
+        while (end < json.size()) {
+            if (json[end] == '"' && json[end - 1] != '\\') { end++; break; }
+            end++;
+        }
+        return json.substr(p, end - p);
+    }
+    while (end < json.size() && json[end] != ',' && json[end] != '}' && json[end] != ']' &&
+           !std::isspace(static_cast<unsigned char>(json[end]))) end++;
+    return json.substr(p, end - p);
+}
+
+IpcServer::IpcServer(ProcessManager& pm, TaskQueueManager& tqm, HWND notifyHwnd)
+    : pm_(pm), tqm_(tqm), notifyHwnd_(notifyHwnd) {}
 
 IpcServer::~IpcServer() {
     Stop();
@@ -146,6 +195,21 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
         req.estimatedEndTimeStr = JsonGetString(reqJson, "estimate_end", "");
         bool waitFinish = JsonGetBool(reqJson, "wait", false);
         int waitMs = static_cast<int>(JsonGetInt(reqJson, "wait_ms", 0));
+
+        if (!JsonGetBool(reqJson, "allow_chain", false)) {
+            std::string chainErr;
+            if (!CheckChainGuard(req.commandLine, chainErr)) {
+                oss << "{\"ok\":false,\"error\":\"" << JsonEscape(chainErr) << "\"}";
+                return oss.str();
+            }
+        }
+        std::string guardJobId;
+        if (tqm_.FindUnfinishedJobByCommand(req.commandLine, guardJobId)) {
+            std::string msg = "This command belongs to unfinished taskqueue job '" + guardJobId +
+                              "'. Use taskqueue_retry " + guardJobId + " instead of start_process.";
+            oss << "{\"ok\":false,\"error\":\"" << JsonEscape(msg) << "\"}";
+            return oss.str();
+        }
 
         std::string err;
         int id = pm_.StartProcess(req, err);
@@ -278,6 +342,59 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
         return oss.str();
     }
 
+    else if (action.rfind("taskqueue_", 0) == 0) {
+        std::string err;
+        std::string resp;
+        if (action == "taskqueue_add") {
+            resp = tqm_.TaskQueueAdd(JsonGetString(reqJson, "taskqueue", ""),
+                                     ExtractRawJsonValue(reqJson, "jobs"),
+                                     JsonGetInt(reqJson, "concurrency", 0),
+                                     JsonGetString(reqJson, "notify_file", ""), err);
+        } else if (action == "taskqueue_list") {
+            resp = tqm_.TaskQueueList(JsonGetString(reqJson, "taskqueue", ""),
+                                      JsonGetString(reqJson, "state", ""), err);
+        } else if (action == "taskqueue_get") {
+            resp = tqm_.TaskQueueGet(JsonGetString(reqJson, "id", ""),
+                                     JsonGetBool(reqJson, "include_instructions", true),
+                                     static_cast<int>(JsonGetInt(reqJson, "rev", 0)), err);
+        } else if (action == "taskqueue_retry") {
+            resp = tqm_.TaskQueueRetry(JsonGetString(reqJson, "id", ""),
+                                       JsonGetBool(reqJson, "reset_attempts", true),
+                                       JsonGetBool(reqJson, "refresh_instructions", true), err);
+        } else if (action == "taskqueue_update") {
+            resp = tqm_.TaskQueueUpdate(JsonGetString(reqJson, "id", ""),
+                                        ExtractRawJsonValue(reqJson, "patch"), err);
+        } else if (action == "taskqueue_cancel") {
+            resp = tqm_.TaskQueueCancel(JsonGetString(reqJson, "id", ""), err);
+        } else if (action == "taskqueue_pause") {
+            resp = tqm_.TaskQueuePause(JsonGetString(reqJson, "taskqueue", ""), true, err);
+        } else if (action == "taskqueue_resume") {
+            resp = tqm_.TaskQueuePause(JsonGetString(reqJson, "taskqueue", ""), false, err);
+        } else if (action == "taskqueue_wait") {
+            resp = tqm_.TaskQueueWait(JsonGetString(reqJson, "taskqueue", ""),
+                                      static_cast<int>(JsonGetInt(reqJson, "since_version", 0)),
+                                      static_cast<int>(JsonGetInt(reqJson, "timeout_ms", 30000)), err);
+        } else if (action == "taskqueue_purge") {
+            resp = tqm_.TaskQueuePurge(JsonGetString(reqJson, "taskqueue", ""),
+                                       ExtractRawJsonValue(reqJson, "states"), err);
+        } else if (action == "taskqueue_link") {
+            resp = tqm_.TaskQueueLink(JsonGetString(reqJson, "job", ""),
+                                      JsonGetString(reqJson, "depends_on", ""),
+                                      JsonGetString(reqJson, "on", ""), err);
+        } else if (action == "taskqueue_unlink") {
+            resp = tqm_.TaskQueueUnlink(JsonGetString(reqJson, "job", ""),
+                                        JsonGetString(reqJson, "depends_on", ""), err);
+        } else if (action == "taskqueue_graph") {
+            resp = tqm_.TaskQueueGraph(JsonGetString(reqJson, "taskqueue", ""),
+                                       JsonGetString(reqJson, "root", ""), err);
+        }
+        if (!resp.empty()) {
+            HWND hwnd = notifyHwnd_.load();
+            if (hwnd) PostMessageW(hwnd, WM_PC_IPC_EVENT, 0, 0);
+            return resp;
+        }
+        return "{\"ok\":false,\"error\":\"" + JsonEscape(err.empty() ? "unknown taskqueue action" : err) + "\"}";
+    }
     return "{\"ok\":false,\"error\":\"Unknown IPC action: " + JsonEscape(action) + "\"}";
 }
 

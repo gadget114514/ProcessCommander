@@ -1,6 +1,7 @@
 #pragma once
 
 #include "process_manager.h"
+#include "taskqueue.h"
 #include <thread>
 #include <atomic>
 #include <string>
@@ -9,14 +10,15 @@ namespace pc {
 
 class IpcServer {
 public:
-    explicit IpcServer(ProcessManager& pm, HWND notifyHwnd = nullptr);
+    explicit IpcServer(ProcessManager& pm, TaskQueueManager& tqm, HWND notifyHwnd = nullptr);
     ~IpcServer();
 
     bool Start();
     void Stop();
     void SetNotifyHwnd(HWND hwnd) { notifyHwnd_ = hwnd; }
 
-    // Execute a JSON request directly against ProcessManager and return JSON response
+    // Execute a JSON request directly against ProcessManager / TaskQueueManager
+    // and return a JSON response.
     std::string HandleRequestJson(const std::string& reqJson);
 
 private:
@@ -24,6 +26,7 @@ private:
     void HandleClient(HANDLE hPipe);
 
     ProcessManager& pm_;
+    TaskQueueManager& tqm_;
     std::atomic<HWND> notifyHwnd_{nullptr};
     std::atomic<bool> stop_{false};
     std::thread acceptThread_;
