@@ -13,6 +13,8 @@
 #include <iomanip>
 #include <algorithm>
 #include <unordered_map>
+#include <ctime>
+#include <cstdio>
 
 // ---------------------------------------------------------------------------
 // Globals required by src/Terminal/src/TerminalGridView.cpp
@@ -1285,6 +1287,41 @@ static std::string LastAttemptReason(const std::string& jobJson) {
     return JsonGetString(attempts.back(), "reason", "");
 }
 
+static std::string LastAttemptField(const std::string& jobJson, const std::string& key) {
+    auto attempts = SplitJsonObjectArray(jobJson, "attempts");
+    if (attempts.empty()) return "";
+    return JsonGetString(attempts.back(), key, "");
+}
+
+static std::string TimeOfDayText(const std::string& ts) {
+    size_t space = ts.find(' ');
+    if (space != std::string::npos && ts.size() >= space + 9) return ts.substr(space + 1);
+    return ts;
+}
+
+static std::string AddSecondsToTimestamp(const std::string& ts, int seconds) {
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
+    if (sscanf_s(ts.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) != 6) return "";
+    struct tm t = {};
+    t.tm_year = y - 1900;
+    t.tm_mon = mo - 1;
+    t.tm_mday = d;
+    t.tm_hour = h;
+    t.tm_min = mi;
+    t.tm_sec = s;
+    t.tm_isdst = -1;
+    time_t tt = mktime(&t);
+    if (tt == static_cast<time_t>(-1)) return "";
+    tt += seconds;
+    struct tm out = {};
+    localtime_s(&out, &tt);
+    char buf[32] = {};
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+             out.tm_year + 1900, out.tm_mon + 1, out.tm_mday,
+             out.tm_hour, out.tm_min, out.tm_sec);
+    return buf;
+}
+
 static std::vector<std::pair<std::string, std::string>> TaskQueueDepList(const std::string& jobJson) {
     std::vector<std::pair<std::string, std::string>> deps;
     for (const auto& d : SplitJsonObjectArray(jobJson, "depends_on")) {
@@ -1421,6 +1458,22 @@ static void RefreshTaskQueueData(DashboardState* st) {
         std::wstring stateStr = TaskQueueStateLabel(state, j, stateById);
         std::wstring attemptsStr = std::to_wstring(JsonGetInt(j, "max_attempts", 0));
         std::wstring timeoutStr = std::to_wstring(JsonGetInt(j, "timeout_sec", 0)) + L"s";
+        std::string attemptStart = LastAttemptField(j, "start");
+        std::string attemptEnd = LastAttemptField(j, "end");
+        std::wstring startStr = L"-";
+        std::wstring endStr = L"-";
+        if (!attemptStart.empty()) {
+            startStr = Utf8ToWide(TimeOfDayText(attemptStart));
+            if (!attemptEnd.empty()) {
+                endStr = Utf8ToWide(TimeOfDayText(attemptEnd));
+            } else if (state == "running") {
+                int timeoutSec = static_cast<int>(JsonGetInt(j, "timeout_sec", 0));
+                if (timeoutSec > 0) {
+                    std::string est = AddSecondsToTimestamp(attemptStart, timeoutSec);
+                    if (!est.empty()) endStr = L"~" + Utf8ToWide(TimeOfDayText(est));
+                }
+            }
+        }
         std::wstring depsStr = TaskQueueDepsDisplay(j);
         std::string blockedBy = JsonGetString(j, "blocked_by", "");
         if (!blockedBy.empty()) {
@@ -1437,10 +1490,12 @@ static void RefreshTaskQueueData(DashboardState* st) {
         ListView_InsertItem(st->hwndTaskList, &lvi);
         ListView_SetItemText(st->hwndTaskList, row, 1, summaryStr.data());
         ListView_SetItemText(st->hwndTaskList, row, 2, stateStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 3, attemptsStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 4, timeoutStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 5, depsStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 6, queueStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 3, startStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 4, endStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 5, attemptsStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 6, timeoutStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 7, depsStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 8, queueStr.data());
         row++;
     }
     SendMessageW(st->hwndTaskList, WM_SETREDRAW, TRUE, 0);
@@ -1601,6 +1656,37 @@ static void RefreshDashboardData(DashboardState* st) {
     InvalidateRect(st->hwndMain, nullptr, FALSE);
 }
 
+static void UpdateTaskListColumnWidths(DashboardState* st) {
+    if (!st || !st->hwndTaskList) return;
+    RECT rc = {};
+    GetClientRect(st->hwndTaskList, &rc);
+    int total = rc.right - rc.left;
+    if (total < 400) return;
+
+    // Summary takes ~half of the visible list width; the other columns share the rest.
+    int summaryW = total / 2;
+    const int base[8] = {90, 100, 105, 115, 90, 100, 190, 110}; // ID, State, Start, End, Attempts, Timeout, Depends, Queue
+    int baseSum = 0;
+    for (int i = 0; i < 8; ++i) baseSum += base[i];
+
+    int remaining = total - summaryW;
+    int widths[8] = {};
+    int assigned = 0;
+    for (int i = 0; i < 7; ++i) {
+        widths[i] = base[i] * remaining / baseSum;
+        if (widths[i] < 60) widths[i] = 60;
+        assigned += widths[i];
+    }
+    widths[7] = remaining - assigned;
+    if (widths[7] < 60) widths[7] = 60;
+
+    ListView_SetColumnWidth(st->hwndTaskList, 0, widths[0]);
+    ListView_SetColumnWidth(st->hwndTaskList, 1, summaryW);
+    for (int i = 1; i < 8; ++i) {
+        ListView_SetColumnWidth(st->hwndTaskList, i + 1, widths[i]);
+    }
+}
+
 static void LayoutControls(DashboardState* st, int width, int height) {
     if (!st) return;
     int margin = 10;
@@ -1683,6 +1769,7 @@ static void LayoutControls(DashboardState* st, int width, int height) {
     // Bottom Status Bar
     st->rcStatusBar = {0, height - kStatusBarH, width, height};
 
+    UpdateTaskListColumnWidths(st);
     LayoutTerminalViews(st);
 }
 
@@ -2916,13 +3003,15 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     Tr(L"ID", L"ID", L"ID"),
                     Tr(L"サマリ", L"Summary", L"Resumen"),
                     Tr(L"状態", L"State", L"Estado"),
+                    Tr(L"開始時刻", L"Start", L"Inicio"),
+                    Tr(L"終了（見込み）", L"End (est.)", L"Fin (est.)"),
                     Tr(L"試行上限", L"Max Attempts", L"Intentos"),
                     Tr(L"タイムアウト", L"Timeout", L"Tiempo limite"),
                     Tr(L"依存 / 理由", L"Depends / Reason", L"Dependencias"),
                     Tr(L"キュー", L"Queue", L"Cola")
                 };
-                const int taskWidths[7] = {120, 320, 100, 100, 110, 260, 140};
-                for (int i = 0; i < 7; ++i) {
+                const int taskWidths[9] = {90, 400, 100, 100, 115, 90, 100, 190, 110};
+                for (int i = 0; i < 9; ++i) {
                     LVCOLUMNW lvc = {};
                     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
                     lvc.pszText = const_cast<wchar_t*>(taskCols[i]);

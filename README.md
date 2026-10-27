@@ -354,6 +354,34 @@ USAGE:
   ProcessCommander.exe --help
       Show this help.
 
+WORKING MODEL (LLM orchestration):
+  ProcessCommander is the execution layer for a supervising LLM.
+
+    Supervisor LLM (Claude Code, opencode, ...)
+      |  start_process   -> one long-running worker command
+      |  taskqueue_add   -> ordered/dependent worker jobs
+      v
+    ProcessCommander
+      |  owns processes, timeouts, logs, retries, state
+      v
+    Worker LLM / build command
+      -> one job command; writes artifacts and logs
+
+  Assumed structure:
+    1. The supervisor plans and declares jobs. It does not run the work itself,
+       does not chain commands, and does not fabricate success.
+    2. Each unit of work is one job with a one-line summary, its own timeoutSec,
+       and an optional success check (filesNewer / outputRegex). Steps or
+       dependencies become separate jobs linked with dependsOn.
+    3. Workers are ordinary processes and may themselves be LLM CLIs. Pass
+       detailed instructions via instructionsFile/instructionsText; workers read
+       {instructions} / PC_JOB_INSTRUCTIONS and write artifacts.
+    4. The supervisor observes with taskqueue_wait / taskqueue_list /
+       taskqueue_graph and reads logs; it never polls .done files.
+    5. On failure, fix the cause and call taskqueue_retry. Blocked dependents
+       resume automatically.
+    6. Keep the supervisor context small: read artifacts, not raw transcripts.
+
 CONSOLE CLIENT / CLI SETUP:
   Use pcder.exe for CLI commands (start, list, logs, send, wait, kill, kill-all, clear).
   It auto-starts the GUI dashboard and locates ProcessCommander.exe in its folder.

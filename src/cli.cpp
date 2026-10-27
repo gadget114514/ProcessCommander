@@ -316,6 +316,27 @@ SETUP FOR LLM AGENTS:
 "      pcder.exe mcp install --client opencode  # opencode.json\n"
 "      pcder.exe mcp install --path <file> --json --dry-run\n"
 "\n"
+"    ORCHESTRATION MODEL (how an LLM should use this):\n"
+"      A supervising LLM uses ProcessCommander as its execution layer to run\n"
+"      child-process worker LLMs/CLIs as managed jobs.\n"
+"\n"
+"        Supervisor LLM  ->  ProcessCommander  ->  Worker LLM / build command\n"
+"        plans + declares    timeouts, logs,        one job command;\n"
+"        jobs                retries, state         writes artifacts\n"
+"\n"
+"      - The supervisor keeps its context small: it plans and declares jobs; it\n"
+"        does not run the work itself, chain commands, or fabricate success.\n"
+"      - One job = one command. Use start_process for a single worker; use\n"
+"        taskqueue_add with dependsOn for multiple steps or dependencies.\n"
+"      - Each job needs a one-line summary and its own timeoutSec. Pass detailed\n"
+"        instructions via instructionsFile/instructionsText; the worker reads\n"
+"        {instructions} / PC_JOB_INSTRUCTIONS and writes artifacts.\n"
+"      - Workers may be LLM CLIs (opencode run, claude -p, ...) or build scripts.\n"
+"      - Verify success with exit code + filesNewer/outputRegex; observe with\n"
+"        taskqueue_wait / taskqueue_list / taskqueue_graph and logs; retry with\n"
+"        taskqueue_retry. Blocked dependents resume automatically.\n"
+"      - Never poll .done files; use taskqueue_wait or wait_process.\n"
+"\n"
 "    MCP tools (19):\n"
 "      Process:    start_process, list_processes, get_process_output,\n"
 "                  send_process_input, wait_process, kill_process\n"
@@ -544,6 +565,37 @@ void PrintCliUsageJson() {
   },
   "agent": {
     "purpose": "Reliable execution of CLI agents and build jobs: one OS command per job with timeouts, tree kill, logs, completion markers, and a persistent dependency-aware task queue.",
+    "working_model": {
+      "summary": "A supervising LLM uses ProcessCommander as its execution layer to run child-process worker LLMs/CLIs as managed jobs.",
+      "roles": {
+        "supervisor": "The LLM the user talks to. Plans work, declares jobs and dependencies, observes results and retries. It does not run the work itself, chain commands or fabricate success.",
+        "process_commander": "Owns processes: timeouts, tree kill, logs, completion markers, persistence and retries.",
+        "worker": "A child process, often another LLM CLI such as opencode or claude, that performs one job command and writes artifacts and logs."
+      },
+      "flow": [
+        "The supervisor decides the steps and the success condition for each step.",
+        "The supervisor registers one job per step with summary and timeoutSec, using dependsOn for order.",
+        "ProcessCommander launches workers as managed processes when dependencies and slots allow.",
+        "Workers write files and logs; ProcessCommander verifies exit code + filesNewer/outputRegex.",
+        "The supervisor observes with taskqueue_wait, taskqueue_list and taskqueue_graph, and reads logs and artifacts.",
+        "After fixing a failure the supervisor calls taskqueue_retry; blocked dependents resume automatically."
+      ],
+      "rules": [
+        "One job = one command; never use &&, ||, &, PowerShell ';', newlines or wait loops.",
+        "Give each job its own timeoutSec; never sum timeouts.",
+        "Prefer filesNewer/outputRegex when exit code 0 does not prove the work was done.",
+        "Keep the supervisor context small: pass detailed instructions to workers and read artifacts, not raw transcripts.",
+        "Use taskqueue_wait instead of polling .done files.",
+        "Never force success; ProcessCommander verifies it."
+      ],
+      "example": {
+        "note": "A supervisor registers worker jobs; each worker is an ordinary process, often an LLM CLI, that writes artifacts.",
+        "jobs": [
+          {"id": "research", "command": "tools\\run-worker.cmd {instructions} {summary}", "summary": "Research and write artifacts/research.md", "timeoutSec": 1800, "instructionsFile": "tasks/research.md", "success": {"filesNewer": ["artifacts/research.md"]}},
+          {"id": "build", "command": "tools\\run-worker.cmd {instructions} {summary}", "summary": "Build using the research", "timeoutSec": 3600, "dependsOn": ["research"], "instructionsFile": "tasks/build.md", "success": {"filesNewer": ["dist/app.exe"]}}
+        ]
+      }
+    },
     "preconditions": [
       "Windows 10/11 x64; same user session as the ProcessCommander dashboard",
       "The dashboard auto-starts on first use; administrator rights are not required",
