@@ -103,7 +103,7 @@ bool IpcServer::Start() {
 void IpcServer::Stop() {
     if (stop_.exchange(true)) return;
     // Wake up blocking ConnectNamedPipe by opening a dummy connection
-    HANDLE hDummy = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    HANDLE hDummy = CreateFileW(GetPipeNameWide().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
     if (hDummy != INVALID_HANDLE_VALUE) {
         CloseHandle(hDummy);
     }
@@ -115,7 +115,7 @@ void IpcServer::Stop() {
 void IpcServer::AcceptLoop() {
     while (!stop_) {
         HANDLE hPipe = CreateNamedPipeW(
-            kPipeName,
+            GetPipeNameWide().c_str(),
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,

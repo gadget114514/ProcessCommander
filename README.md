@@ -24,6 +24,29 @@ Rules of thumb (the same rules are encoded in `help --json`):
 
 ---
 
+## Project-Local Data Directory (git-managed)
+
+Logs, process state, task queues and GUI config live in one **data directory**. Select it per invocation with `--data-dir <path>`:
+
+```powershell
+pcder.exe --data-dir .processcommander taskqueue add --file jobs.json
+pcder.exe taskqueue list main --data-dir .processcommander
+pcder.exe mcp install --data-dir .processcommander   # embed it in the project's MCP config
+```
+
+How consistency is guaranteed:
+
+1. Pick one project-local directory, e.g. `.processcommander/`.
+2. `pcder.exe mcp install --data-dir .processcommander` writes `--data-dir .processcommander` into `.mcp.json` / `opencode.json`, so every MCP tool call for that project uses the same directory.
+3. Pass the same `--data-dir` on every direct `pcder.exe` call. It is **per invocation**, not a global setting.
+4. Relative paths resolve against the caller's current directory; use an absolute path in the MCP config if the client's cwd is uncertain.
+5. Different data directories are fully isolated: each gets its own dashboard instance, Named Pipe and mutex, so multiple projects can run at once without sharing processes or queues.
+6. Verify with `pcder.exe --data-dir <path> help --json` (`effective_data_dir`) or the dashboard status bar, which shows the active data directory.
+
+The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
+
+---
+
 ## Key Features
 
 ### 1. Native Win32 + Direct2D Multi-Terminal Dashboard GUI
@@ -344,15 +367,24 @@ You can also run the server directly with `ProcessCommander.exe mcp`. It connect
 ProcessCommander - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
 
 USAGE:
-  ProcessCommander.exe [gui]
+  ProcessCommander.exe [gui] [--data-dir <path>]
       Launch the live Win32 Dashboard GUI and Named Pipe server.
 
-  ProcessCommander.exe mcp
+  ProcessCommander.exe mcp [--data-dir <path>]
       Run as a Model Context Protocol (MCP) stdio server for Claude.
       Automatically connects to (or launches) the Win32 GUI Dashboard.
 
   ProcessCommander.exe --help
       Show this help.
+
+OPTIONS (per launch):
+  --data-dir <path>   Store logs, state, task queues and config in <path>.
+                      Use a project-local directory to git-manage them. Each
+                      data dir gets its own dashboard instance (separate pipe).
+                      Equivalent environment variable: PROCESS_COMMANDER_LOG_DIR.
+                      Consistency: pass the same --data-dir on every call, or embed
+                      it once with `pcder.exe mcp install --data-dir <path>`.
+                      Different data dirs are isolated dashboard instances.
 
 WORKING MODEL (LLM orchestration):
   ProcessCommander is the execution layer for a supervising LLM.

@@ -4,9 +4,10 @@
 namespace pc {
 
 static bool TryConnectPipe(HANDLE& outPipe) {
+    const std::wstring pipeName = GetPipeNameWide();
     while (true) {
         HANDLE hPipe = CreateFileW(
-            kPipeName,
+            pipeName.c_str(),
             GENERIC_READ | GENERIC_WRITE,
             0,
             nullptr,
@@ -23,7 +24,7 @@ static bool TryConnectPipe(HANDLE& outPipe) {
         if (GetLastError() != ERROR_PIPE_BUSY) {
             return false;
         }
-        if (!WaitNamedPipeW(kPipeName, 500)) {
+        if (!WaitNamedPipeW(pipeName.c_str(), 500)) {
             return false;
         }
     }
@@ -68,12 +69,18 @@ bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::s
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
 
-        // Escape single quotes in the path for the PowerShell string literal.
-        std::wstring safeGuiExePath = guiExePath;
-        size_t pos = 0;
-        while ((pos = safeGuiExePath.find(L'\'', pos)) != std::wstring::npos) {
-            safeGuiExePath.replace(pos, 1, L"''");
-            pos += 2;
+        auto EscapeSingleQuotes = [](const std::wstring& in) {
+            std::wstring outText = in;
+            size_t pos = 0;
+            while ((pos = outText.find(L'\'', pos)) != std::wstring::npos) {
+                outText.replace(pos, 1, L"''");
+                pos += 2;
+            }
+            return outText;
+        };
+        std::wstring guiCmdLine = L"\\\"" + EscapeSingleQuotes(guiExePath) + L"\\\" gui";
+        if (HasCustomDataDirectory()) {
+            guiCmdLine += L" --data-dir \\\"" + EscapeSingleQuotes(GetEffectiveDataDirectoryWide()) + L"\\\"";
         }
 
         wchar_t psPath[MAX_PATH] = {};
@@ -82,9 +89,9 @@ bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::s
 
         std::wstring wmiCmd = psPath;
         wmiCmd += L" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "
-                  L"\"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='\\\"";
-        wmiCmd += safeGuiExePath;
-        wmiCmd += L"\\\" gui'} | Out-Null\"";
+                  L"\"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='";
+        wmiCmd += guiCmdLine;
+        wmiCmd += L"'} | Out-Null\"";
         std::vector<wchar_t> wmiBuf(wmiCmd.begin(), wmiCmd.end());
         wmiBuf.push_back(L'\0');
 

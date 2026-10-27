@@ -68,6 +68,17 @@ std::string FormatBytes(uint64_t bytes);
 // Persistent logging helpers (used by MCP, CLI, IPC, and ProcessManager)
 std::wstring GetLogsDirectoryWide();
 std::string GetLogsDirectoryUtf8();
+
+// Data directory override: logs, state, task queues and config all live here.
+// Set from --data-dir (or PROCESS_COMMANDER_LOG_DIR) before starting IPC/GUI.
+// A custom data directory gets its own Named Pipe and GUI mutex, so several
+// projects can run independent dashboards at the same time.
+void SetDataDirectoryOverride(const std::wstring& dir);
+std::wstring GetDataDirectoryOverride();
+bool HasCustomDataDirectory();
+std::wstring GetEffectiveDataDirectoryWide();
+std::wstring GetPipeNameWide();
+std::wstring GetGuiMutexNameWide();
 std::string SanitizeFileNameComponent(const std::string& s);
 void AppendToLogFileWide(const std::wstring& filePath, const std::string& data);
 void WriteFileAtomicWide(const std::wstring& filePath, const std::string& data);

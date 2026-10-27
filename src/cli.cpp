@@ -105,15 +105,20 @@ std::string InsertJsonEntry(const std::string& json, size_t open, size_t close,
 }
 
 McpInstallOutcome InstallMcpConfig(const std::string& client, const std::string& explicitPath,
-                                   const std::string& serverName, bool dryRun, const std::string& exePath) {
+                                   const std::string& serverName, bool dryRun, const std::string& exePath,
+                                   const std::string& dataDir) {
     McpInstallOutcome out;
     out.dryRun = dryRun;
 
     bool opencode = (client == "opencode");
     std::string container = opencode ? "mcp" : "mcpServers";
+    std::string dataArgs;
+    if (!dataDir.empty()) {
+        dataArgs = ",\"--data-dir\",\"" + JsonEscape(dataDir) + "\"";
+    }
     out.entryJson = opencode
-        ? "{\"type\":\"local\",\"command\":[\"" + JsonEscape(exePath) + "\",\"mcp\"],\"enabled\":true}"
-        : "{\"command\":\"" + JsonEscape(exePath) + "\",\"args\":[\"mcp\"]}";
+        ? "{\"type\":\"local\",\"command\":[\"" + JsonEscape(exePath) + "\",\"mcp\"" + dataArgs + "],\"enabled\":true}"
+        : "{\"command\":\"" + JsonEscape(exePath) + "\",\"args\":[\"mcp\"" + dataArgs + "]}";
 
     std::string target = explicitPath;
     if (target.empty()) {
@@ -170,6 +175,32 @@ USAGE:
 GLOBAL OPTIONS:
   --json, -j               Print machine-readable JSON instead of human-friendly text.
   -h, --help               Show this help.
+
+DATA DIRECTORY (per invocation):
+  --data-dir <path>        Store logs, state, task queues and config in <path> for
+                           THIS pcder call. May be placed before or after the command.
+                           Point it at a project folder to git-manage the data:
+                             pcder.exe --data-dir .processcommander taskqueue add --file jobs.json
+                             pcder.exe taskqueue list main --data-dir .processcommander
+                           Each data dir gets its own dashboard instance, so different
+                           projects can run at the same time.
+
+  CONSISTENCY (one data dir per project):
+    --data-dir is per invocation, not a global setting. To keep a project's
+    logs/state/task queues consistent:
+      1. Choose one project-local directory, e.g. .processcommander in the project root.
+      2. Register the MCP server once with it:
+           pcder.exe mcp install --data-dir .processcommander
+         This writes "--data-dir .processcommander" into the project's MCP config,
+         so every MCP tool call for the project uses the same directory.
+      3. Pass the same --data-dir on every direct pcder call.
+      4. Relative paths resolve against the caller's current directory. MCP clients
+         normally start the server in the project root; if the cwd is uncertain,
+         put an absolute path in the MCP config.
+      5. Different data dirs are isolated (own dashboard instance, Named Pipe and
+         mutex); they never share processes or queues.
+      6. Verify: pcder.exe --data-dir <path> help --json prints
+         "effective_data_dir", and the dashboard status bar shows the same path.
 
 PCDER CONCEPTS:
   Process IDs : Numeric IDs assigned by the dashboard (#1, #2, ...). Use them with
@@ -254,9 +285,11 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
-  mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--dry-run]
+  mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
       .mcp.json (Claude Code, default) or opencode.json (--client opencode).
+      --data-dir embeds "--data-dir <path>" in the generated MCP server args so the
+      project keeps its logs/state/task queues inside that directory.
       --json prints the machine-readable result; --dry-run previews without writing.
 
 TASK QUEUE:
@@ -354,17 +387,31 @@ namespace {
 
 void PrintCliUsageJson() {
     const std::string guiExe = JsonEscape(ResolveGuiExePathUtf8());
+    const std::string dataDir = JsonEscape(WideToUtf8(GetEffectiveDataDirectoryWide()));
     std::cout << R"({
   "ok": true,
   "program": "pcder",
   "description": "ProcessCommander console client. Sends commands to the running ProcessCommander GUI dashboard over a named pipe.",
   "usage": "pcder [--json] <command> [options]",
+  "effective_data_dir": ")" << dataDir << R"(",
   "global_options": [
     {"name": "--json", "alias": "-j", "description": "Print the raw machine-readable JSON response. May be placed before or after the command."},
     {"name": "--help", "alias": "-h", "description": "Show usage. Combine with --json to get this machine-readable help."}
   ],
+  "data_dir_option": {
+    "name": "--data-dir",
+    "value": "<path>",
+    "per_invocation": true,
+    "description": "Store logs, state, task queues and config in <path> for this invocation only. May be placed before or after the command. Use a project-local directory to git-manage the data. Each data dir gets its own dashboard instance (separate Named Pipe and mutex), so different projects can run concurrently.",
+    "examples": [
+      "pcder.exe --data-dir .processcommander taskqueue add --file jobs.json",
+      "pcder.exe taskqueue list main --data-dir .processcommander",
+      "pcder.exe mcp install --data-dir .processcommander"
+    ]
+  },
   "concepts": {
     "process_ids": "Numeric IDs assigned by the dashboard (#1, #2, ...); use them with list/logs/send/wait/kill.",
+    "data_dir": "Logs, state, task queues and config live in one data directory. Pass --data-dir <path> on every pcder invocation (or embed it with pcder mcp install --data-dir) to keep that data inside the current project for git. Each data directory has its own dashboard instance and Named Pipe.",
     "modes": {
       "pipe": "Default. Anonymous pipes for stdout/stdin; best for non-interactive programs and LLM CLIs. Use --close-stdin for programs that wait for EOF.",
       "pty": "Win32 ConPTY; interactive TUI (opencode/claude). --pty is a shortcut.",
@@ -484,11 +531,12 @@ void PrintCliUsageJson() {
     {
       "name": "mcp install",
       "description": "Register ProcessCommander as an MCP server by writing or updating a client config file (.mcp.json for Claude Code, opencode.json for opencode).",
-      "usage": "pcder mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--dry-run] [--json]",
+      "usage": "pcder mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run] [--json]",
       "options": [
         {"name": "--client", "value": "<claude|opencode>", "description": "Target client. Default: claude."},
         {"name": "--path", "value": "<file>", "description": "Config file to write. Default: .mcp.json (claude) or opencode.json (opencode)."},
         {"name": "--name", "value": "<name>", "description": "MCP server name. Default: process-commander."},
+        {"name": "--data-dir", "value": "<path>", "description": "Embed --data-dir <path> in the generated MCP server args so this project keeps its logs/state/task queues in that directory."},
         {"name": "--dry-run", "description": "Report the change without writing the file."}
       ]
     },
@@ -607,6 +655,7 @@ void PrintCliUsageJson() {
       "recommended_binary": "pcder.exe",
       "legacy": "ProcessCommander.exe <command> has the same implementation",
       "json_mode": "Add --json or -j (before or after the command) for one JSON object.",
+      "data_dir": "Pass --data-dir <path> on each pcder invocation (or embed it with pcder mcp install --data-dir <path>) to keep logs/state/task queues inside the current project. Each data dir gets its own dashboard instance, so different projects can run concurrently.",
       "auto_start": "pcder.exe auto-starts the GUI dashboard when it is not running."
     },
     "register_mcp": {
@@ -655,11 +704,23 @@ void PrintCliUsageJson() {
       "PC_PREV_EXIT": "Previous exit code for retries",
       "PC_PREV_TAIL": "Path to the previous attempt's last 50 log lines"
     },
+    "data_dir_consistency": {
+      "problem": "--data-dir is per invocation, so different calls could accidentally use different directories.",
+      "guarantee": [
+        "Choose one project-local directory, for example <project>/.processcommander.",
+        "Register the MCP server once with it: pcder.exe mcp install --data-dir .processcommander. This embeds --data-dir into the project's MCP config, so every MCP tool call for that project uses the same directory.",
+        "Pass the same --data-dir on every direct pcder invocation.",
+        "Relative paths resolve against the caller's current directory; use an absolute path in the MCP config if the cwd is uncertain.",
+        "Different data directories are isolated: each has its own dashboard instance, Named Pipe and mutex, and they never share processes or queues."
+      ],
+      "verify": "pcder.exe --data-dir <path> help --json returns effective_data_dir; the dashboard status bar shows the same path."
+    },
     "notes": [
       "Use filesNewer when exit code 0 does not prove the work was done.",
       "Use dependsOn instead of waiting for .done files or polling.",
       "taskqueue_wait is a long poll; it returns when the queue version changes.",
-      "kill_process on a task-queue attempt means 'killed attempt' and is retried (use taskqueue_cancel to stop it)."
+      "kill_process on a task-queue attempt means 'killed attempt' and is retried (use taskqueue_cancel to stop it).",
+      "The project may change between calls: pass --data-dir <project>/.processcommander on every pcder invocation, or embed it once with pcder mcp install --data-dir .processcommander."
     ]
   },
   "notes": [
@@ -1000,12 +1061,20 @@ int RunCli(const std::vector<std::string>& rawArgs) {
 
     bool jsonOutput = false;
     bool waitForCompletion = false;
+    std::string dataDirArg;
     for (size_t i = 1; i < rawArgs.size(); ++i) {
         if (rawArgs[i] == "--json" || rawArgs[i] == "-j") {
             jsonOutput = true;
+        } else if (rawArgs[i] == "--data-dir" && i + 1 < rawArgs.size()) {
+            dataDirArg = rawArgs[++i];
+        } else if (rawArgs[i].rfind("--data-dir=", 0) == 0) {
+            dataDirArg = rawArgs[i].substr(11);
         } else {
             args.push_back(rawArgs[i]);
         }
+    }
+    if (!dataDirArg.empty()) {
+        SetDataDirectoryOverride(Utf8ToWide(dataDirArg));
     }
 
     std::string subcmd = (args.size() >= 2) ? args[1] : "";
@@ -1220,7 +1289,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
             return 1;
         }
         McpInstallOutcome outcome = InstallMcpConfig(client, installPath, serverName, dryRun,
-                                                     ResolveGuiExePathUtf8());
+                                                     ResolveGuiExePathUtf8(), dataDirArg);
         if (!outcome.ok) {
             if (jsonOutput) {
                 std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(outcome.error) << "\"}\n";

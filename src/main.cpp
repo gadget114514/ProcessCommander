@@ -16,15 +16,24 @@ static void PrintUsage() {
 R"(ProcessCommander - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
 
 USAGE:
-  ProcessCommander.exe [gui]
+  ProcessCommander.exe [gui] [--data-dir <path>]
       Launch the live Win32 Dashboard GUI and Named Pipe server.
 
-  ProcessCommander.exe mcp
+  ProcessCommander.exe mcp [--data-dir <path>]
       Run as a Model Context Protocol (MCP) stdio server for Claude.
       Automatically connects to (or launches) the Win32 GUI Dashboard.
 
   ProcessCommander.exe --help
       Show this help.
+
+OPTIONS (per launch):
+  --data-dir <path>   Store logs, state, task queues and config in <path>.
+                      Use a project-local directory to git-manage them. Each
+                      data dir gets its own dashboard instance (separate pipe).
+                      Equivalent environment variable: PROCESS_COMMANDER_LOG_DIR.
+                      Consistency: pass the same --data-dir on every call, or embed
+                      it once with `pcder.exe mcp install --data-dir <path>`.
+                      Different data dirs are isolated dashboard instances.
 
 WORKING MODEL (LLM orchestration):
   ProcessCommander is the execution layer for a supervising LLM.
@@ -127,6 +136,23 @@ int main() {
     }
     LocalFree(argvW);
 
+    std::vector<std::string> filtered;
+    filtered.push_back(args.empty() ? "ProcessCommander.exe" : args[0]);
+    std::string dataDirArg;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--data-dir" && i + 1 < args.size()) {
+            dataDirArg = args[++i];
+        } else if (args[i].rfind("--data-dir=", 0) == 0) {
+            dataDirArg = args[i].substr(11);
+        } else {
+            filtered.push_back(args[i]);
+        }
+    }
+    args.swap(filtered);
+    if (!dataDirArg.empty()) {
+        SetDataDirectoryOverride(Utf8ToWide(dataDirArg));
+    }
+
     std::string subcmd = (args.size() >= 2) ? args[1] : "gui";
 
     if (subcmd == "--help" || subcmd == "-h" || subcmd == "help") {
@@ -144,7 +170,7 @@ int main() {
     }
 
     if (subcmd == "gui" || subcmd == "--gui") {
-        HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);
+        HANDLE hMutex = CreateMutexW(nullptr, TRUE, GetGuiMutexNameWide().c_str());
         if (GetLastError() == ERROR_ALREADY_EXISTS) {
             HWND existing = FindWindowW(L"ProcessCommanderDashboardWnd", nullptr);
             if (existing) {

@@ -59,7 +59,7 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "addtopath"; Description: "Add pcder.exe to the user PATH (for CLI / LLM agents)"; GroupDescription: "Integration:"; Flags: unchecked
+Name: "addtopath"; Description: "Add pcder.exe to the user PATH (recommended for CLI / LLM agents)"; GroupDescription: "Integration:"; Flags: checkedonce
 Name: "autostartgui"; Description: "Start the ProcessCommander dashboard at sign-in (tray)"; GroupDescription: "Integration:"; Flags: unchecked
 
 [Files]

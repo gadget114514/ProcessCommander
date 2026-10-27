@@ -3,6 +3,8 @@
 #include <iomanip>
 #include <algorithm>
 #include <cctype>
+#include <cwctype>
+#include <cstdio>
 
 namespace pc {
 
@@ -360,14 +362,17 @@ std::string GetFileTimestampStr() {
     return buf;
 }
 
-std::wstring GetLogsDirectoryWide() {
-    wchar_t envBuf[MAX_PATH] = {};
-    DWORD envLen = GetEnvironmentVariableW(L"PROCESS_COMMANDER_LOG_DIR", envBuf, MAX_PATH);
-    if (envLen > 0 && envLen < MAX_PATH) {
-        CreateDirectoryW(envBuf, nullptr);
-        return envBuf;
-    }
+static std::wstring g_dataDirOverride;
 
+void SetDataDirectoryOverride(const std::wstring& dir) {
+    g_dataDirOverride = dir.empty() ? L"" : ResolveAbsolutePathWide(dir);
+}
+
+std::wstring GetDataDirectoryOverride() {
+    return g_dataDirOverride;
+}
+
+static std::wstring GetDefaultLogsDirectoryWide() {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring dir = exePath;
@@ -396,6 +401,54 @@ std::wstring GetLogsDirectoryWide() {
     std::wstring logsDir = dir + L"\\logs";
     CreateDirectoryW(logsDir.c_str(), nullptr);
     return logsDir;
+}
+
+std::wstring GetEffectiveDataDirectoryWide() {
+    if (!g_dataDirOverride.empty()) return g_dataDirOverride;
+
+    wchar_t envBuf[MAX_PATH] = {};
+    DWORD envLen = GetEnvironmentVariableW(L"PROCESS_COMMANDER_LOG_DIR", envBuf, MAX_PATH);
+    if (envLen > 0 && envLen < MAX_PATH) {
+        return ResolveAbsolutePathWide(envBuf);
+    }
+    return GetDefaultLogsDirectoryWide();
+}
+
+bool HasCustomDataDirectory() {
+    if (!g_dataDirOverride.empty()) return true;
+    wchar_t buf[2] = {};
+    return GetEnvironmentVariableW(L"PROCESS_COMMANDER_LOG_DIR", buf, 2) > 0;
+}
+
+std::wstring GetLogsDirectoryWide() {
+    std::wstring dir = GetEffectiveDataDirectoryWide();
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
+
+static std::wstring DataDirectoryTag() {
+    std::wstring path = GetEffectiveDataDirectoryWide();
+    for (auto& ch : path) {
+        ch = static_cast<wchar_t>(towlower(ch));
+    }
+    uint32_t hash = 2166136261u;
+    for (wchar_t ch : path) {
+        hash ^= static_cast<uint32_t>(ch);
+        hash *= 16777619u;
+    }
+    wchar_t buf[16] = {};
+    swprintf_s(buf, 16, L"%08x", hash);
+    return buf;
+}
+
+std::wstring GetPipeNameWide() {
+    if (!HasCustomDataDirectory()) return kPipeName;
+    return std::wstring(L"\\\\.\\pipe\\ProcessCommander_IPC_v1_") + DataDirectoryTag();
+}
+
+std::wstring GetGuiMutexNameWide() {
+    if (!HasCustomDataDirectory()) return kMutexName;
+    return std::wstring(L"Local\\ProcessCommander_GUI_Mutex_v1_") + DataDirectoryTag();
 }
 
 std::string GetLogsDirectoryUtf8() {
