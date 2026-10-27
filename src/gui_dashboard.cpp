@@ -297,6 +297,15 @@ static COLORREF BlendColor(COLORREF from, COLORREF to, float t) {
                mix(GetBValue(from), GetBValue(to)));
 }
 
+// Low-saturation variant of a theme row color (keeps brightness, mutes the hue).
+static COLORREF MutedRowColor(COLORREF c) {
+    int r = GetRValue(c);
+    int g = GetGValue(c);
+    int b = GetBValue(c);
+    int gray = (r * 299 + g * 587 + b * 114) / 1000;
+    return BlendColor(c, RGB(gray, gray, gray), 0.6f);
+}
+
 
 static const wchar_t* Tr(const wchar_t* ja, const wchar_t* en, const wchar_t* es = nullptr) {
     if (g_uiLanguage == UiLanguage::Spanish) return es ? es : en;
@@ -1270,6 +1279,42 @@ static std::wstring TaskQueueDepsDisplay(const std::string& jobJson) {
     return out;
 }
 
+static std::string LastAttemptReason(const std::string& jobJson) {
+    auto attempts = SplitJsonObjectArray(jobJson, "attempts");
+    if (attempts.empty()) return "";
+    return JsonGetString(attempts.back(), "reason", "");
+}
+
+static std::vector<std::pair<std::string, std::string>> TaskQueueDepList(const std::string& jobJson) {
+    std::vector<std::pair<std::string, std::string>> deps;
+    for (const auto& d : SplitJsonObjectArray(jobJson, "depends_on")) {
+        std::string id = JsonGetString(d, "id", "");
+        std::string on = JsonGetString(d, "on", "success");
+        if (!id.empty()) deps.emplace_back(id, on);
+    }
+    return deps;
+}
+
+static std::wstring TaskQueueStateLabel(const std::string& state, const std::string& jobJson,
+                                        const std::unordered_map<std::string, std::string>& stateById) {
+    if (state != "pending") return Utf8ToWide(state);
+    bool waitingForDeps = false;
+    for (const auto& dep : TaskQueueDepList(jobJson)) {
+        auto it = stateById.find(dep.first);
+        std::string depState = (it == stateById.end()) ? "" : it->second;
+        bool satisfied = (dep.second == "done")
+            ? (depState == "succeeded" || depState == "failed" || depState == "cancelled")
+            : (depState == "succeeded");
+        if (!satisfied) {
+            waitingForDeps = true;
+            break;
+        }
+    }
+    // waiting: queued and ready to run (waiting for a free slot).
+    // pending: not in the run queue (dependencies not satisfied yet).
+    return waitingForDeps ? std::wstring(L"pending") : std::wstring(L"waiting");
+}
+
 static void ShowTaskQueueJobDetails(DashboardState* st, const std::string& jobId) {
     if (!st || !st->tqm || jobId.empty()) return;
     std::string err;
@@ -1325,20 +1370,55 @@ static void RefreshTaskQueueData(DashboardState* st) {
     std::string resp = st->tqm->TaskQueueList("", "", err);
     auto jobs = SplitJsonObjectArray(resp, "jobs");
 
+    std::unordered_map<std::string, std::string> stateById;
+    stateById.reserve(jobs.size());
+    for (const auto& j : jobs) {
+        stateById[JsonGetString(j, "id", "")] = JsonGetString(j, "state", "");
+    }
+
+    auto depsSatisfied = [&](const std::string& jobJson) {
+        for (const auto& dep : TaskQueueDepList(jobJson)) {
+            auto it = stateById.find(dep.first);
+            std::string depState = (it == stateById.end()) ? "" : it->second;
+            bool satisfied = (dep.second == "done")
+                ? (depState == "succeeded" || depState == "failed" || depState == "cancelled")
+                : (depState == "succeeded");
+            if (!satisfied) return false;
+        }
+        return true;
+    };
+    auto jobRank = [&](const std::string& jobJson) {
+        std::string st = JsonGetString(jobJson, "state", "");
+        if (st == "running") return 0;
+        if (st == "pending") return depsSatisfied(jobJson) ? 1 : 2;
+        return 3;
+    };
+    std::stable_sort(jobs.begin(), jobs.end(), [&](const std::string& a, const std::string& b) {
+        return jobRank(a) < jobRank(b);
+    });
+
     st->taskJobIds.clear();
     st->taskJobStates.clear();
     SendMessageW(st->hwndTaskList, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(st->hwndTaskList);
+
     int row = 0;
     for (const auto& j : jobs) {
         std::string jobId = JsonGetString(j, "id", "");
         std::string state = JsonGetString(j, "state", "");
+        std::string lastReason = LastAttemptReason(j);
+        std::string kind = "other";
+        if (state == "running") {
+            kind = "running";
+        } else if (state == "failed") {
+            kind = (lastReason == "timed_out" || lastReason == "idle_timed_out") ? "timeout" : "failed";
+        }
         st->taskJobIds.push_back(jobId);
-        st->taskJobStates.push_back(state);
+        st->taskJobStates.push_back(kind);
 
         std::wstring idStr = Utf8ToWide(jobId);
         std::wstring summaryStr = Utf8ToWide(JsonGetString(j, "summary", ""));
-        std::wstring stateStr = Utf8ToWide(state);
+        std::wstring stateStr = TaskQueueStateLabel(state, j, stateById);
         std::wstring attemptsStr = std::to_wstring(JsonGetInt(j, "max_attempts", 0));
         std::wstring timeoutStr = std::to_wstring(JsonGetInt(j, "timeout_sec", 0)) + L"s";
         std::wstring depsStr = TaskQueueDepsDisplay(j);
@@ -1956,6 +2036,12 @@ static void ApplyListTheme(DashboardState* st) {
     ListView_SetTextBkColor(st->hwndList, g_theme.panel);
     ListView_SetTextColor(st->hwndList, g_theme.listText);
     InvalidateRect(st->hwndList, nullptr, TRUE);
+    if (st->hwndTaskList) {
+        ListView_SetBkColor(st->hwndTaskList, g_theme.panel);
+        ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
+        ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
+        InvalidateRect(st->hwndTaskList, nullptr, TRUE);
+    }
     if (st->hwndTab) InvalidateRect(st->hwndTab, nullptr, TRUE);
 }
 
@@ -3267,13 +3353,19 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     }
                     if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                         int idx = static_cast<int>(lvcd->nmcd.dwItemSpec);
+                        std::string kind;
                         if (idx >= 0 && idx < static_cast<int>(st->taskJobStates.size())) {
-                            const std::string& sstate = st->taskJobStates[idx];
-                            if (sstate == "succeeded") lvcd->clrText = RGB(60, 160, 80);
-                            else if (sstate == "running") lvcd->clrText = RGB(40, 120, 220);
-                            else if (sstate == "blocked") lvcd->clrText = RGB(190, 140, 20);
-                            else if (sstate == "failed") lvcd->clrText = RGB(200, 60, 60);
-                            else lvcd->clrText = g_theme.listText;
+                            kind = st->taskJobStates[idx];
+                        }
+                        lvcd->clrText = g_theme.listText;
+                        if (kind == "running") {
+                            lvcd->clrTextBk = MutedRowColor(g_theme.rowSelected);
+                        } else if (kind == "timeout") {
+                            lvcd->clrTextBk = MutedRowColor(g_theme.rowIdle);
+                        } else if (kind == "failed") {
+                            lvcd->clrTextBk = MutedRowColor(g_theme.rowFailed);
+                        } else {
+                            lvcd->clrTextBk = g_theme.panel;
                         }
                         return CDRF_NEWFONT;
                     }

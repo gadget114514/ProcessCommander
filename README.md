@@ -8,6 +8,22 @@
 
 ---
 
+## Quick Start for LLM Agents
+
+```powershell
+pcder.exe mcp install --client opencode   # or --client claude (writes .mcp.json)
+pcder.exe help --json                     # machine-readable guide: see "agent.quick_start"
+```
+
+Rules of thumb (the same rules are encoded in `help --json`):
+
+- **One command per job.** For multiple steps or dependencies use `taskqueue_add` with `dependsOn`; shell chains (`&&`, `||`, `&`, PowerShell `;`) and polling loops are rejected.
+- **Timeouts are per job** (`timeoutSec`), never summed. Every job also needs a one-line `summary`.
+- **Success is verified** by the exit code plus optional `filesNewer` / `outputRegex`, not merely "the process exited".
+- **Watch the states**: `waiting` = queued and ready (waiting for a slot), `pending` = not queued yet (dependencies not satisfied), `blocked` = a dependency failed. Use `taskqueue_wait` / `taskqueue_graph`, and `taskqueue_retry` after fixing the cause.
+
+---
+
 ## Key Features
 
 ### 1. Native Win32 + Direct2D Multi-Terminal Dashboard GUI
@@ -57,6 +73,13 @@
 - Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
 
 ![Settings Dialog](docs/images/settings_dialog.png)
+
+### 8. Task Queue: Ordering, Dependencies, Timeouts and Automatic Retries
+- Register jobs with **one command each**; ProcessCommander decides when to run them (concurrency, dependencies, priority) and persists the queue across restarts (`logs/taskqueues/<name>.json`).
+- Per-job `timeoutSec`, idle detection (output **and** CPU), success checks (`exitCode`, `filesNewer`, `outputRegex`), automatic retries (`maxAttempts`), and `blocked` dependents when a dependency fails.
+- **ChainGuard** rejects shell chains and wait loops in `start_process` / `taskqueue_add`; use `dependsOn` instead. CLI `--allow-chain` is the only escape hatch (never exposed over MCP).
+- GUI: click **"Show Task Queue"** (leftmost toolbar button) or press **Ctrl+T**. Running jobs are listed first and highlighted; failed rows are muted red and timed-out rows muted amber (theme-based, low saturation).
+- See [Task Queue](#task-queue-ordered-jobs-dependencies-and-retries) for the data model and examples.
 
 ---
 
@@ -177,7 +200,85 @@ pcder.exe start --name "task" --cwd C:\ws\Survivors --close-stdin --timeout 3600
 
 `pcder.exe` stays alive until the managed process exits, so Claude Code emits its `<task-notification>` when `pcder.exe` exits. The exit code is `0` on completed, the child's exit code on failure, and `124` if the wait timeout expires. The captured output file contains the final JSON with `state`, `exit_code`, `log_file`, and `done_file`.
 
+**Task queue (ordered/dependent jobs):**
+
+```powershell
+# jobs.json: one command per job, each with its own timeout
+# [{"id":"A","command":"run A","summary":"Prepare","timeoutSec":1800},
+#  {"id":"B","command":"run B","summary":"Build","timeoutSec":3600,"dependsOn":["A"]}]
+pcder.exe taskqueue add --file jobs.json --taskqueue main --concurrency 1
+pcder.exe taskqueue list main
+pcder.exe taskqueue get A
+pcder.exe taskqueue graph main
+pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
+pcder.exe taskqueue retry A
+```
+
+**Register as an MCP server automatically (recommended for LLM agents):**
+
+```powershell
+pcder.exe mcp install                     # .mcp.json (Claude Code)
+pcder.exe mcp install --client opencode   # opencode.json
+pcder.exe mcp install --dry-run --json    # preview without writing
+```
+
 `pcder.exe help` lists all commands and options. `pcder.exe help --json` returns the same reference plus CLI and MCP setup instructions as machine-readable JSON (including the resolved `ProcessCommander.exe` path and a ready-to-use MCP config), making it easy for LLM agents to learn how to configure the tool. The legacy `ProcessCommander.exe <command>` form remains available for compatibility, but `pcder.exe` is the recommended console interface.
+
+---
+
+
+## Task Queue: Ordered Jobs, Dependencies and Retries
+
+ProcessCommander can own the workflow: you declare jobs and dependencies; it decides what runs when, enforces per-job timeouts, verifies success, and retries automatically.
+
+**One job = one command.** Do not write `A && B && C`. Register three jobs and declare dependencies:
+
+```json
+{ "taskqueue": "main", "concurrency": 1,
+  "jobs": [
+    { "id": "A", "command": "run A", "summary": "Prepare inputs", "timeoutSec": 1800 },
+    { "id": "B", "command": "run B", "summary": "Build outputs", "timeoutSec": 3600, "dependsOn": ["A"] },
+    { "id": "C", "command": "run C", "summary": "Publish", "timeoutSec": 900,
+      "dependsOn": [{ "id": "B", "on": "success" }] }
+  ] }
+```
+
+```powershell
+pcder.exe taskqueue add --file jobs.json --taskqueue main
+pcder.exe taskqueue list main
+pcder.exe taskqueue graph main
+pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
+```
+
+**Job fields**
+
+| Field | Meaning |
+| :--- | :--- |
+| `id`, `command` | Job id (unique across all queues) and exactly one command. |
+| `summary` (required) | One line, <=200 chars. Substituted for `{summary}` and exported as `PC_JOB_SUMMARY`. |
+| `timeoutSec` (required) | Per-job limit. Never summed. Must be <= the queue `maxTimeoutSec` (default 7200). |
+| `dependsOn` | `["A"]` (same as `on: success`) or `[{ "id": "A", "on": "done" }]`. Cross-queue ids are allowed. |
+| `idle` | `{ "outputSec": 720, "cpuSec": 720 }`; both must be set (output **and** CPU idle). |
+| `maxAttempts`, `retryDelaySec` | Automatic retries (default 2) and delay between attempts. |
+| `success` | `exitCode` (default 0) AND `filesNewer` (exist and newer than the attempt start) AND `outputRegex` (last 200 log lines). |
+| `cwd`, `env`, `killExclude`, `priority` | Working directory, extra environment, image names excluded from tree kill, scheduling priority. |
+| `instructionsFile` / `instructionsText` | Optional instructions captured into the job and materialized per revision. |
+
+**States**
+
+| State | Meaning |
+| :--- | :--- |
+| `waiting` | Queued and ready; waiting for a free slot (or the retry delay). |
+| `pending` | Not in the run queue yet; dependencies are not satisfied. |
+| `blocked` | A success-dependency failed/cancelled. Fix it and `taskqueue_retry` the dependency; blocked dependents are requeued automatically. |
+| `running` | An attempt (one managed process) is executing. |
+| `succeeded` / `failed` / `cancelled` | Terminal states. Failed jobs auto-retry up to `maxAttempts`. |
+
+**ChainGuard:** `start_process`, `taskqueue_add` and `taskqueue_update` reject `&&`, `||`, a single `&`, PowerShell `;`, newline chains, and polling loops (`while` + `Test-Path`, `goto` loops). Splitting commands into jobs is the intended fix. CLI `--allow-chain` bypasses the guard for a single process; MCP never exposes it.
+
+**Events and environment:** each attempt receives `PC_JOB_ID`, `PC_ATTEMPT`, `PC_JOB_SUMMARY`, `PC_JOB_INSTRUCTIONS`, `PC_JOB_INSTRUCTIONS_REV`, plus `PC_PREV_REASON`, `PC_PREV_EXIT`, `PC_PREV_TAIL` on retries. Events are appended to `logs/taskqueue-<name>.events.jsonl`; `notifyFile` is updated for `jobFailed`, `taskqueueStalled` and `taskqueueDrained`.
+
+**GUI:** click **Show Task Queue** (leftmost toolbar button) or press **Ctrl+T**. Running jobs are listed first and highlighted; failed rows use a muted red and timed-out rows a muted amber (theme colors).
 
 ---
 
@@ -196,14 +297,90 @@ The MCP server is provided by **`ProcessCommander.exe mcp`** (not `pcder.exe`). 
 }
 ```
 
+Or let `pcder.exe` write the config for you (merges with existing servers, idempotent):
+
+```powershell
+pcder.exe mcp install                     # .mcp.json (Claude Code)
+pcder.exe mcp install --client opencode   # opencode.json
+pcder.exe mcp install --dry-run --json    # preview
+```
+
 You can also run the server directly with `ProcessCommander.exe mcp`. It connects to the dashboard over the Named Pipe and automatically launches `ProcessCommander.exe gui` if the dashboard is not running.
 
 ### Provided MCP Tools
-| Tool Name | Description |
+
+**Process tools**
+
+| Tool | Description |
 | :--- | :--- |
-| `start_process` | Start a process (`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`, default `pipe`], `pty`, `open_stdin`, `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `estimate_end`, `wait`, `wait_ms`) |
-| `list_processes` | List all managed processes with status, start time, uptime, PID tree count, memory, log/done paths, and latest output line (`id` optional) |
-| `get_process_output` | Retrieve ANSI-stripped or raw terminal output for a process (`id`, `tail`, `wait_ms`) |
-| `send_process_input` | Send text input or commands to a running process's ConPTY / stdin (`id`, `input`, `newline`, `wait_ms`) |
-| `wait_process` | Wait for a process to exit (`id`, `wait_ms`) |
-| `kill_process` | Terminate a specific process tree (`id`), or all running processes when `id` is `0` |
+| `start_process` | Start one command (`cmd`, `name`, `mode` [`pty`\|`pipe`\|`console`], `pty`, `open_stdin`, `cwd`, `log_file`, `done_file`, `timeout_sec`, `idle_timeout_sec`, `estimate_end`, `wait`, `wait_ms`). Chained commands are rejected. |
+| `list_processes` | List managed processes (`id` optional). |
+| `get_process_output` | Read output (`id`, `tail`, `wait_ms`). |
+| `send_process_input` | Send input to stdin/ConPTY (`id`, `input`, `newline`, `wait_ms`). |
+| `wait_process` | Wait for exit (`id`, `wait_ms`). |
+| `kill_process` | Kill a process tree (`id`; `0` = all). A killed task-queue attempt is retried by the scheduler. |
+
+**Task queue tools**
+
+| Tool | Description |
+| :--- | :--- |
+| `taskqueue_add` | Register jobs (`taskqueue`, `jobs[]`, `concurrency?`, `notifyFile?`). Each job needs `id`, `command`, `summary`, `timeoutSec`. |
+| `taskqueue_list` | List jobs (`taskqueue?`, `state?`). |
+| `taskqueue_get` | Full job, attempts and instructions (`id`, `includeInstructions?`, `rev?`). |
+| `taskqueue_retry` | Retry failed/blocked/cancelled (`id`, `resetAttempts?`, `refreshInstructions?`); blocked dependents are requeued. |
+| `taskqueue_update` | Update a pending/failed/blocked job. |
+| `taskqueue_cancel` | Cancel a job (kills a running attempt, no retry). |
+| `taskqueue_pause` / `taskqueue_resume` | Stop/restart starting new jobs in a queue. |
+| `taskqueue_wait` | Long-poll for a queue version change (`taskqueue`, `sinceVersion`, `timeoutMs`). |
+| `taskqueue_purge` | Remove finished jobs (`taskqueue`, `states[]`). |
+| `taskqueue_link` / `taskqueue_unlink` | Add/remove one dependency (`job`, `dependsOn`, `on` = `success`\|`done`). |
+| `taskqueue_graph` | Dependency graph with `ready` / `waiting_for` / `dependents`. |
+
+---
+
+## Appendix: `ProcessCommander.exe --help`
+
+```text
+ProcessCommander - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+
+USAGE:
+  ProcessCommander.exe [gui]
+      Launch the live Win32 Dashboard GUI and Named Pipe server.
+
+  ProcessCommander.exe mcp
+      Run as a Model Context Protocol (MCP) stdio server for Claude.
+      Automatically connects to (or launches) the Win32 GUI Dashboard.
+
+  ProcessCommander.exe --help
+      Show this help.
+
+CONSOLE CLIENT / CLI SETUP:
+  Use pcder.exe for CLI commands (start, list, logs, send, wait, kill, kill-all, clear).
+  It auto-starts the GUI dashboard and locates ProcessCommander.exe in its folder.
+  Run `pcder.exe help` for human-readable usage, or `pcder.exe help --json` for
+  machine-readable commands and setup instructions for LLMs.
+
+COMPLETION NOTIFICATION / BACKGROUND TASKS:
+  `pcder.exe start ... --wait --wait-ms 0 --json` keeps pcder.exe alive until the
+  managed process exits. `--wait-ms 0` means unlimited wait. Exit code is 0 on
+  completion, the child exit code on failure, and 124 if the wait times out.
+  For an existing process: `pcder.exe wait --id <id> --wait-ms 0 --json`.
+  ProcessCommander also writes a .done JSON file on exit.
+
+MCP SERVER SETUP:
+  Register this executable in .mcp.json (Claude Code) or claude_desktop_config.json:
+    {
+      "mcpServers": {
+        "process-commander": {
+          "command": "<absolute path to ProcessCommander.exe>",
+          "args": ["mcp"]
+        }
+      }
+    }
+  Auto-register (recommended for LLM agents):
+    pcder.exe mcp install                    (writes .mcp.json in the current directory)
+    pcder.exe mcp install --client opencode  (writes/updates opencode.json)
+
+  MCP tools: start_process, list_processes, get_process_output, send_process_input,
+             wait_process, kill_process, taskqueue_*.
+```

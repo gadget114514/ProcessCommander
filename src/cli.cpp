@@ -171,6 +171,41 @@ GLOBAL OPTIONS:
   --json, -j               Print machine-readable JSON instead of human-friendly text.
   -h, --help               Show this help.
 
+PCDER CONCEPTS:
+  Process IDs : Numeric IDs assigned by the dashboard (#1, #2, ...). Use them with
+                list --id, logs --id, send --id, wait --id and kill --id.
+  Modes       : pipe    = anonymous pipes (default; non-interactive CLI agents)
+                pty     = Win32 ConPTY (interactive TUI: opencode, claude)
+                console = separate visible console window
+  stdin       : pipe mode keeps stdin writable (pcder send) unless --close-stdin;
+                close it for programs that wait for EOF.
+  Logs        : logs/proc_<id>_<name>_<timestamp>.log (or --log-file).
+  Done file   : atomic JSON on exit (logs/proc_<id>.done or --done-file) with
+                state, exit_code, reason, log_file and done_file.
+  cwd / env   : --cwd defaults to the caller's directory; PWD and INIT_CWD are
+                set for the child and OLDPWD is removed.
+  JSON output : --json / -j before or after the command prints one JSON object.
+  Lifecycle   : start returns immediately unless --wait; use wait --id or the
+                .done file to detect completion.
+
+EXIT CODES:
+  0    success / completed
+  1    CLI or configuration error (also: process failure without --wait)
+  124  wait timed out while the process is still running
+       start --wait / wait return the managed process's exit code
+
+ENVIRONMENT:
+  PROCESS_COMMANDER_LOG_DIR   Override the logs directory (state, logs, queues).
+
+EXAMPLES:
+  pcder.exe list --json
+  pcder.exe start --name build --cmd "cmd /c build.cmd" --timeout 1800 --wait --wait-ms 0 --json
+  pcder.exe start --name tui --pty --cmd "opencode"
+  pcder.exe logs --id 1 --tail 80
+  pcder.exe send --id 1 --input "status"
+  pcder.exe taskqueue add --file jobs.json --taskqueue main
+  pcder.exe mcp install --client opencode
+
 COMMANDS:
   list [--id <id>]
       List all managed processes and their live metrics.
@@ -302,6 +337,39 @@ void PrintCliUsageJson() {
     {"name": "--json", "alias": "-j", "description": "Print the raw machine-readable JSON response. May be placed before or after the command."},
     {"name": "--help", "alias": "-h", "description": "Show usage. Combine with --json to get this machine-readable help."}
   ],
+  "concepts": {
+    "process_ids": "Numeric IDs assigned by the dashboard (#1, #2, ...); use them with list/logs/send/wait/kill.",
+    "modes": {
+      "pipe": "Default. Anonymous pipes for stdout/stdin; best for non-interactive programs and LLM CLIs. Use --close-stdin for programs that wait for EOF.",
+      "pty": "Win32 ConPTY; interactive TUI (opencode/claude). --pty is a shortcut.",
+      "console": "Separate visible console window."
+    },
+    "stdin": "Pipe mode keeps stdin writable by default (pcder send). --close-stdin closes it after launch so readers receive EOF.",
+    "logs": "Each process writes a live log; default logs/proc_<id>_<name>_<timestamp>.log. Use --log-file for a custom path.",
+    "done_files": "On exit an atomic JSON .done file is written (default logs/proc_<id>.done) with state, exit_code, reason, log_file and done_file.",
+    "cwd": "Defaults to the caller's current directory (resolved to an absolute path). PWD and INIT_CWD are set for the child; OLDPWD is removed.",
+    "wait": "start --wait blocks until exit; --wait-ms 0 = unlimited. wait --id blocks for an existing process. Exit code 124 means the wait timed out.",
+    "json": "Pass --json (or -j) before or after the command for a single JSON object. Errors set ok=false and exit code 1.",
+    "lifecycle": "start returns immediately unless --wait; use wait --id or the .done file to detect completion."
+  },
+  "cli_exit_codes": {
+    "0": "success / completed",
+    "1": "CLI or configuration error; also a process failure without --wait",
+    "124": "wait timed out while the process is still running",
+    "child_exit_code": "start --wait / wait return the managed process exit code"
+  },
+  "environment_variables": {
+    "PROCESS_COMMANDER_LOG_DIR": "Override the logs directory (state, logs, task queues)."
+  },
+  "common_examples": [
+    "pcder.exe list --json",
+    "pcder.exe start --name build --cmd \"cmd /c build.cmd\" --timeout 1800 --wait --wait-ms 0 --json",
+    "pcder.exe start --name tui --pty --cmd \"opencode\"",
+    "pcder.exe logs --id 1 --tail 80",
+    "pcder.exe send --id 1 --input \"status\"",
+    "pcder.exe taskqueue add --file jobs.json --taskqueue main",
+    "pcder.exe mcp install --client opencode"
+  ],
   "commands": [
     {
       "name": "list",
@@ -399,6 +467,24 @@ void PrintCliUsageJson() {
       ]
     },
     {
+      "name": "taskqueue",
+      "description": "Manage the persistent task queue: ordered jobs, dependencies, per-job timeouts, success checks and automatic retries.",
+      "usage": "pcder taskqueue <add|list|get|retry|cancel|pause|resume|graph|wait|purge> ...",
+      "subcommands": [
+        {"name": "add", "usage": "pcder taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]", "description": "Register jobs. Each job needs id, command, summary and timeoutSec; dependsOn replaces shell chaining."},
+        {"name": "list", "usage": "pcder taskqueue list [<name>] [--state <state>]", "description": "List jobs with state, queue, summary and blockedBy."},
+        {"name": "get", "usage": "pcder taskqueue get <id> [--rev <n>] [--no-instructions]", "description": "Show one job with attempts and instructions."},
+        {"name": "retry", "usage": "pcder taskqueue retry <id>", "description": "Requeue a failed/blocked/cancelled job; blocked dependents resume automatically."},
+        {"name": "cancel", "usage": "pcder taskqueue cancel <id>", "description": "Cancel a job; a running attempt is killed and is not retried."},
+        {"name": "pause", "usage": "pcder taskqueue pause <name>", "description": "Stop starting new jobs in the queue; running jobs continue."},
+        {"name": "resume", "usage": "pcder taskqueue resume <name>", "description": "Resume starting jobs in the queue."},
+        {"name": "graph", "usage": "pcder taskqueue graph [<name>] [--root <id>]", "description": "Dependency graph with ready, waiting_for, blocked and dependents."},
+        {"name": "wait", "usage": "pcder taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]", "description": "Long-poll until the queue version changes."},
+        {"name": "purge", "usage": "pcder taskqueue purge <name> [--states succeeded,failed,cancelled]", "description": "Remove finished jobs."}
+      ],
+      "options": []
+    },
+    {
       "name": "help",
       "description": "Show command usage.",
       "usage": "pcder help [--json]",
@@ -450,6 +536,74 @@ void PrintCliUsageJson() {
       },
       "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph"]
     }
+  },
+  "agent": {
+    "purpose": "Reliable execution of CLI agents and build jobs: one OS command per job with timeouts, tree kill, logs, completion markers, and a persistent dependency-aware task queue.",
+    "preconditions": [
+      "Windows 10/11 x64; same user session as the ProcessCommander dashboard",
+      "The dashboard auto-starts on first use; administrator rights are not required",
+      "State, logs and task queues live under the logs directory. Override it via PROCESS_COMMANDER_LOG_DIR.",
+      "One dashboard instance per Windows session owns the Named Pipe server",
+      "A job is exactly one command; shell chains and polling loops are rejected"
+    ],
+    "cli": {
+      "recommended_binary": "pcder.exe",
+      "legacy": "ProcessCommander.exe <command> has the same implementation",
+      "json_mode": "Add --json or -j (before or after the command) for one JSON object.",
+      "auto_start": "pcder.exe auto-starts the GUI dashboard when it is not running."
+    },
+    "register_mcp": {
+      "command": "pcder.exe mcp install",
+      "opencode": "pcder.exe mcp install --client opencode",
+      "preview": "pcder.exe mcp install --dry-run --json",
+      "note": "Run once per project/client; restart or reload the LLM client afterwards."
+    },
+    "decision": {
+      "single_command": "start_process",
+      "multiple_commands_or_dependencies": "taskqueue_add",
+      "never": ["&&", "||", "single &", "powershell ;", "newline chains", "polling loops such as Test-Path or goto"],
+      "reason": "One job = one command, so each job keeps its own timeout, success check and retry; chains are rejected."
+    },
+    "taskqueue_job": {
+      "required": ["id", "command", "summary", "timeoutSec"],
+      "optional": ["cwd", "env", "dependsOn", "idle", "maxAttempts", "retryDelaySec", "success", "killExclude", "priority", "instructionsFile", "instructionsText"],
+      "summary": "One line, max 200 chars; exported as PC_JOB_SUMMARY and substituted for {summary}.",
+      "timeoutSec": "Per job; > 0 and <= queue maxTimeoutSec (default 7200). Never summed.",
+      "success": "exitCode (default 0) AND filesNewer (exist and newer than the attempt start) AND outputRegex (last 200 log lines).",
+      "idle": "outputSec and cpuSec must both be set; kill only when output AND CPU are idle."
+    },
+    "states": {
+      "waiting": "Queued and ready; waiting for a free slot or the retry delay.",
+      "pending": "Not in the run queue yet; dependencies are not satisfied.",
+      "blocked": "A success-dependency failed/cancelled; fix and retry the dependency.",
+      "running": "An attempt is executing.",
+      "succeeded": "Success conditions met.",
+      "failed": "Attempts exhausted or launch failed.",
+      "cancelled": "Cancelled; not retried."
+    },
+    "quick_start": [
+      {"step": "register_mcp", "command": "pcder.exe mcp install"},
+      {"step": "add_jobs", "tool": "taskqueue_add", "args": {"taskqueue": "main", "jobs": [{"id": "A", "command": "run A", "summary": "Prepare inputs", "timeoutSec": 1800}, {"id": "B", "command": "run B", "summary": "Build outputs", "timeoutSec": 3600, "dependsOn": ["A"]}]}},
+      {"step": "observe", "tool": "taskqueue_wait", "args": {"taskqueue": "main", "sinceVersion": 0, "timeoutMs": 30000}},
+      {"step": "inspect", "tools": ["taskqueue_list", "taskqueue_graph", "taskqueue_get"]},
+      {"step": "recover", "tool": "taskqueue_retry", "args": {"id": "A", "refreshInstructions": true}}
+    ],
+    "environment_variables": {
+      "PC_JOB_ID": "Job id",
+      "PC_ATTEMPT": "1-based attempt number",
+      "PC_JOB_SUMMARY": "Job summary",
+      "PC_JOB_INSTRUCTIONS": "Path to the materialized instructions revision",
+      "PC_JOB_INSTRUCTIONS_REV": "Instructions revision",
+      "PC_PREV_REASON": "Previous attempt reason for retries",
+      "PC_PREV_EXIT": "Previous exit code for retries",
+      "PC_PREV_TAIL": "Path to the previous attempt's last 50 log lines"
+    },
+    "notes": [
+      "Use filesNewer when exit code 0 does not prove the work was done.",
+      "Use dependsOn instead of waiting for .done files or polling.",
+      "taskqueue_wait is a long poll; it returns when the queue version changes.",
+      "kill_process on a task-queue attempt means 'killed attempt' and is retried (use taskqueue_cancel to stop it)."
+    ]
   },
   "notes": [
     "The GUI dashboard (ProcessCommander.exe) is started automatically if it is not already running.",
