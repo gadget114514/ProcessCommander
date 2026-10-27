@@ -7,3 +7,8 @@
 **Vulnerability:** Named pipes created by the application were accessible to remote network clients, and PTY pipes were vulnerable to local pipe squatting attacks.
 **Learning:** The default behavior of `CreateNamedPipeW` allows remote network connections unless explicitly restricted, and does not enforce exclusivity for single-instance pipes unless specified, which could allow malicious local processes to intercept data.
 **Prevention:** Always use `PIPE_REJECT_REMOTE_CLIENTS` to prevent remote network access unless explicitly needed. Use `FILE_FLAG_FIRST_PIPE_INSTANCE` for single-instance pipes to prevent local pipe squatting.
+
+## 2026-10-27 - [Arbitrary Code Execution via untrusted URLs]
+**Vulnerability:** The terminal emulator passed embedded OSC 8 hyperlinks directly to `ShellExecuteW`, which would launch local executables or open unsafe file paths (e.g. `file://` or paths to `.bat`/`.exe` files) if provided by a malicious remote host.
+**Learning:** This existed because the application implicitly trusted the URL parameter embedded within terminal escape sequences and did not enforce a safe URL scheme whitelist. In particular, attempting to "fix" local `file://` execution as a fallback compounded the risk of local command execution.
+**Prevention:** When using `ShellExecuteW` to open URIs from untrusted sources (such as OSC 8 hyperlinks), always validate the URI scheme against an explicitly safe allowlist (e.g., `http://`, `https://`, `mailto:`) before execution to prevent Arbitrary Code Execution.
