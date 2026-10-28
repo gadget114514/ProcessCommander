@@ -51,8 +51,14 @@ pcder.exe mcp install --data-dir .processcommander   # プロジェクトの MCP
 ## 主な特徴
 
 ### 1. 一覧性と操作性を両立した Native Win32 + Direct2D ダッシュボード GUI
-- **上部 KPI サマリーカード (6枚)**:
-  - 管理ターミナル総数、稼働中 (`ACTIVE RUNNING`)、入力待ち/アイドル (`WAITING / IDLE >= 10s`、出力もCPU消費もない場合)、正常完了 (`COMPLETED`)、失敗/強制終了 (`FAILED / KILLED`)、および全 Job Object の合計プロセス数・合計メモリ使用量をリアルタイム表示。
+- **上部 KPI サマリーカード (2行・計14枚: プロセス & タスク)**:
+  - **上段 (プロセス)**: 管理ターミナル/プロセス総数、稼働中 (`ACTIVE RUNNING`)、入力待ち/アイドル (`WAITING / IDLE >= 10s`、出力もCPU消費もない場合)、正常完了 (`COMPLETED`)、失敗/強制終了 (`FAILED / KILLED`)、**最短残り時間** (最も期限が近いプロセスの残り秒数カウントダウン表示)、全 Job Object の合計メモリ使用量・プロセスツリー数をリアルタイム表示。
+  - **下段 (タスクキュー)**: タスク総数、稼働中タスク (`RUNNING`)、待機/保留中タスク (`WAITING / PENDING`)、成功タスク (`SUCCEEDED`)、失敗タスク (`FAILED`)、**最短残り時間** (最も期限が近いタスクの残り秒数カウントダウン表示)、アクティブキュー数 & 最大並列度をリアルタイム表示。
+  - 各カードにマウスカーソルを合わせると内訳ツールチップを表示。
+- **2行スタック表示 & ドラッグ可能なスプリッター (プロセス一覧 ＋ タスクキュー一覧)**:
+  - プロセス状況一覧（上段）とタスクキュー一覧（下段）を上下2段で同時に表示。
+  - 境界線のスプリッターバーをマウスドラッグして各領域の高さを自由に調整可能。
+  - ツールバーの表示切替ボタン（または **Ctrl+T**）で **2行同時表示 (Two Rows)** → **プロセスのみ (Processes Only)** → **タスクのみ (Tasks Only)** を順次トグル切り替え。
 - **全プロセス状況リスト（新しい順・全カラムソート対応）**:
   - 新しく起動したプロセスほど**リストの一番上**に追加されます（デフォルト: `ID ▼` 降順）。
   - リスト上部の**任意のカラムヘッダ**（`ID`, `Agent / Name`, `Status`, `Start Time (起動時刻)`, `End Time (終了時刻)`, `Uptime (稼働時間)`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`）をクリックすると、**昇順 (`▲`) / 降順 (`▼`)** で自在にソートを切り替えられます。
@@ -72,11 +78,14 @@ pcder.exe mcp install --data-dir .processcommander   # プロジェクトの MCP
 
 ![Shell Config Dialog](docs/images/config_dialog.png)
 
-### 3. 終了履歴の消去・非表示切り替え & タスク詳細ダイアログ
+### 3. 終了履歴の消去・非表示切り替え & タスク詳細・LLM JSON ツリービューア
 - **`[終了履歴を消去 (Clear Ended)]`**: 完了・強制終了したプロセスの履歴を一括消去し、`logs/processes_state.json` を更新します。
 - **`[終了履歴を非表示 (Hide Ended)]`**: 履歴データを消さずに、終了したプロセスをリスト・タブから非表示にして「実行中のプロセスのみ」を絞り込み表示します（再度クリックで再表示）。
 - **右クリックメニュー & タスク詳細ダイアログ**:
   - リストの行またはタブを**右クリック**（または行をダブルクリック）すると、「詳細を表示 (Task Details & Command Line)」「コマンドラインをコピー」「ログファイルを開く」「プロセスツリーを強制終了」「この履歴を削除」を実行できます。
+- **LLM JSON ストリーミング出力対応 & JSON ツリービューア**:
+  - 主要 AI コーディングエージェント (`claude`, `agy`, `opencode`, `codex`) の JSON ストリーミング出力を自動検知・パースし、通常のコンソールログに加えて構造化 `.stream.jsonl` ファイルへリアルタイム記録。
+  - タスク詳細ダイアログに `nlohmann/json` 採用の **JSON ツリービューア** を統合。生の JSONL 行を追うことなく、階層構造（オブジェクト、配列、ツール呼び出し引数、思考ブロック、トークン消費量など）を展開・折りたたみしながら整理されたツリー形式で直感的に確認・検証可能。
 
 ### 4. タスクトレイ格納・復元対応
 - ツールバーの **`[トレイに格納 (Tray)]`** ボタン、最小化ボタン、またはウィンドウ右上の閉じるボタン（`[X]`）で、バックグラウンドで全プロセスと IPC/MCP 通信を維持したまま **タスクトレイ（通知領域）** に格納されます。
@@ -100,7 +109,7 @@ pcder.exe mcp install --data-dir .processcommander   # プロジェクトの MCP
 - ジョブを**1 コマンドずつ**登録すると、ProcessCommander が実行順・同時実行数・優先度を決め、キューを永続化します（`logs/taskqueues/<name>.json`）。
 - ジョブ単位の `timeoutSec`、出力と CPU の両方を見るアイドル検出、成功条件（`exitCode` / `filesNewer` / `outputRegex`）、自動再実行（`maxAttempts`）、依存失敗時の `blocked` を提供します。
 - **ChainGuard** が `start_process` / `taskqueue_add` / `taskqueue_update` のシェル連鎖と待ちループを拒否します。順序は `dependsOn` で宣言してください。CLI の `--allow-chain` のみ例外（MCP には非公開）。
-- GUI: 左端の **`[タスクキューを表示]`** ボタン、または **Ctrl+T** でプロセス / タスクキューを切り替え。実行中のジョブは上位に表示され、失敗は低彩度の赤、タイムアウトは低彩度のアンバーで表示されます。
+- GUI: 左端の表示切替ボタン、または **Ctrl+T** で **2行同時表示 (Two Rows)**、**プロセスのみ (Processes Only)**、**タスクのみ (Tasks Only)** を順次トグル切り替え。2行表示時は水平スプリッターバーをドラッグして各領域の高さを自在に調整できます。実行中のジョブは上位に表示され、失敗は低彩度の赤、タイムアウトは低彩度のアンバーで表示されます。
 - 詳細は [タスクキュー](#タスクキュー-順序依存タイムアウト自動再実行) を参照。
 
 ---
@@ -270,7 +279,7 @@ pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
 
 **イベントと環境変数:** 各試行に `PC_JOB_ID`, `PC_ATTEMPT`, `PC_JOB_SUMMARY`, `PC_JOB_INSTRUCTIONS`, `PC_JOB_INSTRUCTIONS_REV`、再実行時は `PC_PREV_REASON`, `PC_PREV_EXIT`, `PC_PREV_TAIL`。イベントは `logs/taskqueue-<name>.events.jsonl` に追記され、`notifyFile` は `jobFailed` / `taskqueueStalled` / `taskqueueDrained` で更新されます。
 
-**GUI:** 左端の **`[タスクキューを表示]`** または **Ctrl+T**。実行中は上位・強調表示、失敗は低彩度の赤、タイムアウトは低彩度のアンバー（テーマ色）。
+**GUI:** 左端の表示切替ボタン、または **Ctrl+T** で **2行同時表示 (Two Rows)**、**プロセスのみ (Processes Only)**、**タスクのみ (Tasks Only)** を順次トグル切り替え。2行表示時は水平スプリッターバーをドラッグして各領域の高さを自在に調整できます。実行中は上位・強調表示、失敗は低彩度の赤、タイムアウトは低彩度のアンバー（テーマ色）。
 
 ---
 

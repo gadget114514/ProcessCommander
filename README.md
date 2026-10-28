@@ -50,7 +50,14 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 ## Key Features
 
 ### 1. Native Win32 + Direct2D Multi-Terminal Dashboard GUI
-- **6 Top KPI Summary Cards**: Real-time metrics for Total Terminals, Active Running, Waiting/Idle (no output or CPU activity for `>= 10s`), Completed (`Exit 0`), Failed/Killed, and Total Job Object Memory & Process Count.
+- **14 Top KPI Summary Cards (Two Rows: Processes & Task Queues)**:
+  - **Top Row (Processes)**: Real-time metrics for Total Terminals, Active Running, Waiting/Idle (no output or CPU activity for `>= 10s`), Completed (`Exit 0`), Failed/Killed, **Shortest Remaining Time** (live countdown of nearest active process timeout), and Total Job Object Memory & Process Count.
+  - **Bottom Row (Tasks)**: Real-time metrics for Total Tasks, Active Running, Waiting/Pending, Succeeded, Failed, **Shortest Remaining Time** (live countdown of nearest active task timeout), and Active Queues / Concurrency summary.
+  - Hover over any card for detailed tooltips and breakdown counts.
+- **Two-Row Stacked Layout with Draggable Splitter**:
+  - View both the **Process Summary Table** (top) and **Task Queue Table** (bottom) simultaneously in a dual-row view.
+  - Interactive **draggable horizontal splitter bar** between the two tables allows smooth resizing of their relative heights.
+  - **View Mode Cycling (`Ctrl+T` / View Toggle Button)**: Cycle between **Two Rows** (Processes + Tasks), **Processes Only**, and **Tasks Only** at any time.
 - **Sortable Process Summary Table (Newest on Top)**:
   - Newly launched processes are automatically added to the **top of the list** (`ID ▼` descending by default).
   - Click **any column header** (`ID`, `Agent / Name`, `Status`, `Start Time`, `End Time`, `Uptime`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`) to toggle **Ascending (`▲`) / Descending (`▼`)** sort order.
@@ -70,11 +77,15 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 
 ![Shell Config Dialog](docs/images/config_dialog.png)
 
-### 3. History Management & Task Details Dialog
+### 3. History Management, Task Details & LLM JSON Tree Viewer
 - **`[Clear Ended]`**: Deletes all completed/killed/failed process entries from history and updates `logs/processes_state.json`.
 - **`[Hide Ended]`**: Toggles hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
 - **`[Reset Process IDs]`** (Settings dialog): Renumbers finished processes sequentially from `#1` and resets the next process ID. All running processes must be stopped first.
 - **Right-Click Context Menu & Task Details Dialog**: Right-click any process row or terminal tab (or double-click a row) to inspect the full command line, working directory, PID/Job metrics, log file path, `.done` file path, and output preview, or copy the command line to the clipboard.
+- **LLM JSON Output Streaming & Interactive Tree Viewer**:
+  - Native streaming event capture for major AI coding agents (`claude`, `agy`, `opencode`, `codex`).
+  - Automatically captures structured event streams into `<logfile>.stream.jsonl` in addition to raw console logs.
+  - The Task Details dialog features an embedded **JSON Tree Viewer** (powered by `nlohmann/json`): expand, collapse, and inspect hierarchical JSON payloads, tool inputs/outputs, thought blocks, and token usage without having to manually read raw JSONL streams.
 
 ### 4. System Tray Integration
 - Click **`[Tray]`**, minimize the window, or press the window close button (`[X]`) to hide ProcessCommander into the **Windows System Tray** while keeping all background ConPTY processes and IPC/MCP services running.
@@ -101,7 +112,7 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 - Register jobs with **one command each**; ProcessCommander decides when to run them (concurrency, dependencies, priority) and persists the queue across restarts (`logs/taskqueues/<name>.json`).
 - Per-job `timeoutSec`, idle detection (output **and** CPU), success checks (`exitCode`, `filesNewer`, `outputRegex`), automatic retries (`maxAttempts`), and `blocked` dependents when a dependency fails.
 - **ChainGuard** rejects shell chains and wait loops in `start_process` / `taskqueue_add`; use `dependsOn` instead. CLI `--allow-chain` is the only escape hatch (never exposed over MCP).
-- GUI: click **"Show Task Queue"** (leftmost toolbar button) or press **Ctrl+T**. Running jobs are listed first and highlighted; failed rows are muted red and timed-out rows muted amber (theme-based, low saturation).
+- GUI: click the leftmost view mode toggle button or press **Ctrl+T** to cycle between **Two Rows** (Processes + Tasks), **Processes Only**, and **Tasks Only**. In Two Rows mode, drag the horizontal splitter bar to adjust relative heights. Running jobs are listed first and highlighted; failed rows are muted red and timed-out rows muted amber (theme-based, low saturation).
 - See [Task Queue](#task-queue-ordered-jobs-dependencies-and-retries) for the data model and examples.
 
 ---
@@ -315,7 +326,7 @@ pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
 
 **Events and environment:** each attempt receives `PC_JOB_ID`, `PC_ATTEMPT`, `PC_JOB_SUMMARY`, `PC_JOB_INSTRUCTIONS`, `PC_JOB_INSTRUCTIONS_REV`, plus `PC_PREV_REASON`, `PC_PREV_EXIT`, `PC_PREV_TAIL` on retries. Events are appended to `logs/taskqueue-<name>.events.jsonl`; `notifyFile` is updated for `jobFailed`, `taskqueueStalled` and `taskqueueDrained`.
 
-**GUI:** click **Show Task Queue** (leftmost toolbar button) or press **Ctrl+T**. Running jobs are listed first and highlighted; failed rows use a muted red and timed-out rows a muted amber (theme colors).
+**GUI:** click the view mode toggle button (leftmost toolbar button) or press **Ctrl+T** to cycle between **Two Rows** (Processes + Tasks), **Processes Only**, and **Tasks Only**. In Two Rows mode, drag the horizontal splitter bar to adjust relative heights. Running jobs are listed first and highlighted; failed rows use a muted red and timed-out rows a muted amber (theme colors).
 
 ---
 
