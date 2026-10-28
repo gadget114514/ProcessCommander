@@ -1984,30 +1984,38 @@ std::wstring TerminalView::ExtractLastNonEmptyLine() const {
     for (int r = total - 1; r >= 0; --r) {
         const auto& line = buffer_.lineAt(r);
 
-        // Fast-path: Skip line if it only contains whitespace
-        bool hasContent = false;
-        for (const auto& cell : line) {
+        int startCol = -1;
+        int endCol = -1;
+
+        // Fast-path: scan from right-to-left
+        for (int c = (int)line.size() - 1; c >= 0; --c) {
+            const auto& cell = line[c];
             if (!cell.wideContinuation && cell.ch != 0 && cell.ch != L' ' && cell.ch != L'\t') {
-                hasContent = true;
+                endCol = c;
                 break;
             }
         }
-        if (!hasContent) continue;
+
+        if (endCol == -1) continue;
+
+        // Find the start column
+        for (int c = 0; c <= endCol; ++c) {
+            const auto& cell = line[c];
+            if (!cell.wideContinuation && cell.ch != 0 && cell.ch != L' ' && cell.ch != L'\t') {
+                startCol = c;
+                break;
+            }
+        }
 
         std::wstring rowStr;
-        rowStr.reserve(line.size());
-        for (const auto& cell : line) {
+        rowStr.reserve(endCol - startCol + 1);
+        for (int c = startCol; c <= endCol; ++c) {
+            const auto& cell = line[c];
             if (cell.wideContinuation) continue;
-            wchar_t c = (cell.ch == 0) ? L' ' : cell.ch;
-            rowStr.push_back(c);
+            wchar_t ch = (cell.ch == 0) ? L' ' : cell.ch;
+            rowStr.push_back(ch);
         }
-        while (!rowStr.empty() && rowStr.back() == L' ') {
-            rowStr.pop_back();
-        }
-        size_t first = rowStr.find_first_not_of(L" \t");
-        if (first != std::wstring::npos) {
-            return rowStr.substr(first);
-        }
+        return rowStr;
     }
     return L"";
 }
