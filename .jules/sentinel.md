@@ -7,3 +7,7 @@
 **Vulnerability:** Named pipes created by the application were accessible to remote network clients, and PTY pipes were vulnerable to local pipe squatting attacks.
 **Learning:** The default behavior of `CreateNamedPipeW` allows remote network connections unless explicitly restricted, and does not enforce exclusivity for single-instance pipes unless specified, which could allow malicious local processes to intercept data.
 **Prevention:** Always use `PIPE_REJECT_REMOTE_CLIENTS` to prevent remote network access unless explicitly needed. Use `FILE_FLAG_FIRST_PIPE_INSTANCE` for single-instance pipes to prevent local pipe squatting.
+## 2024-10-27 - Arbitrary Code Execution in Hyperlinks
+**Vulnerability:** `ShellExecuteW` was used to open URIs from OSC 8 hyperlinks without any validation of the URI scheme, leading to potential Arbitrary Code Execution.
+**Learning:** Untrusted URIs executed via `ShellExecuteW` must have their scheme validated against an explicitly safe allowlist (like `http://`, `https://`, `mailto:`, `file://`) before any execution or custom command substitution logic.
+**Prevention:** Always validate the URI scheme before executing untrusted inputs using `ShellExecuteW`.

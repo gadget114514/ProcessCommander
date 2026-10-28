@@ -16,6 +16,13 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "comctl32.lib")
 
+static bool isSafeUrlScheme(const std::wstring& url) {
+    return _wcsnicmp(url.c_str(), L"http://", 7) == 0 ||
+           _wcsnicmp(url.c_str(), L"https://", 8) == 0 ||
+           _wcsnicmp(url.c_str(), L"mailto:", 7) == 0 ||
+           _wcsnicmp(url.c_str(), L"file://", 7) == 0;
+}
+
 // IME 文字列の表示幅を計算（全角=2, 半角=1）
 static int ImeCellWidth(const std::wstring& s) {
     int w = 0;
@@ -75,7 +82,9 @@ TerminalView::TerminalView()
     });
     // Hyperlink open
     emulator_.setHyperlinkOpenCallback([](const std::wstring& url) {
-        ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (isSafeUrlScheme(url)) {
+            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
     });
 
     // OSC 1337 inline image callback
@@ -1355,7 +1364,7 @@ void TerminalView::OnLButtonDown(int px, int py) {
             auto& line = buffer_.lineAt(row);
             if (col >= 0 && col < (int)line.size()) {
                 const auto& url = line[col].hyperlinkUrl;
-                if (!url.empty()) {
+                if (!url.empty() && isSafeUrlScheme(url)) {
                     auto openUrl = [](const std::wstring& target) -> bool {
                         return (INT_PTR)ShellExecuteW(nullptr, L"open", target.c_str(),
                                                       nullptr, nullptr, SW_SHOWNORMAL) > 32;
