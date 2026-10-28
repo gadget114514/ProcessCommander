@@ -492,6 +492,8 @@ void PrintCliUsageJson() {
         {"name": "--timeout", "value": "<sec>", "description": "Maximum runtime in seconds (0 = unlimited)."},
         {"name": "--idle-timeout", "value": "<sec>", "description": "Kill if no output for N seconds (0 = unlimited)."},
         {"name": "--eta", "aliases": ["--estimate-end"], "value": "<time>", "description": "Estimated end time shown in gray in the End Time column while the process is running (e.g. '18:30' or '2026-10-22 18:30:00'). If omitted, --timeout causes the column to show remaining seconds."},
+        {"name": "--agent-type", "value": "<claude|agy|antigravity|opencode|codex|aider|ollama>", "description": "Hint agent type for JSON stream parsing (auto-detected if omitted)."},
+        {"name": "--json-stream", "description": "Enable JSONL stream parsing and write <log>.stream.jsonl for LLM agent output."},
         {"name": "--wait", "description": "Block until the process exits (unlimited unless --wait-ms is set)."},
         {"name": "--wait-ms", "value": "<ms>", "description": "With --wait: maximum wait (0 = unlimited). Without --wait: initial output wait. Default: 500."}
       ]
@@ -569,14 +571,21 @@ void PrintCliUsageJson() {
     },
     {
       "name": "agent",
-      "description": "Inspect and supervise LLM agents (Claude, agy, opencode) running under ProcessCommander.",
+      "description": "Inspect and supervise LLM agents (Claude, agy, opencode, codex, aider, ollama) running under ProcessCommander. JSON stream events are parsed into <log>.stream.jsonl and visible in the GUI (LLM JSON Stream dialog). Use pcder/ProcessCommander to supervise and watch streams.",
       "usage": "pcder agent <status|stream|info> <id> [options]",
       "subcommands": [
-        {"name": "status", "usage": "pcder agent status <id>", "description": "Display current agent status, active tool, thoughts, message, and supervisor context."},
-        {"name": "stream", "usage": "pcder agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]", "description": "View captured JSON streaming events."},
+        {"name": "status", "usage": "pcder agent status <id>", "description": "Display current agent status, model, active tool, thoughts, message, and supervisor context."},
+        {"name": "stream", "usage": "pcder agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]", "description": "View captured JSON streaming events from <log>.stream.jsonl (parsed tool_call/tool_result/thinking/message)."},
         {"name": "info", "usage": "pcder agent info <id> [--notes <notes>] [--goal <goal>]", "description": "Update supervisor instructions, notes, or goals."}
       ],
-      "options": []
+      "options": [
+        {"name": "--tail", "value": "<n>", "description": "For stream: number of recent events."},
+        {"name": "--type", "value": "<type>", "description": "For stream: filter by event type (tool_call/tool_result/thinking/message/...)."},
+        {"name": "--since", "value": "<seq>", "description": "For stream: only events with seq > N."},
+        {"name": "--summary", "description": "For stream: show summary view."},
+        {"name": "--notes", "value": "<text>", "description": "For info: supervisor notes."},
+        {"name": "--goal", "value": "<text>", "description": "For info: supervisor goal."}
+      ]
     },
     {
       "name": "help",
@@ -633,6 +642,16 @@ void PrintCliUsageJson() {
   },
   "agent": {
     "purpose": "Reliable execution of CLI agents and build jobs: one OS command per job with timeouts, tree kill, logs, completion markers, and a persistent dependency-aware task queue.",
+    "llm_stream_setup": {
+      "description": "To see live agent state/stream in the GUI and parsed events, enable JSONL streaming for LLM CLIs.",
+      "pcder_start_example": "pcder start --name opencode --cmd \"opencode run ...\" --json-stream --agent-type opencode --wait --wait-ms 0 --json",
+      "notes": [
+        "ProcessCommander auto-detects common agents (claude, agy/antigravity, opencode, codex, aider, ollama) and enables JSON stream parsing if detected.",
+        "Parsed events are written to <logfile>.stream.jsonl. Use GUI context menu 'LLM JSON Stream Events...' or 'pcder agent stream <id>'.",
+        "Model is captured from stream fields (model/modelId/llm.model/metadata.model) when present; hover the agent icon in the stream dialog to see it.",
+        "Format reference: docs/LLM-jsonstream-format.md"
+      ]
+    },
     "working_model": {
       "summary": "A supervising LLM uses ProcessCommander as its execution layer to run child-process worker LLMs/CLIs as managed jobs.",
       "roles": {
@@ -733,8 +752,11 @@ void PrintCliUsageJson() {
         "Relative paths resolve against the caller's current directory; use an absolute path in the MCP config if the cwd is uncertain.",
         "Different data directories are isolated: each has its own dashboard instance, Named Pipe and mutex, and they never share processes or queues."
       ],
-      "verify": "pcder.exe --data-dir <path> help --json returns effective_data_dir; the dashboard status bar shows the same path."
-    },
+    "verify": "pcder.exe --data-dir <path> help --json returns effective_data_dir; the dashboard status bar shows the same path.",
+    "llm_stream": {
+      "help": "Run 'pcder help --json' and look under agent.llm_stream_setup for instructions to enable JSONL streaming and view the stream window."
+    }
+  },
     "notes": [
       "Use filesNewer when exit code 0 does not prove the work was done.",
       "Use dependsOn instead of waiting for .done files or polling.",
