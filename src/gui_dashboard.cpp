@@ -383,7 +383,7 @@ constexpr int kToolbarH            = 24;
 constexpr int kListTop             = 98;
 constexpr int kSplitterH           = 6;
 constexpr int kRowSplitterH        = 6;
-constexpr int kMinRowListH         = 45;
+constexpr int kMinRowListH         = 64;
 constexpr int kTabH                = 26;
 constexpr int kStatusBarH          = 26;
 constexpr int kMinListH            = 60;
@@ -2136,8 +2136,13 @@ static void LayoutControls(DashboardState* st, int width, int height) {
                 }
             } else {
                 int procH = static_cast<int>(availForRows * st->procRowRatio);
-                procH = (std::clamp)(procH, kMinRowListH, availForRows - kMinRowListH);
+                if (procH < kMinRowListH) procH = kMinRowListH;
+                if (procH > availForRows - kMinRowListH) procH = availForRows - kMinRowListH;
                 int taskH = availForRows - procH;
+                if (taskH < kMinRowListH) {
+                    taskH = kMinRowListH;
+                    procH = availForRows - taskH;
+                }
                 int splitterTop = topList + procH;
                 int taskTop = splitterTop + kRowSplitterH;
 
@@ -4518,10 +4523,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         case WM_MOUSEMOVE: {
             if (st && st->rowsSplitterDragging) {
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-                if (st->lastTotalListHeight > kMinRowListH * 2) {
+                if (st->lastTotalListHeight >= kMinRowListH * 2) {
                     int relY = pt.y - st->processListTop;
                     float ratio = static_cast<float>(relY) / static_cast<float>(st->lastTotalListHeight);
-                    st->procRowRatio = (std::clamp)(ratio, 0.15f, 0.85f);
+                    ratio = (std::clamp)(ratio, static_cast<float>(kMinRowListH) / static_cast<float>(st->lastTotalListHeight),
+                                         1.0f - static_cast<float>(kMinRowListH) / static_cast<float>(st->lastTotalListHeight));
+                    st->procRowRatio = ratio;
                     RECT rcClient = {};
                     GetClientRect(hwnd, &rcClient);
                     LayoutControls(st, rcClient.right, rcClient.bottom);
@@ -4532,6 +4539,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (st && st->splitterDragging) {
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 st->processListHeight = pt.y - st->processListTop;
+                if (st->processListHeight < kMinListH) st->processListHeight = kMinListH;
                 RECT rcClient = {};
                 GetClientRect(hwnd, &rcClient);
                 LayoutControls(st, rcClient.right, rcClient.bottom);
