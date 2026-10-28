@@ -264,7 +264,32 @@ static LRESULT CALLBACK HeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, L
         DeleteObject(brush);
         return 1;
     }
-    return DefSubclassProc(hwnd, msg, wParam, lParam);
+    LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
+    if (msg == WM_PAINT) {
+        int count = Header_GetItemCount(hwnd);
+        if (count > 0) {
+            RECT rcLast = {};
+            if (Header_GetItemRect(hwnd, count - 1, &rcLast)) {
+                RECT rcClient = {};
+                GetClientRect(hwnd, &rcClient);
+                if (rcLast.right < rcClient.right) {
+                    HDC hdc = GetDC(hwnd);
+                    RECT rcEmpty = { rcLast.right, rcClient.top, rcClient.right, rcClient.bottom };
+                    HBRUSH brush = CreateSolidBrush(g_theme.windowBg);
+                    FillRect(hdc, &rcEmpty, brush);
+                    DeleteObject(brush);
+                    HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+                    HGDIOBJ oldPen = SelectObject(hdc, borderPen);
+                    MoveToEx(hdc, rcEmpty.left, rcEmpty.bottom - 1, nullptr);
+                    LineTo(hdc, rcEmpty.right, rcEmpty.bottom - 1);
+                    SelectObject(hdc, oldPen);
+                    DeleteObject(borderPen);
+                    ReleaseDC(hwnd, hdc);
+                }
+            }
+        }
+    }
+    return res;
 }
 
 static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
@@ -392,6 +417,7 @@ enum ControlId {
     IDC_SET_SHELL_CONFIG = 6022,
     IDC_SET_RESET_IDS = 6021,
     IDC_SET_CLEAR_ENDED = 6023,
+    IDC_SET_HIDE_ENDED = 6024,
     IDC_SET_SOUND_ENABLED = 6030,
     IDC_SET_SOUND_PATH = 6031,
     IDC_SET_SOUND_BROWSE = 6032,
@@ -440,7 +466,6 @@ struct DashboardState {
     HWND hwndBtnKillSel = nullptr;
     HWND hwndBtnKillAll = nullptr;
     HWND hwndBtnClear = nullptr;
-    HWND hwndBtnHideEnded = nullptr;
     HWND hwndBtnGridView = nullptr;
     HWND hwndBtnHideTray = nullptr;
     HWND hwndBtnToggleList = nullptr;
@@ -458,6 +483,7 @@ struct DashboardState {
     HWND hwndTab = nullptr;
     HWND hwndClock = nullptr;
     HWND hwndKpiTip = nullptr;
+    HWND hwndToolbarTip = nullptr;
     RECT kpiCardRects[kNumKpiCards] = {};
     std::wstring kpiTipText[kNumKpiCards];
     int activeRunningCount = 0;
@@ -1370,24 +1396,73 @@ static void UpdateListHeaderSortIndicator(DashboardState* st) {
     }
 }
 
-static void UpdateHideEndedButtonLabel(DashboardState* st) {
-    if (!st || !st->hwndBtnHideEnded) return;
-    SetWindowTextW(st->hwndBtnHideEnded,
-        st->hideEndedProcesses ? Tr(L"終了履歴を表示", L"Show Ended", L"Mostrar finalizados")
-                               : Tr(L"終了履歴を非表示", L"Hide Ended", L"Ocultar finalizados"));
+static const wchar_t* TaskColumnTitle(int index) {
+    static const wchar_t* ja[9] = {
+        L"ID", L"サマリ", L"状態", L"開始時刻", L"終了 / 残り時間",
+        L"試行上限", L"タイムアウト", L"依存 / 理由", L"キュー"
+    };
+    static const wchar_t* en[9] = {
+        L"ID", L"Summary", L"State", L"Start", L"End / Left",
+        L"Max Attempts", L"Timeout", L"Depends / Reason", L"Queue"
+    };
+    static const wchar_t* es[9] = {
+        L"ID", L"Resumen", L"Estado", L"Inicio", L"Fin / Restante",
+        L"Intentos", L"Tiempo limite", L"Dependencias", L"Cola"
+    };
+    if (g_uiLanguage == UiLanguage::Spanish) return es[index];
+    if (g_uiLanguage == UiLanguage::English) return en[index];
+    return ja[index];
+}
+
+static void UpdateTaskListHeaders(DashboardState* st) {
+    if (!st || !st->hwndTaskList) return;
+    HWND hHeader = ListView_GetHeader(st->hwndTaskList);
+    for (int i = 0; i < 9; ++i) {
+        LVCOLUMNW lvc = {};
+        lvc.mask = LVCF_TEXT;
+        lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
+        ListView_SetColumn(st->hwndTaskList, i, &lvc);
+        if (hHeader) {
+            HDITEMW hdi = {};
+            hdi.mask = HDI_FORMAT;
+            if (Header_GetItem(hHeader, i, &hdi)) {
+                hdi.fmt |= HDF_OWNERDRAW;
+                Header_SetItem(hHeader, i, &hdi);
+            }
+        }
+    }
+}
+
+static void UpdateControlTooltip(HWND hwndTip, HWND hwndParent, HWND hwndCtrl, const wchar_t* text) {
+    if (!hwndTip || !hwndCtrl) return;
+    TOOLINFOW ti = {};
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = hwndParent;
+    ti.uId = reinterpret_cast<UINT_PTR>(hwndCtrl);
+    ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+    ti.lpszText = const_cast<wchar_t*>(text ? text : L"");
+    SendMessageW(hwndTip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
 }
 
 static void UpdatePanelToggleLabels(DashboardState* st) {
     if (!st) return;
     if (st->hwndBtnToggleList) {
-        SetWindowTextW(st->hwndBtnToggleList,
-            st->hideProcessList ? Tr(L"リストを表示", L"Show List", L"Mostrar lista")
-                                : Tr(L"リストを非表示", L"Hide List", L"Ocultar lista"));
+        SetWindowTextW(st->hwndBtnToggleList, L"☰");
     }
     if (st->hwndBtnToggleTerm) {
-        SetWindowTextW(st->hwndBtnToggleTerm,
-            st->hideTerminalGrid ? Tr(L"ターミナルを表示", L"Show Terminal", L"Mostrar terminal")
-                                 : Tr(L"ターミナルを非表示", L"Hide Terminal", L"Ocultar terminal"));
+        SetWindowTextW(st->hwndBtnToggleTerm, L">_");
+    }
+    if (st->hwndToolbarTip) {
+        if (st->hwndBtnToggleList) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnToggleList,
+                st->hideProcessList ? Tr(L"リストを表示", L"Show List", L"Mostrar lista")
+                                    : Tr(L"リストを非表示", L"Hide List", L"Ocultar lista"));
+        }
+        if (st->hwndBtnToggleTerm) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnToggleTerm,
+                st->hideTerminalGrid ? Tr(L"ターミナルを表示", L"Show Terminal", L"Mostrar terminal")
+                                     : Tr(L"ターミナルを非表示", L"Hide Terminal", L"Ocultar terminal"));
+        }
     }
 }
 
@@ -2011,11 +2086,10 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnStart, 160},
         {st->hwndBtnSettings, 90},
         {st->hwndBtnKillAll, 74},
-        {st->hwndBtnHideEnded, 205},
-        {st->hwndBtnGridView, 94},
-        {st->hwndBtnToggleList, 90},
-        {st->hwndBtnToggleTerm, 112},
-        {st->hwndBtnHideTray, 140},
+        {st->hwndBtnGridView, 28},
+        {st->hwndBtnToggleList, 28},
+        {st->hwndBtnToggleTerm, 30},
+        {st->hwndBtnHideTray, 28},
         {st->hwndClock, 80}
     };
     const int gap = 7;
@@ -3213,11 +3287,15 @@ static void ApplyListTheme(DashboardState* st) {
     ListView_SetTextBkColor(st->hwndList, g_theme.panel);
     ListView_SetTextColor(st->hwndList, g_theme.listText);
     InvalidateRect(st->hwndList, nullptr, TRUE);
+    HWND hHeader = ListView_GetHeader(st->hwndList);
+    if (hHeader) InvalidateRect(hHeader, nullptr, TRUE);
     if (st->hwndTaskList) {
         ListView_SetBkColor(st->hwndTaskList, g_theme.panel);
         ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
         ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
         InvalidateRect(st->hwndTaskList, nullptr, TRUE);
+        HWND hTaskHeader = ListView_GetHeader(st->hwndTaskList);
+        if (hTaskHeader) InvalidateRect(hTaskHeader, nullptr, TRUE);
     }
     if (st->hwndTab) InvalidateRect(st->hwndTab, nullptr, TRUE);
 }
@@ -3239,12 +3317,24 @@ static void UpdateToolbarLabels(DashboardState* st) {
         SetWindowTextW(st->hwndBtnSettings, Tr(L"設定", L"Settings", L"Ajustes"));
     if (st->hwndBtnKillAll)
         SetWindowTextW(st->hwndBtnKillAll, Tr(L"全終了", L"Kill All", L"Terminar todo"));
-    UpdateHideEndedButtonLabel(st);
     if (st->hwndBtnGridView)
-        SetWindowTextW(st->hwndBtnGridView, Tr(L"グリッド表示", L"Grid View", L"Vista de cuadrícula"));
-    UpdatePanelToggleLabels(st);
+        SetWindowTextW(st->hwndBtnGridView, L"▦");
+    if (st->hwndBtnToggleList)
+        SetWindowTextW(st->hwndBtnToggleList, L"☰");
+    if (st->hwndBtnToggleTerm)
+        SetWindowTextW(st->hwndBtnToggleTerm, L">_");
     if (st->hwndBtnHideTray)
-        SetWindowTextW(st->hwndBtnHideTray, Tr(L"トレイに格納", L"Tray", L"Bandeja"));
+        SetWindowTextW(st->hwndBtnHideTray, L"⤓");
+
+    if (st->hwndToolbarTip) {
+        if (st->hwndBtnGridView)
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnGridView,
+                Tr(L"グリッド表示", L"Grid View", L"Vista de cuadrícula"));
+        if (st->hwndBtnHideTray)
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnHideTray,
+                Tr(L"トレイに格納", L"Tray", L"Bandeja"));
+    }
+    UpdatePanelToggleLabels(st);
     if (st->hwndBtnViewTasks) {
         const wchar_t* btnLabel = Tr(L"表示: 2行 (上下)", L"View: 2 Rows", L"Vista: 2 Filas");
         if (st->listDisplayMode == ListDisplayMode::ProcessOnly) {
@@ -3264,6 +3354,7 @@ static void ApplyLanguageToUi(DashboardState* st) {
            L"ProcessCommander — Panel de terminales ConPTY (Direct2D TerminalView)"));
     UpdateToolbarLabels(st);
     UpdateListHeaderSortIndicator(st);
+    UpdateTaskListHeaders(st);
     RefreshDashboardData(st);
     InvalidateRect(st->hwndMain, nullptr, FALSE);
 }
@@ -3683,6 +3774,7 @@ struct SettingsDlgState {
     HWND btnBrowseSound = nullptr;
     HWND btnTestSound = nullptr;
     HWND hwndSoundHint = nullptr;
+    HWND chkHideEnded = nullptr;
 };
 
 static void CommitSoundSettings(SettingsDlgState* ds) {
@@ -3710,6 +3802,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnShell, Tr(L"シェル構成...", L"Shell Config...", L"Configurar shell..."));
     SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
     SetWindowTextW(ds->btnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
+    SetWindowTextW(ds->chkHideEnded, Tr(L"終了履歴を非表示", L"Hide ended processes", L"Ocultar finalizados"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
@@ -3795,9 +3888,14 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 ds->dash->completionSoundEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
             SetWindowTextW(ds->editSound, Utf8ToWide(ds->dash->completionSoundPath).c_str());
 
+            ds->chkHideEnded = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                18, 364, 380, 24, hwnd, (HMENU)IDC_SET_HIDE_ENDED, hInst, nullptr);
+            SendMessageW(ds->chkHideEnded, BM_SETCHECK,
+                ds->dash->hideEndedProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
-                             ds->btnBrowseSound, ds->btnTestSound };
+                             ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
@@ -3812,6 +3910,13 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
             if (!ds) return 0;
+            if (id == IDC_SET_HIDE_ENDED) {
+                ds->dash->hideEndedProcesses =
+                    (SendMessageW(ds->chkHideEnded, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                SaveShellConfig(ds->dash);
+                RefreshDashboardData(ds->dash);
+                return 0;
+            }
             if (id == IDC_SET_SOUND_ENABLED) {
                 CommitSoundSettings(ds);
                 return 0;
@@ -4048,20 +4153,42 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 90, 24, hwnd, (HMENU)IDC_BTN_SETTINGS, nullptr, nullptr);
             st->hwndBtnKillAll = CreateWindowExW(0, L"BUTTON", L"Kill All",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 74, 24, hwnd, (HMENU)IDC_BTN_KILL_ALL, nullptr, nullptr);
-            st->hwndBtnHideEnded = CreateWindowExW(0, L"BUTTON", Tr(L"終了履歴を非表示", L"Hide Ended", L"Ocultar finalizados"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 185, 24, hwnd, (HMENU)IDC_BTN_HIDE_ENDED, nullptr, nullptr);
-            st->hwndBtnGridView = CreateWindowExW(0, L"BUTTON", L"Grid View",
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 94, 24, hwnd, (HMENU)IDC_BTN_GRID_VIEW, nullptr, nullptr);
-            st->hwndBtnToggleList = CreateWindowExW(0, L"BUTTON", L"Hide List",
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 90, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_LIST, nullptr, nullptr);
-            st->hwndBtnToggleTerm = CreateWindowExW(0, L"BUTTON", L"Hide Terminal",
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 112, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_TERM, nullptr, nullptr);
-            st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", Tr(L"トレイに格納", L"Tray", L"Bandeja"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
+            st->hwndBtnGridView = CreateWindowExW(0, L"BUTTON", L"▦",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_GRID_VIEW, nullptr, nullptr);
+            st->hwndBtnToggleList = CreateWindowExW(0, L"BUTTON", L"☰",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_LIST, nullptr, nullptr);
+            st->hwndBtnToggleTerm = CreateWindowExW(0, L"BUTTON", L">_",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 30, 24, hwnd, (HMENU)IDC_BTN_TOGGLE_TERM, nullptr, nullptr);
+            st->hwndBtnHideTray = CreateWindowExW(0, L"BUTTON", L"⤓",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
             st->hwndBtnViewTasks = CreateWindowExW(0, L"BUTTON", L"Task Queue",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_VIEW_TASKS, nullptr, nullptr);
             st->hwndClock = CreateWindowExW(0, L"BUTTON", L"",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDC_CLOCK, nullptr, nullptr);
+
+            st->hwndToolbarTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+            if (st->hwndToolbarTip) {
+                SetWindowPos(st->hwndToolbarTip, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                SendMessageW(st->hwndToolbarTip, TTM_SETMAXTIPWIDTH, 0, 320);
+                auto addTool = [&](HWND hCtrl) {
+                    if (!hCtrl) return;
+                    TOOLINFOW ti = {};
+                    ti.cbSize = sizeof(ti);
+                    ti.hwnd = hwnd;
+                    ti.uId = reinterpret_cast<UINT_PTR>(hCtrl);
+                    ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+                    ti.lpszText = const_cast<wchar_t*>(L"");
+                    SendMessageW(st->hwndToolbarTip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+                };
+                addTool(st->hwndBtnGridView);
+                addTool(st->hwndBtnToggleList);
+                addTool(st->hwndBtnToggleTerm);
+                addTool(st->hwndBtnHideTray);
+            }
 
             LoadShellConfig(st);
             UpdateToolbarLabels(st);
@@ -4109,27 +4236,29 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
             {
-                const wchar_t* taskCols[] = {
-                    Tr(L"ID", L"ID", L"ID"),
-                    Tr(L"サマリ", L"Summary", L"Resumen"),
-                    Tr(L"状態", L"State", L"Estado"),
-                    Tr(L"開始時刻", L"Start", L"Inicio"),
-                    Tr(L"終了 / 残り時間", L"End / Left", L"Fin / Restante"),
-                    Tr(L"試行上限", L"Max Attempts", L"Intentos"),
-                    Tr(L"タイムアウト", L"Timeout", L"Tiempo limite"),
-                    Tr(L"依存 / 理由", L"Depends / Reason", L"Dependencias"),
-                    Tr(L"キュー", L"Queue", L"Cola")
-                };
                 const int taskWidths[9] = {90, 350, 100, 100, 165, 90, 100, 190, 110};
                 for (int i = 0; i < 9; ++i) {
                     LVCOLUMNW lvc = {};
                     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-                    lvc.pszText = const_cast<wchar_t*>(taskCols[i]);
+                    lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
                     lvc.cx = taskWidths[i];
                     lvc.iSubItem = i;
                     ListView_InsertColumn(st->hwndTaskList, i, &lvc);
                 }
             }
+            HWND hTaskHeader = ListView_GetHeader(st->hwndTaskList);
+            if (hTaskHeader) {
+                for (int i = 0; i < 9; ++i) {
+                    HDITEMW hdi = {};
+                    hdi.mask = HDI_FORMAT;
+                    if (Header_GetItem(hTaskHeader, i, &hdi)) {
+                        hdi.fmt |= HDF_OWNERDRAW;
+                        Header_SetItem(hTaskHeader, i, &hdi);
+                    }
+                }
+                SetWindowSubclass(hTaskHeader, HeaderSubclassProc, 1, 0);
+            }
+            SetWindowSubclass(st->hwndTaskList, ListViewSubclassProc, 1, 0);
 
             st->hwndTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_SINGLELINE | TCS_OWNERDRAWFIXED,
@@ -4139,7 +4268,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             HWND uiCtrls[] = {
                 st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillAll,
-                st->hwndBtnHideEnded, st->hwndBtnGridView,
+                st->hwndBtnGridView,
                 st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnHideTray, st->hwndClock,
                 st->hwndBtnViewTasks, st->hwndList, st->hwndTaskList, st->hwndTab
             };
@@ -4493,11 +4622,6 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     st->pm->ClearFinished();
                     RefreshDashboardData(st);
                 }
-            } else if (id == IDC_BTN_HIDE_ENDED) {
-                st->hideEndedProcesses = !st->hideEndedProcesses;
-                UpdateHideEndedButtonLabel(st);
-                SaveShellConfig(st);
-                RefreshDashboardData(st);
             } else if (id == IDC_BTN_VIEW_TASKS) {
                 if (st->listDisplayMode == ListDisplayMode::TwoRows) {
                     st->listDisplayMode = ListDisplayMode::ProcessOnly;

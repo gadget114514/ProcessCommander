@@ -67,10 +67,14 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
   - Embedded hardware-accelerated Direct2D / DirectWrite / IME / Sixel VT terminal emulator (`TerminalView` + `ConPtySession`).
   - Switch between active terminals using the **Terminal Tab Bar** while always preserving at least **80 columns × 25 rows** of terminal viewport so TUI apps (`claude`, `opencode`, `vim`, `htop`) never wrap or corrupt their layout.
   - Type directly into the terminal (full keyboard input, `Ctrl+C`, IME composition, mouse wheel scrollback, and text selection).
-- **Up to 16 Parallel Terminals in Live Grid View (`[Grid View]`)**:
-  - Click **`[Grid View]`** to open a live DWM thumbnail & snapshot grid (up to **16 parallel terminals** in a `4×4` matrix). Click any cell or use arrow keys + Enter to jump directly to that terminal tab.
-
-
+- **Up to 16 Parallel Terminals in Live Grid View (`[▦]`)**:
+  - Click **`[▦]`** on the toolbar to open a live DWM thumbnail & snapshot grid (up to **16 parallel terminals** in a `4×4` matrix). Click any cell or use arrow keys + Enter to jump directly to that terminal tab.
+- **Compact Icon Buttons with Hover Tooltips**:
+  - **`[▦]`** Grid View toggle
+  - **`[☰]`** Hide/Show Process List toggle
+  - **`[>_]`** Hide/Show Terminal Panel toggle
+  - **`[⤓]`** Minimize to System Tray
+  - All toolbar icon buttons provide instant status-aware hover tooltips.
 
 ### 2. Multi-Shell Launcher & `[Config]` Dialog (`cmd` / `powershell` / `bash`)
 - Click **`[+ Launch (...)]`** on the toolbar to immediately spawn a new interactive ConPTY terminal tab.
@@ -79,7 +83,7 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 ![Shell Config Dialog](docs/images/config_dialog.png)
 
 ### 3. History Management, Task Details & LLM JSON Tree Viewer
-- **`[Hide Ended]`**: Toggles hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
+- **Hide Ended Processes** (Settings dialog): A convenient checkbox in the Settings dialog lets you toggle hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
 - **`[Clear Ended]`** & **`[Reset Process IDs]`** (Settings dialog): Clear all completed/failed process history or renumber processes sequentially from `#1`.
 - **Right-Click Context Menu & Task Details Dialog**: Right-click any process row or terminal tab (or double-click a row) to terminate the process tree (**`Kill Tree`** with confirmation), inspect full command lines, working directory, PID/Job metrics, log paths, `.done` files, and output preview, or copy commands to the clipboard.
 - **LLM JSON Output Streaming & Interactive Tree Viewer**:
@@ -88,7 +92,7 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
   - The Task Details dialog features an embedded **JSON Tree Viewer** (powered by `nlohmann/json`): expand, collapse, and inspect hierarchical JSON payloads, tool inputs/outputs, thought blocks, and token usage without having to manually read raw JSONL streams.
 
 ### 4. System Tray Integration
-- Click **`[Tray]`**, minimize the window, or press the window close button (`[X]`) to hide ProcessCommander into the **Windows System Tray** while keeping all background ConPTY processes and IPC/MCP services running.
+- Click **`[⤓]`** (Tray icon button), minimize the window, or press the window close button (`[X]`) to hide ProcessCommander into the **Windows System Tray** while keeping all background ConPTY processes and IPC/MCP services running.
 - Left-click or double-click the tray icon (or right-click to open the tray menu) to restore and expand the dashboard at any time.
 
 ### 5. Persistent Logs, State Recovery & `.done` Completion Marker Files
@@ -102,8 +106,8 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 ### 7. Settings Dialog, Theme & Localization
 - Click **`[Settings]`** to open the settings dialog.
 - **Language**: switch between **Japanese / English / Español** buttons; the dashboard, dialogs, menus, and status bar update immediately.
-- **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, or **High Contrast**. Buttons, list headers, scrollbars, and tab labels follow the dark theme.
-- **`[Shell Config...]`**, **`[Reset Process IDs]`**, and **`[Clear Ended]`** are available here (keeping the toolbar clean and focused).
+- **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, or **High Contrast**. Buttons, list headers (both process list and job queue list), scrollbars, and tab labels follow the active theme colors.
+- **`[Shell Config...]`**, **`[Reset Process IDs]`**, **`[Clear Ended]`**, and **Hide Ended Processes** checkbox are available here (keeping the toolbar clean and focused).
 - Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
 
 ![Settings Dialog](docs/images/settings_dialog.png)
