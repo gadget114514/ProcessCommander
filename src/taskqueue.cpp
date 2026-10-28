@@ -587,6 +587,8 @@ int64_t TaskQueueManager::GetTaskQueueVersion(const std::string& taskqueue) cons
 TaskQueueCounts TaskQueueManager::GetJobCounts() const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
     TaskQueueCounts counts;
+    counts.minRemainingSec = -1;
+    counts.sumRemainingSec = 0;
     for (const auto& [name, tq] : queues_) {
         (void)name;
         for (const auto& job : tq.jobs) {
@@ -615,9 +617,12 @@ TaskQueueCounts TaskQueueManager::GetJobCounts() const {
                                 if (counts.minRemainingSec < 0 || rem < counts.minRemainingSec) {
                                     counts.minRemainingSec = rem;
                                 }
+                                counts.sumRemainingSec += rem;
                             }
                         }
                     }
+                } else if (job.timeoutSec > 0) {
+                    counts.sumRemainingSec += static_cast<int64_t>(job.timeoutSec);
                 }
             } else if (job.state == "pending") {
                 bool allSat = true;

@@ -37,6 +37,7 @@ struct TaskQueueCounts {
     int cancelled = 0;
     int total = 0;
     int64_t minRemainingSec = -1;
+    int64_t sumRemainingSec = -1;
 };
 
 // ---------------------------------------------------------------------------

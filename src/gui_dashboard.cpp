@@ -4438,7 +4438,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         case WM_GETMINMAXINFO: {
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
             mmi->ptMinTrackSize.x = 1000;
-            mmi->ptMinTrackSize.y = 780;
+            mmi->ptMinTrackSize.y = 220;
             return 0;
         }
 
