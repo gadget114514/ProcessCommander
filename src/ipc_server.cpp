@@ -37,8 +37,19 @@ std::string SnapshotToJson(const ProcessSnapshot& s) {
         << "\"done_file\":\"" << JsonEscape(s.doneFilePath) << "\","
         << "\"last_line\":\"" << JsonEscape(s.lastLinePreview) << "\","
         << "\"job_key\":\"" << JsonEscape(s.jobKey) << "\","
-        << "\"job_id\":" << s.jobId
-        << ",\"attempt\":" << s.attemptN
+        << "\"job_id\":" << s.jobId << ","
+        << "\"attempt\":" << s.attemptN << ","
+        << "\"agent_type\":\"" << JsonEscape(s.agentType) << "\","
+        << "\"agent_status\":\"" << JsonEscape(s.agentStatus) << "\","
+        << "\"current_tool\":\"" << JsonEscape(s.currentTool) << "\","
+        << "\"current_tool_action\":\"" << JsonEscape(s.currentToolAction) << "\","
+        << "\"last_thought\":\"" << JsonEscape(s.lastThought) << "\","
+        << "\"last_message\":\"" << JsonEscape(s.lastMessage) << "\","
+        << "\"step_count\":" << s.stepCount << ","
+        << "\"stream_event_count\":" << s.streamEventCount << ","
+        << "\"stream_file\":\"" << JsonEscape(s.streamFilePath) << "\","
+        << "\"supervisor_notes\":\"" << JsonEscape(s.supervisorNotes) << "\","
+        << "\"supervisor_goal\":\"" << JsonEscape(s.supervisorGoal) << "\""
         << "}";
     return oss.str();
 }
@@ -193,6 +204,10 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
         req.timeoutSec = static_cast<int>(JsonGetInt(reqJson, "timeout_sec", 0));
         req.idleTimeoutSec = static_cast<int>(JsonGetInt(reqJson, "idle_timeout_sec", 0));
         req.estimatedEndTimeStr = JsonGetString(reqJson, "estimate_end", "");
+        req.agentType = JsonGetString(reqJson, "agent_type", "");
+        req.jsonStream = JsonGetBool(reqJson, "json_stream", false);
+        req.supervisorNotes = JsonGetString(reqJson, "supervisor_notes", "");
+        req.supervisorGoal = JsonGetString(reqJson, "supervisor_goal", "");
         bool waitFinish = JsonGetBool(reqJson, "wait", false);
         int waitMs = static_cast<int>(JsonGetInt(reqJson, "wait_ms", 0));
 
@@ -340,6 +355,81 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             << ",\"process\":" << SnapshotToJson(snap)
             << ",\"output\":\"" << JsonEscape(outLog) << "\"}";
         return oss.str();
+    }
+    else if (action == "get_agent_stream") {
+        int id = static_cast<int>(JsonGetInt(reqJson, "id", 0));
+        int tail = static_cast<int>(JsonGetInt(reqJson, "tail", 50));
+        std::string typeFilter = JsonGetString(reqJson, "type", "");
+        if (typeFilter.empty()) typeFilter = JsonGetString(reqJson, "filter", "");
+        uint64_t sinceSeq = static_cast<uint64_t>(JsonGetInt(reqJson, "since_seq", 0));
+        std::string format = JsonGetString(reqJson, "format", "json");
+
+        std::vector<LlmStreamEvent> events;
+        LlmAgentState state;
+        if (!pm_.GetAgentStream(id, tail, typeFilter, sinceSeq, events, state)) {
+            return "{\"ok\":false,\"error\":\"Agent stream not found for process ID " + std::to_string(id) + "\"}";
+        }
+
+        if (format == "summary") {
+            std::string summary = LlmEventsToSummary(events, state);
+            oss << "{\"ok\":true,\"id\":" << id << ",\"agent_type\":\"" << JsonEscape(state.agentType)
+                << "\",\"status\":\"" << JsonEscape(state.status)
+                << "\",\"summary\":\"" << JsonEscape(summary) << "\"}";
+            return oss.str();
+        }
+
+        std::string jsonEvents = LlmEventsToJson(events, state);
+        return jsonEvents;
+    }
+    else if (action == "get_agent_state") {
+        int id = static_cast<int>(JsonGetInt(reqJson, "id", 0));
+        std::vector<LlmStreamEvent> events;
+        LlmAgentState st;
+        if (!pm_.GetAgentStream(id, 1, "", 0, events, st)) {
+            ProcessSnapshot snap;
+            if (pm_.GetSnapshot(id, snap)) {
+                st.agentType = snap.agentType;
+                st.status = snap.agentStatus;
+                st.currentTool = snap.currentTool;
+                st.currentToolAction = snap.currentToolAction;
+                st.lastThought = snap.lastThought;
+                st.lastMessage = snap.lastMessage;
+                st.stepCount = snap.stepCount;
+                st.eventCount = snap.streamEventCount;
+                st.streamFilePath = snap.streamFilePath;
+                st.supervisorNotes = snap.supervisorNotes;
+                st.supervisorGoal = snap.supervisorGoal;
+            } else {
+                return "{\"ok\":false,\"error\":\"Process ID " + std::to_string(id) + " not found\"}";
+            }
+        }
+        oss << "{\"ok\":true,\"id\":" << id
+            << ",\"agent_type\":\"" << JsonEscape(st.agentType) << "\""
+            << ",\"status\":\"" << JsonEscape(st.status) << "\""
+            << ",\"current_tool\":\"" << JsonEscape(st.currentTool) << "\""
+            << ",\"current_tool_action\":\"" << JsonEscape(st.currentToolAction) << "\""
+            << ",\"last_thought\":\"" << JsonEscape(st.lastThought) << "\""
+            << ",\"last_message\":\"" << JsonEscape(st.lastMessage) << "\""
+            << ",\"step_count\":" << st.stepCount
+            << ",\"event_count\":" << st.eventCount
+            << ",\"total_tokens\":" << st.totalTokens
+            << ",\"cost_usd\":" << st.costUsd
+            << ",\"stream_file\":\"" << JsonEscape(st.streamFilePath) << "\""
+            << ",\"supervisor_notes\":\"" << JsonEscape(st.supervisorNotes) << "\""
+            << ",\"supervisor_goal\":\"" << JsonEscape(st.supervisorGoal) << "\""
+            << ",\"updated_at\":\"" << JsonEscape(st.updatedAt) << "\"}";
+        return oss.str();
+    }
+    else if (action == "update_agent_info") {
+        int id = static_cast<int>(JsonGetInt(reqJson, "id", 0));
+        std::string notes = JsonGetString(reqJson, "supervisor_notes", "");
+        if (notes.empty()) notes = JsonGetString(reqJson, "notes", "");
+        std::string goal = JsonGetString(reqJson, "supervisor_goal", "");
+        if (goal.empty()) goal = JsonGetString(reqJson, "goal", "");
+        if (!pm_.UpdateAgentInfo(id, notes, goal)) {
+            return "{\"ok\":false,\"error\":\"Failed to update agent info for process ID " + std::to_string(id) + "\"}";
+        }
+        return "{\"ok\":true,\"id\":" + std::to_string(id) + "}";
     }
 
     else if (action.rfind("taskqueue_", 0) == 0) {

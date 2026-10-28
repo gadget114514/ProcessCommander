@@ -285,6 +285,15 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
+  agent status <id>
+      Show current agent status, active tool, thoughts, message, and supervisor context.
+
+  agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
+      View captured JSON streaming events for claude, agy, or opencode agents.
+
+  agent info <id> [--notes "<notes>"] [--goal "<goal>"]
+      Update supervisor notes or goal for an ongoing agent.
+
   mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
       .mcp.json (Claude Code, default) or opencode.json (--client opencode).
@@ -555,6 +564,17 @@ void PrintCliUsageJson() {
         {"name": "graph", "usage": "pcder taskqueue graph [<name>] [--root <id>]", "description": "Dependency graph with ready, waiting_for, blocked and dependents."},
         {"name": "wait", "usage": "pcder taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]", "description": "Long-poll until the queue version changes."},
         {"name": "purge", "usage": "pcder taskqueue purge <name> [--states succeeded,failed,cancelled]", "description": "Remove finished jobs."}
+      ],
+      "options": []
+    },
+    {
+      "name": "agent",
+      "description": "Inspect and supervise LLM agents (Claude, agy, opencode) running under ProcessCommander.",
+      "usage": "pcder agent <status|stream|info> <id> [options]",
+      "subcommands": [
+        {"name": "status", "usage": "pcder agent status <id>", "description": "Display current agent status, active tool, thoughts, message, and supervisor context."},
+        {"name": "stream", "usage": "pcder agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]", "description": "View captured JSON streaming events."},
+        {"name": "info", "usage": "pcder agent info <id> [--notes <notes>] [--goal <goal>]", "description": "Update supervisor instructions, notes, or goals."}
       ],
       "options": []
     },
@@ -866,6 +886,10 @@ void PrintProcessLine(const std::string& procJson, const std::string& indent = "
         uint64_t idleMs = static_cast<uint64_t>(JsonGetInt(procJson, "idle_ms", 0));
         std::cout << " idle=" << FormatDurationSec(idleMs);
     }
+    std::string agentType = JsonGetString(procJson, "agent_type", "");
+    if (!agentType.empty()) {
+        std::cout << " [" << agentType << "]";
+    }
     std::cout << "\n";
 }
 
@@ -887,6 +911,21 @@ void PrintProcessDetails(const std::string& procJson, const std::string& indent 
     if (!logFile.empty()) std::cout << indent << "log : " << logFile << "\n";
     if (!doneFile.empty()) std::cout << indent << "done: " << doneFile << "\n";
     if (!lastLine.empty()) std::cout << indent << "last: " << lastLine << "\n";
+
+    std::string agentType = JsonGetString(procJson, "agent_type", "");
+    if (!agentType.empty()) {
+        std::string agentSt = JsonGetString(procJson, "agent_status", "");
+        std::cout << indent << "agent: [" << agentType << "] " << (agentSt.empty() ? "active" : agentSt) << "\n";
+        std::string curTool = JsonGetString(procJson, "current_tool", "");
+        if (!curTool.empty()) {
+            std::string curAction = JsonGetString(procJson, "current_tool_action", "");
+            std::cout << indent << "tool : " << curTool;
+            if (!curAction.empty()) std::cout << " (" << curAction << ")";
+            std::cout << "\n";
+        }
+        std::string goal = JsonGetString(procJson, "supervisor_goal", "");
+        if (!goal.empty()) std::cout << indent << "goal : " << goal << "\n";
+    }
 }
 
 void PrintOutput(const std::string& text, const std::string& label = "Output") {
@@ -1049,6 +1088,77 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
         return 0;
     }
 
+    if (action == "get_agent_stream") {
+        std::string summary = JsonGetString(respJson, "summary", "");
+        if (!summary.empty()) {
+            std::cout << summary << "\n";
+            return 0;
+        }
+        std::string stateObj = ExtractJsonObject(respJson, "state");
+        if (!stateObj.empty()) {
+            std::cout << "Agent State: [" << JsonGetString(stateObj, "agent_type", "") << "] "
+                      << JsonGetString(stateObj, "status", "") << "\n";
+            std::string curTool = JsonGetString(stateObj, "current_tool", "");
+            if (!curTool.empty()) {
+                std::cout << "  Active Tool: " << curTool << " (" << JsonGetString(stateObj, "current_tool_action", "") << ")\n";
+            }
+        }
+        auto events = ExtractJsonObjectArray(respJson, "events");
+        std::cout << "Events (" << events.size() << "):\n";
+        for (const auto& ev : events) {
+            std::cout << "  #" << JsonGetInt(ev, "seq", 0) << " [" << JsonGetString(ev, "type", "") << "]";
+            std::string tn = JsonGetString(ev, "tool_name", "");
+            if (!tn.empty()) std::cout << " tool=" << tn;
+            std::string ta = JsonGetString(ev, "tool_action", "");
+            if (!ta.empty()) std::cout << " (" << ta << ")";
+            std::string cnt = JsonGetString(ev, "content", "");
+            if (!cnt.empty()) {
+                if (cnt.size() > 80) cnt = cnt.substr(0, 77) + "...";
+                std::cout << " : " << cnt;
+            }
+            std::cout << "\n";
+        }
+        return 0;
+    }
+
+    if (action == "get_agent_state") {
+        std::cout << "Agent #" << JsonGetInt(respJson, "id", 0)
+                  << " [" << JsonGetString(respJson, "agent_type", "generic") << "] "
+                  << "Status: " << JsonGetString(respJson, "status", "idle") << "\n";
+        std::string curTool = JsonGetString(respJson, "current_tool", "");
+        if (!curTool.empty()) {
+            std::cout << "  Active Tool : " << curTool << " (" << JsonGetString(respJson, "current_tool_action", "") << ")\n";
+        }
+        std::string lastThought = JsonGetString(respJson, "last_thought", "");
+        if (!lastThought.empty()) {
+            std::cout << "  Thinking    : " << lastThought << "\n";
+        }
+        std::string lastMsg = JsonGetString(respJson, "last_message", "");
+        if (!lastMsg.empty()) {
+            std::cout << "  Message     : " << lastMsg << "\n";
+        }
+        std::cout << "  Steps       : " << JsonGetInt(respJson, "step_count", 0) << "\n"
+                  << "  Events      : " << JsonGetInt(respJson, "event_count", 0) << "\n";
+        std::string streamFile = JsonGetString(respJson, "stream_file", "");
+        if (!streamFile.empty()) {
+            std::cout << "  Stream File : " << streamFile << "\n";
+        }
+        std::string goal = JsonGetString(respJson, "supervisor_goal", "");
+        if (!goal.empty()) {
+            std::cout << "  Goal        : " << goal << "\n";
+        }
+        std::string notes = JsonGetString(respJson, "supervisor_notes", "");
+        if (!notes.empty()) {
+            std::cout << "  Notes       : " << notes << "\n";
+        }
+        return 0;
+    }
+
+    if (action == "update_agent_info") {
+        std::cout << "Updated supervisor info for agent #" << JsonGetInt(respJson, "id", 0) << ".\n";
+        return 0;
+    }
+
     std::cout << respJson << "\n";
     return 0;
 }
@@ -1103,6 +1213,10 @@ int RunCli(const std::vector<std::string>& rawArgs) {
         int timeoutSec = 0;
         int idleTimeoutSec = 0;
         std::string estimateEnd;
+        std::string agentType;
+        bool jsonStream = false;
+        std::string supervisorNotes;
+        std::string supervisorGoal;
         bool waitFinish = false;
         bool waitMsExplicit = false;
         bool allowChain = false;
@@ -1134,6 +1248,14 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 idleTimeoutSec = std::stoi(args[++i]);
             } else if ((a == "--eta" || a == "--estimate-end") && i + 1 < args.size()) {
                 estimateEnd = args[++i];
+            } else if (a == "--agent" && i + 1 < args.size()) {
+                agentType = args[++i];
+            } else if (a == "--stream") {
+                jsonStream = true;
+            } else if (a == "--notes" && i + 1 < args.size()) {
+                supervisorNotes = args[++i];
+            } else if (a == "--goal" && i + 1 < args.size()) {
+                supervisorGoal = args[++i];
             } else if (a == "--wait") {
                 waitFinish = true;
                 waitForCompletion = true;
@@ -1184,6 +1306,10 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                 << ",\"timeout_sec\":" << timeoutSec
                 << ",\"idle_timeout_sec\":" << idleTimeoutSec
                 << ",\"estimate_end\":\"" << JsonEscape(estimateEnd) << "\""
+                << ",\"agent_type\":\"" << JsonEscape(agentType) << "\""
+                << ",\"json_stream\":" << (jsonStream ? "true" : "false")
+                << ",\"supervisor_notes\":\"" << JsonEscape(supervisorNotes) << "\""
+                << ",\"supervisor_goal\":\"" << JsonEscape(supervisorGoal) << "\""
                 << ",\"wait\":" << (waitFinish ? "true" : "false")
                 << ",\"wait_ms\":" << waitMs
                 << ",\"allow_chain\":" << (allowChain ? "true" : "false") << "}";
@@ -1457,6 +1583,74 @@ int RunCli(const std::vector<std::string>& rawArgs) {
         } else {
             return failWith("unknown taskqueue command: " + op +
                             " (add, list, get, retry, cancel, pause, resume, graph, wait, purge)");
+        }
+    }
+    else if (subcmd == "agent") {
+        std::string op = (args.size() >= 3 && args[2][0] != '-') ? args[2] : "status";
+        size_t startIdx = (args.size() >= 3 && args[2][0] != '-') ? 3 : 2;
+        int id = 0;
+        int tail = 50;
+        std::string typeFilter;
+        uint64_t sinceSeq = 0;
+        std::string format = "json";
+        std::string notes;
+        std::string goal;
+
+        for (size_t i = startIdx; i < args.size(); ++i) {
+            const std::string& a = args[i];
+            if (a == "--id" && i + 1 < args.size()) {
+                id = std::stoi(args[++i]);
+            } else if (a == "--tail" && i + 1 < args.size()) {
+                tail = std::stoi(args[++i]);
+            } else if (a == "--type" && i + 1 < args.size()) {
+                typeFilter = args[++i];
+            } else if (a == "--since" && i + 1 < args.size()) {
+                sinceSeq = static_cast<uint64_t>(std::stoull(args[++i]));
+            } else if (a == "--summary") {
+                format = "summary";
+            } else if (a == "--format" && i + 1 < args.size()) {
+                format = args[++i];
+            } else if (a == "--notes" && i + 1 < args.size()) {
+                notes = args[++i];
+            } else if (a == "--goal" && i + 1 < args.size()) {
+                goal = args[++i];
+            } else if (id == 0 && a[0] != '-') {
+                try { id = std::stoi(a); } catch (...) {}
+            }
+        }
+
+        if (id <= 0) {
+            if (jsonOutput) {
+                std::cout << "{\"ok\":false,\"error\":\"Process ID required for agent command (e.g. pcder agent status 1).\"}\n";
+            } else {
+                std::cerr << "Error: Process ID required for agent command (e.g. pcder agent status 1).\n";
+            }
+            return 1;
+        }
+
+        requestedId = id;
+        if (op == "status" || op == "state") {
+            reqJson << "{\"action\":\"get_agent_state\",\"id\":" << id << "}";
+            subcmd = "get_agent_state";
+        } else if (op == "stream" || op == "events") {
+            reqJson << "{\"action\":\"get_agent_stream\",\"id\":" << id
+                    << ",\"tail\":" << tail
+                    << ",\"type\":\"" << JsonEscape(typeFilter) << "\""
+                    << ",\"since_seq\":" << sinceSeq
+                    << ",\"format\":\"" << JsonEscape(format) << "\"}";
+            subcmd = "get_agent_stream";
+        } else if (op == "info" || op == "update") {
+            reqJson << "{\"action\":\"update_agent_info\",\"id\":" << id
+                    << ",\"supervisor_notes\":\"" << JsonEscape(notes) << "\""
+                    << ",\"supervisor_goal\":\"" << JsonEscape(goal) << "\"}";
+            subcmd = "update_agent_info";
+        } else {
+            if (jsonOutput) {
+                std::cout << "{\"ok\":false,\"error\":\"Unknown agent command: " << JsonEscape(op) << " (status, stream, info)\"}\n";
+            } else {
+                std::cerr << "Error: Unknown agent command: " << op << " (status, stream, info)\n";
+            }
+            return 1;
         }
     }
     else {

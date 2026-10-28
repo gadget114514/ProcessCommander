@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "llm_stream.h"
 #include "TerminalView.h"
 #include <mutex>
 #include <thread>
@@ -27,6 +28,10 @@ struct StartProcessRequest {
     std::string jobKey;      // taskqueue job id (display / callback correlation)
     int jobId = 0;           // taskqueue numeric job id
     int attemptN = 0;        // taskqueue attempt number
+    std::string agentType;   // "claude", "agy", "opencode", "auto", or ""
+    bool jsonStream = false; // enable real-time JSONL stream parsing & logging
+    std::string supervisorNotes; // context/instructions provided by supervisor LLM
+    std::string supervisorGoal;  // high-level objective provided by supervisor LLM
 };
 
 struct ProcessSnapshot {
@@ -61,6 +66,18 @@ struct ProcessSnapshot {
     std::string jobKey;
     int jobId = 0;
     int attemptN = 0;
+    std::string agentType;
+    bool jsonStream = false;
+    std::string supervisorNotes;
+    std::string supervisorGoal;
+    std::string agentStatus;
+    std::string currentTool;
+    std::string currentToolAction;
+    std::string lastThought;
+    std::string lastMessage;
+    int stepCount = 0;
+    int streamEventCount = 0;
+    std::string streamFilePath;
 };
 
 class ProcessManager {
@@ -122,6 +139,11 @@ public:
 
     // Get process output log (reads from TerminalBuffer for ConPTY processes)
     bool GetOutput(int id, bool stripAnsi, int tailLines, std::string& outText, uint64_t* outVersion = nullptr);
+
+    // LLM stream inspection and supervisor context
+    bool GetAgentStream(int id, int tail, const std::string& typeFilter, uint64_t sinceSeq,
+                        std::vector<LlmStreamEvent>& outEvents, LlmAgentState& outState);
+    bool UpdateAgentInfo(int id, const std::string& notes, const std::string& goal);
 
     // Wait until a process finishes or maxWaitMs elapses (returns true if finished)
     bool WaitForExit(int id, uint32_t maxWaitMs);
@@ -185,6 +207,13 @@ private:
         uint64_t outputVersion = 0;
 
         std::thread readerThread;
+
+        // LLM JSON output streaming tracker
+        std::unique_ptr<LlmStreamTracker> streamTracker;
+        std::string agentType;
+        std::string supervisorNotes;
+        std::string supervisorGoal;
+        bool jsonStream = false;
 
         ~ManagedProcess();
     };

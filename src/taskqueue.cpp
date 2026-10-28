@@ -584,6 +584,74 @@ int64_t TaskQueueManager::GetTaskQueueVersion(const std::string& taskqueue) cons
     return (it == queues_.end()) ? -1 : it->second.version;
 }
 
+TaskQueueCounts TaskQueueManager::GetJobCounts() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
+    TaskQueueCounts counts;
+    for (const auto& [name, tq] : queues_) {
+        (void)name;
+        for (const auto& job : tq.jobs) {
+            counts.total++;
+            if (job.state == "running") {
+                counts.running++;
+                if (job.timeoutSec > 0 && !job.attempts.empty()) {
+                    const auto& lastAtt = job.attempts.back();
+                    if (!lastAtt.start.empty()) {
+                        int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
+                        if (sscanf_s(lastAtt.start.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec) == 6) {
+                            struct tm t = {};
+                            t.tm_year = y - 1900;
+                            t.tm_mon = mo - 1;
+                            t.tm_mday = d;
+                            t.tm_hour = h;
+                            t.tm_min = mi;
+                            t.tm_sec = sec;
+                            t.tm_isdst = -1;
+                            time_t startEpoch = mktime(&t);
+                            if (startEpoch != static_cast<time_t>(-1)) {
+                                time_t nowEpoch = time(nullptr);
+                                int64_t elapsed = static_cast<int64_t>(nowEpoch - startEpoch);
+                                int64_t rem = static_cast<int64_t>(job.timeoutSec) - elapsed;
+                                if (rem < 0) rem = 0;
+                                if (counts.minRemainingSec < 0 || rem < counts.minRemainingSec) {
+                                    counts.minRemainingSec = rem;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (job.state == "pending") {
+                bool allSat = true;
+                for (const auto& d : job.dependsOn) {
+                    const TaskQueueJob* dep = FindJobConst(d.id);
+                    if (!dep) {
+                        for (const auto& tj : tq.jobs) {
+                            if (tj.id == d.id) { dep = &tj; break; }
+                        }
+                    }
+                    if (!dep || !IsDepSatisfied(*dep, d.on)) {
+                        allSat = false;
+                        break;
+                    }
+                }
+                if (allSat) {
+                    counts.waiting++;
+                } else {
+                    counts.pending++;
+                }
+            } else if (job.state == "blocked") {
+                counts.blocked++;
+            } else if (job.state == "succeeded") {
+                counts.succeeded++;
+            } else if (job.state == "failed") {
+                counts.failed++;
+            } else if (job.state == "cancelled") {
+                counts.cancelled++;
+            }
+        }
+    }
+    return counts;
+}
+
 bool TaskQueueManager::FindUnfinishedJobByCommand(const std::string& command, std::string& outJobId) const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
     for (const auto& [name, tq] : queues_) {
@@ -1895,6 +1963,12 @@ bool TaskQueueManager::BuildLaunchRequest(TaskQueue& tq, TaskQueueJob& job, int 
     req.jobKey = job.id;
     req.jobId = job.num;
     req.attemptN = attemptN;
+    req.supervisorGoal = job.summary;
+    req.supervisorNotes = "Task ID: " + job.id + (job.summary.empty() ? "" : " - " + job.summary);
+    req.agentType = DetectAgentType(req.commandLine, req.name);
+    if (!req.agentType.empty()) {
+        req.jsonStream = true;
+    }
     req.env = job.env;
     req.killExclude = job.killExclude;
     if (job.idle.outputSec > 0 && job.idle.cpuSec > 0) {

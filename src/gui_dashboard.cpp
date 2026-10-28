@@ -2,6 +2,7 @@
 #include "common.h"
 #include "TerminalView.h"
 #include "TerminalGridView.h"
+#include "nlohmann/json.hpp"
 #include <commctrl.h>
 #include <windowsx.h>
 #include <shellapi.h>
@@ -348,16 +349,21 @@ static UiTheme ParseTheme(const std::string& code) {
 }
 
 // Compact dashboard header / splitter layout constants
-constexpr int kHeaderKpiTop      = 6;
-constexpr int kHeaderKpiBottom   = 54;
-constexpr int kToolbarTop        = 58;
-constexpr int kToolbarH          = 24;
-constexpr int kListTop           = 86;
-constexpr int kSplitterH         = 6;
-constexpr int kTabH              = 26;
-constexpr int kStatusBarH        = 26;
-constexpr int kMinListH          = 60;
-constexpr int kMinTerminalH      = 200;
+constexpr int kHeaderKpiTop        = 6;
+constexpr int kHeaderKpiRow1Bottom = 52;
+constexpr int kHeaderKpiRow2Top    = 56;
+constexpr int kHeaderKpiBottom     = 102;
+constexpr int kToolbarTop          = 108;
+constexpr int kToolbarH            = 24;
+constexpr int kListTop             = 138;
+constexpr int kSplitterH           = 6;
+constexpr int kRowSplitterH        = 6;
+constexpr int kMinRowListH         = 45;
+constexpr int kTabH                = 26;
+constexpr int kStatusBarH          = 26;
+constexpr int kMinListH            = 60;
+constexpr int kMinTerminalH        = 200;
+constexpr int kNumKpiCards         = 14;
 
 enum ControlId {
     IDC_BTN_START = 1005,
@@ -415,6 +421,12 @@ struct TermSlotBanner {
     int procId;
 };
 
+enum class ListDisplayMode {
+    TwoRows = 0,     // Default: top is Process List, bottom is Task Queue List
+    ProcessOnly = 1, // Only Process List
+    TaskOnly = 2     // Only Task Queue List
+};
+
 struct DashboardState {
     ProcessManager* pm = nullptr;
     IpcServer* ipc = nullptr;
@@ -435,14 +447,18 @@ struct DashboardState {
     HWND hwndList = nullptr;
     HWND hwndTaskList = nullptr;
     HWND hwndBtnViewTasks = nullptr;
-    bool showTaskQueue = false;
+    ListDisplayMode listDisplayMode = ListDisplayMode::TwoRows;
+    float procRowRatio = 0.5f;
+    RECT rcRowsSplitter = {};
+    bool rowsSplitterDragging = false;
+    int lastTotalListHeight = 0;
     std::vector<std::string> taskJobIds;
     std::vector<std::string> taskJobStates;
     HWND hwndTab = nullptr;
     HWND hwndClock = nullptr;
     HWND hwndKpiTip = nullptr;
-    RECT kpiCardRects[6] = {};
-    std::wstring kpiTipText[6];
+    RECT kpiCardRects[kNumKpiCards] = {};
+    std::wstring kpiTipText[kNumKpiCards];
     int activeRunningCount = 0;
 
     bool hideProcessList = false;
@@ -483,7 +499,7 @@ struct DashboardState {
     RECT rcTerminalArea = {10, 300, 1380, 810};
     RECT rcStatusBar = {0, 814, 1400, 840};
     RECT rcSplitter = {};
-    int processListHeight = 130;
+    int processListHeight = 260;
     int processListTop = kListTop;
     bool splitterDragging = false;
     std::vector<TermSlotBanner> termBanners;
@@ -505,6 +521,42 @@ static std::wstring StateLabelWide(ProcState state, bool idleWarning) {
         case ProcState::Killed:       return Tr(L"強制終了", L"KILLED", L"TERMINADO");
     }
     return Tr(L"不明", L"UNKNOWN", L"DESCONOCIDO");
+}
+
+static std::wstring FormatRemainingTime(int64_t remainingSec) {
+    if (remainingSec <= 0) {
+        return Tr(L"タイムアウト直前", L"expiring now", L"a punto de expirar");
+    }
+    int64_t hrs = remainingSec / 3600;
+    int64_t mins = (remainingSec % 3600) / 60;
+    int64_t secs = remainingSec % 60;
+    wchar_t buf[128] = {};
+    if (hrs > 0) {
+        swprintf_s(buf, Tr(L"残り %lld時間%lld分", L"%lldh %lldm left", L"Quedan %lldh %lldm"), hrs, mins);
+    } else if (mins > 0) {
+        swprintf_s(buf, Tr(L"残り %lld分%lld秒", L"%lldm %llds left", L"Quedan %lldm %llds"), mins, secs);
+    } else {
+        swprintf_s(buf, Tr(L"残り %lld秒", L"%llds left", L"Quedan %llds"), secs);
+    }
+    return buf;
+}
+
+static std::wstring FormatRemainingTimeShort(int64_t remainingSec) {
+    if (remainingSec <= 0) {
+        return L"0s";
+    }
+    int64_t hrs = remainingSec / 3600;
+    int64_t mins = (remainingSec % 3600) / 60;
+    int64_t secs = remainingSec % 60;
+    wchar_t buf[64] = {};
+    if (hrs > 0) {
+        swprintf_s(buf, L"~%lldh%lldm", hrs, mins);
+    } else if (mins > 0) {
+        swprintf_s(buf, L"~%lldm", mins);
+    } else {
+        swprintf_s(buf, L"~%llds", secs);
+    }
+    return buf;
 }
 
 static COLORREF GetStateBadgeColor(const ProcessSnapshot& s) {
@@ -580,32 +632,37 @@ static COLORREF GetStateRowBgColor(const ProcessSnapshot& s) {
 }
 
 static COLORREF KpiAccent(int index) {
-    static const COLORREF darkAccents[6] = {
+    static const COLORREF darkAccents[7] = {
         RGB(125, 128, 134), RGB(78, 112, 92), RGB(120, 104, 74),
-        RGB(78, 104, 128), RGB(124, 84, 84), RGB(104, 94, 118)
+        RGB(78, 104, 128), RGB(124, 84, 84), RGB(104, 94, 118),
+        RGB(140, 100, 60)
     };
-    static const COLORREF lightAccents[6] = {
+    static const COLORREF lightAccents[7] = {
         RGB(100, 116, 139), RGB(22, 163, 74), RGB(217, 119, 6),
-        RGB(37, 99, 235), RGB(220, 38, 38), RGB(168, 85, 247)
+        RGB(37, 99, 235), RGB(220, 38, 38), RGB(168, 85, 247),
+        RGB(234, 88, 12)
     };
-    static const COLORREF pastelAccents[6] = {
+    static const COLORREF pastelAccents[7] = {
         RGB(166, 180, 198), RGB(154, 198, 168), RGB(222, 190, 150),
-        RGB(156, 186, 220), RGB(222, 160, 168), RGB(190, 166, 210)
+        RGB(156, 186, 220), RGB(222, 160, 168), RGB(190, 166, 210),
+        RGB(226, 180, 140)
     };
-    static const COLORREF hcAccents[6] = {
+    static const COLORREF hcAccents[7] = {
         RGB(255, 255, 255), RGB(0, 255, 0), RGB(255, 255, 0),
-        RGB(0, 200, 255), RGB(255, 0, 0), RGB(255, 0, 255)
+        RGB(0, 200, 255), RGB(255, 0, 0), RGB(255, 0, 255),
+        RGB(255, 128, 0)
     };
-    if (g_uiTheme == UiTheme::HighContrast) return hcAccents[index];
-    if (g_uiTheme == UiTheme::Pastel) return pastelAccents[index];
-    return IsDarkThemeActive() ? darkAccents[index] : lightAccents[index];
+    int idx = (index >= 0) ? (index % 7) : ((index % 7 + 7) % 7);
+    if (g_uiTheme == UiTheme::HighContrast) return hcAccents[idx];
+    if (g_uiTheme == UiTheme::Pastel) return pastelAccents[idx];
+    return IsDarkThemeActive() ? darkAccents[idx] : lightAccents[idx];
 }
 
 static float g_kpiBarPhase = 0.0f;
 
 static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std::wstring& value,
                         COLORREF accentColor, HFONT hFontUi, HFONT hFontKpiVal,
-                        float marqueePhase = -1.0f) {
+                        float marqueePhase = -1.0f, const std::wstring& subText = L"") {
     HBRUSH bgBrush = CreateSolidBrush(g_theme.panel);
     HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
     HGDIOBJ oldBrush = SelectObject(hdc, bgBrush);
@@ -639,48 +696,123 @@ static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std
 
     SetBkMode(hdc, TRANSPARENT);
 
-    RECT rcTitle = {rc.left + 10, rc.top + 4, rc.right - 6, rc.top + 19};
+    RECT rcTitle = {rc.left + 8, rc.top + 4, rc.right - 4, rc.top + 18};
     SetTextColor(hdc, g_theme.muted);
     HGDIOBJ oldFont = SelectObject(hdc, hFontUi);
     DrawTextW(hdc, title, -1, &rcTitle, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-    RECT rcVal = {rc.left + 10, rc.top + 17, rc.right - 6, rc.bottom - 2};
+    RECT rcVal = {rc.left + 8, rc.top + 17, rc.right - 4, rc.bottom - 2};
     SetTextColor(hdc, g_theme.text);
     SelectObject(hdc, hFontKpiVal);
     DrawTextW(hdc, value.c_str(), -1, &rcVal, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+    if (!subText.empty()) {
+        SIZE sz = {};
+        GetTextExtentPoint32W(hdc, value.c_str(), static_cast<int>(value.size()), &sz);
+        RECT rcSub = {rcVal.left + sz.cx + 5, rcVal.top + 4, rcVal.right, rcVal.bottom};
+        if (rcSub.left < rcSub.right) {
+            SelectObject(hdc, hFontUi);
+            SetTextColor(hdc, g_theme.muted);
+            DrawTextW(hdc, subText.c_str(), -1, &rcSub, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+    }
+
     SelectObject(hdc, oldFont);
 }
 
-static void UpdateKpiTooltips(DashboardState* st, uint32_t totalTreeProcs) {
+static void UpdateKpiTooltips(DashboardState* st, uint32_t totalTreeProcs,
+                              int activeRunning, int idleWaiting, int completedOk, int failedOrKilled,
+                              const TaskQueueCounts& tqCounts,
+                              int64_t procMinRemainSec = -1, int64_t taskMinRemainSec = -1) {
     if (!st || !st->hwndKpiTip) return;
+
+    // Row 0: Processes (Cards 0..6)
     st->kpiTipText[0] = Tr(
         L"管理対象のターミナル/プロセスの総数。",
         L"Total number of managed terminals/processes.",
         L"Total de terminales/procesos gestionados.");
-    st->kpiTipText[1] = Tr(
+    if (totalTreeProcs > 0) {
+        st->kpiTipText[0] += std::wstring(L"\n") + Tr(L"全ツリー子プロセス数: ", L"Total tree child processes: ", L"Subprocesos totales: ") + std::to_wstring(totalTreeProcs);
+    }
+
+    st->kpiTipText[1] = std::wstring(Tr(
         L"出力またはCPU消費がある実行中プロセス。",
-        L"Running processes that are producing output or consuming CPU.",
-        L"Procesos en ejecución que producen salida o consumen CPU.");
-    st->kpiTipText[2] = Tr(
-        L"10秒以上、出力もCPU消費もない実行中プロセス。",
-        L"Running processes with no output or CPU activity for 10 seconds or more.",
-        L"Procesos en ejecución sin salida ni CPU durante 10 s o más.");
-    st->kpiTipText[3] = Tr(
+        L"Running processes producing output or consuming CPU.",
+        L"Procesos en ejecución con actividad.")) + L" (" + std::to_wstring(activeRunning) + L")";
+
+    st->kpiTipText[2] = std::wstring(Tr(
+        L"10秒以上無活動の実行中プロセス (アイドル)。",
+        L"Running processes with no output or CPU activity >= 10s (idle).",
+        L"Procesos en ejecución sin actividad >= 10 s (inactivos).")) + L" (" + std::to_wstring(idleWaiting) + L")";
+
+    st->kpiTipText[3] = std::wstring(Tr(
         L"正常終了したプロセス (終了コード 0)。",
         L"Processes that exited successfully (exit code 0).",
-        L"Procesos finalizados correctamente (código 0).");
-    st->kpiTipText[4] = Tr(
+        L"Procesos finalizados correctamente (código 0).")) + L" (" + std::to_wstring(completedOk) + L")";
+
+    st->kpiTipText[4] = std::wstring(Tr(
         L"失敗・タイムアウト・強制終了したプロセス。",
         L"Processes that failed, timed out, or were killed.",
-        L"Procesos fallidos, agotados o terminados.");
-    st->kpiTipText[5] = Tr(
-        L"全 Job Object の合計メモリとプロセス数: ",
-        L"Memory and process count across all Job Objects: ",
-        L"Memoria y procesos de todos los Job Objects: ") +
-        std::to_wstring(totalTreeProcs) + Tr(L" プロセス", L" processes", L" procesos");
+        L"Procesos fallidos, agotados o terminados.")) + L" (" + std::to_wstring(failedOrKilled) + L")";
 
-    for (int i = 0; i < 6; ++i) {
+    st->kpiTipText[5] = Tr(
+        L"全 Job Object の合計メモリ消費量とプロセス数。",
+        L"Total memory and process count across all Job Objects.",
+        L"Memoria total y recuento de procesos de todos los Job Objects.");
+
+    st->kpiTipText[6] = Tr(
+        L"稼働中プロセスの中で最も近いタイムアウトまでの残り時間。",
+        L"Shortest remaining time before timeout among running processes.",
+        L"Tiempo restante más corto antes del tiempo límite entre procesos activos.");
+    if (procMinRemainSec >= 0) {
+        st->kpiTipText[6] += std::wstring(L"\n") + Tr(L"残り時間: ", L"Remaining: ", L"Restante: ") + FormatRemainingTime(procMinRemainSec);
+    }
+
+    // Row 1: Tasks (Cards 7..13)
+    st->kpiTipText[7] = Tr(
+        L"タスクキューに登録されている全ジョブの総数。",
+        L"Total number of jobs in the task queue.",
+        L"Total de tareas en la cola de tareas.");
+
+    st->kpiTipText[8] = Tr(
+        L"現在実行中のタスク数。",
+        L"Number of tasks currently running.",
+        L"Número de tareas en ejecución actualmente.");
+
+    std::wstring tqWaitTip = std::to_wstring(tqCounts.waiting);
+    if (tqCounts.pending > 0) {
+        tqWaitTip += std::wstring(L" (+") + std::to_wstring(tqCounts.pending) +
+            Tr(L" 依存関係保留)", L" pending for deps)", L" pendientes por dependencias)");
+    }
+    st->kpiTipText[9] = std::wstring(Tr(
+        L"依存関係が満たされ実行準備が整っているタスク。",
+        L"Tasks ready to run with all dependencies satisfied.",
+        L"Tareas listas para ejecutarse con dependencias cumplidas.")) + L" (" + tqWaitTip + L")";
+
+    st->kpiTipText[10] = Tr(
+        L"正常に成功・完了したタスク。",
+        L"Tasks that finished successfully.",
+        L"Tareas finalizadas con éxito.");
+
+    st->kpiTipText[11] = Tr(
+        L"試行回数上限またはタイムアウト等で失敗したタスク、またはキャンセルされたタスク。",
+        L"Tasks that failed after max attempts/timeout, or were cancelled.",
+        L"Tareas fallidas tras agotar intentos/tiempo límite o canceladas.");
+
+    st->kpiTipText[12] = Tr(
+        L"未完了の先行タスク待ち (依存保留)、または先行タスク失敗によりブロックされたタスク。",
+        L"Tasks waiting for unfinished dependencies, or blocked by upstream failure.",
+        L"Tareas en espera de dependencias o bloqueadas por fallo aguas arriba.");
+
+    st->kpiTipText[13] = Tr(
+        L"稼働中タスクの中で最も近いタイムアウトまでの残り時間。",
+        L"Shortest remaining time before timeout among running tasks.",
+        L"Tiempo restante más corto antes del tiempo límite entre tareas activas.");
+    if (taskMinRemainSec >= 0) {
+        st->kpiTipText[13] += std::wstring(L"\n") + Tr(L"残り時間: ", L"Remaining: ", L"Restante: ") + FormatRemainingTime(taskMinRemainSec);
+    }
+
+    for (int i = 0; i < kNumKpiCards; ++i) {
         TOOLINFOW ti = {};
         ti.cbSize = sizeof(ti);
         ti.hwnd = st->hwndMain;
@@ -851,48 +983,134 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
             failedOrKilled++;
         }
     }
-    st->activeRunningCount = activeRunning;
+    TaskQueueCounts tqCounts;
+    if (st->tqm) {
+        tqCounts = st->tqm->GetJobCounts();
+    }
+    st->activeRunningCount = activeRunning + tqCounts.running;
 
-    // 1. Top KPI Cards
-    int kpiMargin = 10;
-    int kpiGap = 8;
-    int numCards = 6;
-    int availW = width - kpiMargin * 2 - kpiGap * (numCards - 1);
-    int cardW = (std::max)(110, availW / numCards);
-    int cardTop = kHeaderKpiTop;
-    int cardBottom = kHeaderKpiBottom;
-
-    for (int i = 0; i < numCards; ++i) {
-        RECT rcCard;
-        rcCard.left = kpiMargin + i * (cardW + kpiGap);
-        rcCard.right = (i == numCards - 1) ? (width - kpiMargin) : (rcCard.left + cardW);
-        rcCard.top = cardTop;
-        rcCard.bottom = cardBottom;
-        st->kpiCardRects[i] = rcCard;
-
-        if (i == 0) {
-            DrawKpiCard(hdc, rcCard, Tr(L"総ターミナル数", L"TOTAL TERMINALS", L"TERMINALES TOTALES"), std::to_wstring(totalCount),
-                        KpiAccent(0), st->hFontUi, st->hFontKpiVal);
-        } else if (i == 1) {
-            DrawKpiCard(hdc, rcCard, Tr(L"稼働中", L"ACTIVE RUNNING", L"EN EJECUCIÓN"), std::to_wstring(activeRunning),
-                        KpiAccent(1), st->hFontUi, st->hFontKpiVal,
-                        activeRunning > 0 ? g_kpiBarPhase : -1.0f);
-        } else if (i == 2) {
-            DrawKpiCard(hdc, rcCard, Tr(L"待機 / アイドル", L"WAITING / IDLE", L"ESPERANDO / INACTIVO"), std::to_wstring(idleWaiting),
-                        KpiAccent(2), st->hFontUi, st->hFontKpiVal);
-        } else if (i == 3) {
-            DrawKpiCard(hdc, rcCard, Tr(L"完了 (OK)", L"COMPLETED (OK)", L"COMPLETADO (OK)"), std::to_wstring(completedOk),
-                        KpiAccent(3), st->hFontUi, st->hFontKpiVal);
-        } else if (i == 4) {
-            DrawKpiCard(hdc, rcCard, Tr(L"失敗 / 強制終了", L"FAILED / KILLED", L"FALLIDO / TERMINADO"), std::to_wstring(failedOrKilled),
-                        KpiAccent(4), st->hFontUi, st->hFontKpiVal);
-        } else if (i == 5) {
-            std::wstring memStr = Utf8ToWide(FormatBytes(totalMemBytes));
-            DrawKpiCard(hdc, rcCard, Tr(L"合計ジョブメモリ", L"TOTAL JOB MEMORY", L"MEMORIA TOTAL"), memStr,
-                        KpiAccent(5), st->hFontUi, st->hFontKpiVal);
+    int64_t minRemainingSec = -1;
+    for (const auto& s : kpiSnaps) {
+        if (s.state == ProcState::Running && s.timeoutSec > 0) {
+            int64_t remainingMs = static_cast<int64_t>(s.timeoutSec) * 1000 - static_cast<int64_t>(s.elapsedMs);
+            int64_t remSec = (remainingMs + 999) / 1000;
+            if (remSec < 0) remSec = 0;
+            if (minRemainingSec < 0 || remSec < minRemainingSec) {
+                minRemainingSec = remSec;
+            }
         }
     }
-    UpdateKpiTooltips(st, totalTreeProcs);
+
+    // 1. Top KPI Cards (2 rows: Row 0 = Processes, Row 1 = Tasks)
+    int kpiMargin = 10;
+    int kpiGap = 7;
+    int numCols = 7;
+    int availW = width - kpiMargin * 2 - kpiGap * (numCols - 1);
+    int cardW = (std::max)(90, availW / numCols);
+
+    for (int row = 0; row < 2; ++row) {
+        int cardTop = (row == 0) ? kHeaderKpiTop : kHeaderKpiRow2Top;
+        int cardBottom = (row == 0) ? kHeaderKpiRow1Bottom : kHeaderKpiBottom;
+
+        for (int col = 0; col < numCols; ++col) {
+            int i = row * numCols + col;
+            RECT rcCard;
+            rcCard.left = kpiMargin + col * (cardW + kpiGap);
+            rcCard.right = (col == numCols - 1) ? (width - kpiMargin) : (rcCard.left + cardW);
+            rcCard.top = cardTop;
+            rcCard.bottom = cardBottom;
+            st->kpiCardRects[i] = rcCard;
+
+            if (row == 0) {
+                // Top Row: Processes
+                if (col == 0) {
+                    std::wstring sub = (totalTreeProcs > static_cast<uint32_t>(totalCount))
+                        ? (std::to_wstring(totalTreeProcs) + Tr(L" 子proc", L" child", L" sub")) : L"";
+                    DrawKpiCard(hdc, rcCard, Tr(L"プロセス総数", L"TOTAL PROCESSES", L"PROCESOS TOTALES"),
+                                std::to_wstring(totalCount), KpiAccent(0), st->hFontUi, st->hFontKpiVal,
+                                -1.0f, sub);
+                } else if (col == 1) {
+                    DrawKpiCard(hdc, rcCard, Tr(L"稼働中プロセス", L"RUNNING PROCS", L"PROCESOS ACTIVOS"),
+                                std::to_wstring(activeRunning), KpiAccent(1), st->hFontUi, st->hFontKpiVal,
+                                (activeRunning > 0 ? g_kpiBarPhase : -1.0f));
+                } else if (col == 2) {
+                    DrawKpiCard(hdc, rcCard, Tr(L"待機 / アイドル", L"WAITING / IDLE", L"ESPERANDO / INACTIVO"),
+                                std::to_wstring(idleWaiting), KpiAccent(2), st->hFontUi, st->hFontKpiVal,
+                                -1.0f, Tr(L"(無活動)", L"(idle)", L"(inactivo)"));
+                } else if (col == 3) {
+                    DrawKpiCard(hdc, rcCard, Tr(L"完了 (OK)", L"COMPLETED (OK)", L"COMPLETADO (OK)"),
+                                std::to_wstring(completedOk), KpiAccent(3), st->hFontUi, st->hFontKpiVal);
+                } else if (col == 4) {
+                    DrawKpiCard(hdc, rcCard, Tr(L"失敗 / 強制終了", L"FAILED / KILLED", L"FALLIDO / TERMINADO"),
+                                std::to_wstring(failedOrKilled), KpiAccent(4), st->hFontUi, st->hFontKpiVal);
+                } else if (col == 5) {
+                    std::wstring memStr = Utf8ToWide(FormatBytes(totalMemBytes));
+                    DrawKpiCard(hdc, rcCard, Tr(L"合計ジョブメモリ", L"TOTAL JOB MEMORY", L"MEMORIA TOTAL"),
+                                memStr, KpiAccent(5), st->hFontUi, st->hFontKpiVal);
+                } else if (col == 6) {
+                    std::wstring val = (minRemainingSec >= 0) ? FormatRemainingTimeShort(minRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
+                    std::wstring sub = (minRemainingSec >= 0) ? FormatRemainingTime(minRemainingSec) : Tr(L"無制限", L"No timeout", L"Sin límite");
+                    DrawKpiCard(hdc, rcCard, Tr(L"プロセス残り時間", L"PROC TIMEOUT LEFT", L"TIEMPO RESTANTE PROC"),
+                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal,
+                                -1.0f, sub);
+                }
+            } else {
+                // Bottom Row: Tasks
+                if (col == 0) {
+                    DrawKpiCard(hdc, rcCard, Tr(L"タスク総数", L"TOTAL TASKS", L"TAREAS TOTALES"),
+                                std::to_wstring(tqCounts.total), KpiAccent(0), st->hFontUi, st->hFontKpiVal);
+                } else if (col == 1) {
+                    DrawKpiCard(hdc, rcCard, Tr(L"稼働中タスク", L"RUNNING TASKS", L"TAREAS EN EJECUCIÓN"),
+                                std::to_wstring(tqCounts.running), KpiAccent(1), st->hFontUi, st->hFontKpiVal,
+                                (tqCounts.running > 0 ? g_kpiBarPhase : -1.0f));
+                } else if (col == 2) {
+                    std::wstring sub = (tqCounts.pending > 0) ? (L"(+" + std::to_wstring(tqCounts.pending) + Tr(L" 保留)", L" pend)", L" pend)")) : L"";
+                    DrawKpiCard(hdc, rcCard, Tr(L"実行待ちタスク", L"WAITING TASKS", L"TAREAS EN ESPERA"),
+                                std::to_wstring(tqCounts.waiting), KpiAccent(2), st->hFontUi, st->hFontKpiVal,
+                                -1.0f, sub);
+                } else if (col == 3) {
+                    DrawKpiCard(hdc, rcCard, Tr(L"タスク成功 (OK)", L"SUCCEEDED TASKS", L"TAREAS EXITOSAS"),
+                                std::to_wstring(tqCounts.succeeded), KpiAccent(3), st->hFontUi, st->hFontKpiVal);
+                } else if (col == 4) {
+                    std::wstring sub = (tqCounts.cancelled > 0) ? (Tr(L"(中断: ", L"(Canc: ", L"(Canc: ") + std::to_wstring(tqCounts.cancelled) + L")") : L"";
+                    DrawKpiCard(hdc, rcCard, Tr(L"タスク失敗/中断", L"FAILED / CANCELLED", L"FALLIDAS / CANCELADAS"),
+                                std::to_wstring(tqCounts.failed + tqCounts.cancelled), KpiAccent(4), st->hFontUi, st->hFontKpiVal,
+                                -1.0f, sub);
+                } else if (col == 5) {
+                    std::wstring sub = (tqCounts.blocked > 0) ? (Tr(L"(閉塞: ", L"(Blocked: ", L"(Bloq: ") + std::to_wstring(tqCounts.blocked) + L")") : L"";
+                    DrawKpiCard(hdc, rcCard, Tr(L"依存保留/ブロック", L"PENDING / BLOCKED", L"PENDIENTES / BLOQUEADAS"),
+                                std::to_wstring(tqCounts.pending + tqCounts.blocked), KpiAccent(5), st->hFontUi, st->hFontKpiVal,
+                                -1.0f, sub);
+                } else if (col == 6) {
+                    std::wstring val = (tqCounts.minRemainingSec >= 0) ? FormatRemainingTimeShort(tqCounts.minRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
+                    std::wstring sub = (tqCounts.minRemainingSec >= 0) ? FormatRemainingTime(tqCounts.minRemainingSec) : Tr(L"無制限", L"No timeout", L"Sin límite");
+                    DrawKpiCard(hdc, rcCard, Tr(L"タスク残り時間", L"TASK TIMEOUT LEFT", L"TIEMPO RESTANTE TAREA"),
+                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal,
+                                -1.0f, sub);
+                }
+            }
+        }
+    }
+    UpdateKpiTooltips(st, totalTreeProcs, activeRunning, idleWaiting, completedOk, failedOrKilled,
+                      tqCounts, minRemainingSec, tqCounts.minRemainingSec);
+
+    // Draggable splitter between process list and task list (when 2 rows)
+    if (st->rcRowsSplitter.bottom > st->rcRowsSplitter.top && st->listDisplayMode == ListDisplayMode::TwoRows) {
+        HBRUSH spBrush = CreateSolidBrush(st->rowsSplitterDragging ? g_theme.border : g_theme.panel);
+        FillRect(hdc, &st->rcRowsSplitter, spBrush);
+        DeleteObject(spBrush);
+
+        int gripY = (st->rcRowsSplitter.top + st->rcRowsSplitter.bottom) / 2;
+        int gripCx = (st->rcRowsSplitter.left + st->rcRowsSplitter.right) / 2;
+        HPEN gripPen = CreatePen(PS_SOLID, 1, st->rowsSplitterDragging ? g_theme.accent : g_theme.muted);
+        HGDIOBJ oldGripPen = SelectObject(hdc, gripPen);
+        for (int dx = -14; dx <= 14; dx += 14) {
+            MoveToEx(hdc, gripCx + dx - 5, gripY, nullptr);
+            LineTo(hdc, gripCx + dx + 5, gripY);
+        }
+        SelectObject(hdc, oldGripPen);
+        DeleteObject(gripPen);
+    }
 
     // Draggable splitter between the process list and the terminal area
     if (st->rcSplitter.bottom > st->rcSplitter.top) {
@@ -969,11 +1187,25 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 
             // Title text on left of banner (includes Start Time & Uptime HH:MM:SS)
             std::wstringstream ss;
-            ss << L"#" << snap->id << L" [" << Utf8ToWide(snap->name) << L"]  PID: " << snap->rootPid
+            ss << L"#" << snap->id;
+            if (!snap->agentType.empty()) {
+                ss << L" [" << Utf8ToWide(snap->agentType) << L"]";
+            }
+            ss << L" [" << Utf8ToWide(snap->name) << L"]  PID: " << snap->rootPid
                << L" (" << snap->treeProcessCount << L" procs, " << Utf8ToWide(FormatBytes(snap->treeMemoryBytes))
                << Tr(L")  開始: ", L")  Start: ", L")  Inicio: ") << Utf8ToWide(snap->startTimeStr)
-               << Tr(L"  稼働時間: ", L"  Uptime: ", L"  Tiempo activo: ") << Utf8ToWide(FormatUptimeHMS(snap->elapsedMs))
-               << L"  —  " << Utf8ToWide(snap->commandLine);
+               << Tr(L"  稼働時間: ", L"  Uptime: ", L"  Tiempo activo: ") << Utf8ToWide(FormatUptimeHMS(snap->elapsedMs));
+            if (snap->state == ProcState::Running) {
+                if (snap->timeoutSec > 0) {
+                    int64_t remainingMs = static_cast<int64_t>(snap->timeoutSec) * 1000 - static_cast<int64_t>(snap->elapsedMs);
+                    int64_t remSec = (remainingMs + 999) / 1000;
+                    if (remSec < 0) remSec = 0;
+                    ss << Tr(L"  残り時間: ", L"  Left: ", L"  Restante: ") << FormatRemainingTime(remSec);
+                } else if (!snap->estimatedEndTimeStr.empty()) {
+                    ss << Tr(L"  予定終了: ~", L"  Est. End: ~", L"  Fin est.: ~") << Utf8ToWide(snap->estimatedEndTimeStr);
+                }
+            }
+            ss << L"  —  " << Utf8ToWide(snap->commandLine);
             RECT rcTitle = {tb.rcBanner.left + 8, tb.rcBanner.top + 2, rcBadge.left - 8, tb.rcBanner.bottom - 2};
             SetTextColor(hdc, isSelected ? g_theme.accent : g_theme.text);
             DrawTextW(hdc, ss.str().c_str(), -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1026,6 +1258,12 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                << StateLabelWide(selSnap->state, selSnap->idleMs >= 10000)
                << L"  |  " << Tr(L"開始: ", L"Start: ", L"Inicio: ") << Utf8ToWide(selSnap->startTimeStr)
                << L"  |  " << Tr(L"稼働時間: ", L"Uptime: ", L"Tiempo activo: ") << Utf8ToWide(FormatUptimeHMS(selSnap->elapsedMs));
+        if (selSnap->state == ProcState::Running && selSnap->timeoutSec > 0) {
+            int64_t remainingMs = static_cast<int64_t>(selSnap->timeoutSec) * 1000 - static_cast<int64_t>(selSnap->elapsedMs);
+            int64_t remSec = (remainingMs + 999) / 1000;
+            if (remSec < 0) remSec = 0;
+            sbLeft << L"  |  " << Tr(L"残り時間: ", L"Left: ", L"Restante: ") << FormatRemainingTime(remSec);
+        }
         if (!selSnap->logFilePath.empty()) {
             sbLeft << L"  |  " << Tr(L"ログ: ", L"Log: ", L"Registro: ") << Utf8ToWide(selSnap->logFilePath);
         }
@@ -1069,17 +1307,17 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
 
 static const wchar_t* ColumnTitle(int index) {
     static const wchar_t* const ja[13] = {
-        L"ID", L"エージェント / 名前", L"状態", L"開始時刻", L"終了時刻", L"稼働時間",
+        L"ID", L"エージェント / 名前", L"状態", L"開始時刻", L"終了時刻 / 残り時間", L"稼働時間",
         L"PID (ツリー)", L"メモリ", L"CPU時間", L"アイドル", L"最新出力プレビュー",
         L"コマンドライン", L"ジョブ"
     };
     static const wchar_t* const en[13] = {
-        L"ID", L"Agent / Name", L"Status", L"Start Time", L"End Time", L"Uptime",
+        L"ID", L"Agent / Name", L"Status", L"Start Time", L"End Time / Left", L"Uptime",
         L"PID (Tree)", L"Memory", L"CPU Time", L"Idle", L"Latest Output Preview",
         L"Command Line", L"Job"
     };
     static const wchar_t* const es[13] = {
-        L"ID", L"Agente / Nombre", L"Estado", L"Hora de inicio", L"Hora de fin", L"Tiempo activo",
+        L"ID", L"Agente / Nombre", L"Estado", L"Hora de inicio", L"Fin / Restante", L"Tiempo activo",
         L"PID (Árbol)", L"Memoria", L"Tiempo de CPU", L"Inactivo", L"Última salida",
         L"Línea de comandos", L"Trabajo"
     };
@@ -1402,7 +1640,7 @@ static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobI
 
 static void RefreshTaskQueueData(DashboardState* st) {
     if (!st || !st->tqm || !st->hwndTaskList) return;
-    if (!st->showTaskQueue) return;
+    if (st->listDisplayMode == ListDisplayMode::ProcessOnly) return;
     std::string err;
     std::string resp = st->tqm->TaskQueueList("", "", err);
     auto jobs = SplitJsonObjectArray(resp, "jobs");
@@ -1470,7 +1708,32 @@ static void RefreshTaskQueueData(DashboardState* st) {
                 int timeoutSec = static_cast<int>(JsonGetInt(j, "timeout_sec", 0));
                 if (timeoutSec > 0) {
                     std::string est = AddSecondsToTimestamp(attemptStart, timeoutSec);
-                    if (!est.empty()) endStr = L"~" + Utf8ToWide(TimeOfDayText(est));
+                    int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
+                    if (sscanf_s(attemptStart.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec) == 6) {
+                        struct tm t = {};
+                        t.tm_year = y - 1900;
+                        t.tm_mon = mo - 1;
+                        t.tm_mday = d;
+                        t.tm_hour = h;
+                        t.tm_min = mi;
+                        t.tm_sec = sec;
+                        t.tm_isdst = -1;
+                        time_t startEpoch = mktime(&t);
+                        if (startEpoch != static_cast<time_t>(-1)) {
+                            time_t nowEpoch = time(nullptr);
+                            int64_t elapsed = static_cast<int64_t>(nowEpoch - startEpoch);
+                            int64_t remSec = static_cast<int64_t>(timeoutSec) - elapsed;
+                            if (remSec < 0) remSec = 0;
+                            if (!est.empty()) {
+                                endStr = L"~" + Utf8ToWide(TimeOfDayText(est)) + L" (" + FormatRemainingTime(remSec) + L")";
+                            } else {
+                                endStr = FormatRemainingTime(remSec);
+                            }
+                        }
+                    }
+                    if (endStr.empty() && !est.empty()) {
+                        endStr = L"~" + Utf8ToWide(TimeOfDayText(est));
+                    }
                 }
             }
         }
@@ -1568,23 +1831,29 @@ static void RefreshDashboardData(DashboardState* st) {
         const auto& s = st->cachedSnapshots[i];
         std::wstring idStr = L"#" + std::to_wstring(s.id);
         std::wstring nameStr = Utf8ToWide(s.name);
+        if (!s.agentType.empty()) {
+            nameStr = L"[" + Utf8ToWide(s.agentType) + L"] " + nameStr;
+        }
         std::wstring statusStr = StateLabelWide(s.state, s.idleMs >= 10000);
-        if (s.state != ProcState::Running && s.exitCode != STILL_ACTIVE) {
+        if (!s.agentStatus.empty() && s.agentStatus != "idle" && s.state == ProcState::Running) {
+            statusStr += L" (" + Utf8ToWide(s.agentStatus) + L")";
+        } else if (s.state != ProcState::Running && s.exitCode != STILL_ACTIVE) {
             statusStr += L" (" + std::to_wstring(s.exitCode) + L")";
         }
         std::wstring startStr = Utf8ToWide(s.startTimeStr);
         std::wstring endStr;
         if (s.state == ProcState::Running) {
-            if (!s.estimatedEndTimeStr.empty()) {
-                endStr = Utf8ToWide(s.estimatedEndTimeStr);
-            } else if (s.timeoutSec > 0) {
+            if (s.timeoutSec > 0) {
                 int64_t remainingMs = static_cast<int64_t>(s.timeoutSec) * 1000 -
                                       static_cast<int64_t>(s.elapsedMs);
                 if (remainingMs < 0) remainingMs = 0;
                 long long remainingSec = (remainingMs + 999) / 1000;
-                wchar_t buf[64] = {};
-                swprintf_s(buf, Tr(L"残り %lld 秒", L"%llds left", L"Quedan %lld s"), remainingSec);
-                endStr = buf;
+                endStr = FormatRemainingTime(remainingSec);
+                if (!s.estimatedEndTimeStr.empty()) {
+                    endStr = Utf8ToWide(s.estimatedEndTimeStr) + L" (" + endStr + L")";
+                }
+            } else if (!s.estimatedEndTimeStr.empty()) {
+                endStr = L"~" + Utf8ToWide(s.estimatedEndTimeStr);
             }
         }
         if (endStr.empty()) {
@@ -1597,7 +1866,15 @@ static void RefreshDashboardData(DashboardState* st) {
         std::wstring pidStr = std::to_wstring(s.rootPid) + L" (" + std::to_wstring(s.treeProcessCount) + L")";
         std::wstring memStr = Utf8ToWide(FormatBytes(s.treeMemoryBytes));
         std::wstring cpuStr = Utf8ToWide(FormatUptimeHMS(s.cpuTimeMs));
-        std::wstring idleStr = (s.state == ProcState::Running) ? Utf8ToWide(FormatDurationSec(s.idleMs)) : L"-";
+        std::wstring idleStr = L"-";
+        if (s.state == ProcState::Running) {
+            idleStr = Utf8ToWide(FormatDurationSec(s.idleMs));
+            if (s.idleTimeoutSec > 0) {
+                int64_t idleRemainSec = static_cast<int64_t>(s.idleTimeoutSec) - static_cast<int64_t>(s.idleMs / 1000);
+                if (idleRemainSec < 0) idleRemainSec = 0;
+                idleStr += L" (残: " + std::to_wstring(idleRemainSec) + L"s)";
+            }
+        }
         std::wstring previewStr = Utf8ToWide(s.lastLinePreview);
         std::wstring cmdStr = Utf8ToWide(s.commandLine);
         std::wstring jobStr = L"-";
@@ -1728,6 +2005,7 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         ShowWindow(st->hwndList, SW_HIDE);
         if (st->hwndTaskList) ShowWindow(st->hwndTaskList, SW_HIDE);
         st->rcSplitter = {};
+        st->rcRowsSplitter = {};
     } else {
         int availVert = height - topList - kStatusBarH - margin;
         int maxListH = (std::max)(kMinListH, availVert - kTabH - 2 - kMinTerminalH);
@@ -1739,10 +2017,51 @@ static void LayoutControls(DashboardState* st, int width, int height) {
             if (listH > maxListH) listH = maxListH;
             st->processListHeight = listH;
         }
-        HWND activeList = (st->showTaskQueue && st->hwndTaskList) ? st->hwndTaskList : st->hwndList;
-        if (st->hwndList) ShowWindow(st->hwndList, st->showTaskQueue ? SW_HIDE : SW_SHOW);
-        if (st->hwndTaskList) ShowWindow(st->hwndTaskList, st->showTaskQueue ? SW_SHOW : SW_HIDE);
-        MoveWindow(activeList, margin, topList, width - margin * 2, listH, TRUE);
+        st->lastTotalListHeight = listH;
+
+        if (st->listDisplayMode == ListDisplayMode::TwoRows) {
+            int availForRows = listH - kRowSplitterH;
+            if (availForRows < kMinRowListH * 2) {
+                st->rcRowsSplitter = {};
+                if (st->hwndTaskList) ShowWindow(st->hwndTaskList, SW_HIDE);
+                if (st->hwndList) {
+                    ShowWindow(st->hwndList, SW_SHOW);
+                    MoveWindow(st->hwndList, margin, topList, width - margin * 2, listH, TRUE);
+                }
+            } else {
+                int procH = static_cast<int>(availForRows * st->procRowRatio);
+                procH = (std::clamp)(procH, kMinRowListH, availForRows - kMinRowListH);
+                int taskH = availForRows - procH;
+                int splitterTop = topList + procH;
+                int taskTop = splitterTop + kRowSplitterH;
+
+                st->rcRowsSplitter = {margin, splitterTop, width - margin, splitterTop + kRowSplitterH};
+
+                if (st->hwndList) {
+                    ShowWindow(st->hwndList, SW_SHOW);
+                    MoveWindow(st->hwndList, margin, topList, width - margin * 2, procH, TRUE);
+                }
+                if (st->hwndTaskList) {
+                    ShowWindow(st->hwndTaskList, SW_SHOW);
+                    MoveWindow(st->hwndTaskList, margin, taskTop, width - margin * 2, taskH, TRUE);
+                }
+            }
+        } else if (st->listDisplayMode == ListDisplayMode::ProcessOnly) {
+            st->rcRowsSplitter = {};
+            if (st->hwndTaskList) ShowWindow(st->hwndTaskList, SW_HIDE);
+            if (st->hwndList) {
+                ShowWindow(st->hwndList, SW_SHOW);
+                MoveWindow(st->hwndList, margin, topList, width - margin * 2, listH, TRUE);
+            }
+        } else { // ListDisplayMode::TaskOnly
+            st->rcRowsSplitter = {};
+            if (st->hwndList) ShowWindow(st->hwndList, SW_HIDE);
+            if (st->hwndTaskList) {
+                ShowWindow(st->hwndTaskList, SW_SHOW);
+                MoveWindow(st->hwndTaskList, margin, topList, width - margin * 2, listH, TRUE);
+            }
+        }
+
         st->rcSplitter = {margin, topList + listH + 1, width - margin, topList + listH + 1 + kSplitterH};
         if (st->hideTerminalGrid) st->rcSplitter = {};
     }
@@ -1787,16 +2106,104 @@ static void CopyTextToClipboard(HWND hwnd, const std::wstring& text) {
 }
 
 struct TaskDetailsDlgState {
+    DashboardState* dash = nullptr;
+    int procId = 0;
     ProcessSnapshot snap;
     std::wstring fullOutput;
     HFONT hFontUi = nullptr;
     HFONT hFontBold = nullptr;
+    HFONT hFontMono = nullptr;
     HWND hwndEditCmd = nullptr;
+    HWND hwndLblInfo = nullptr;
+    HWND hwndTree = nullptr;
     HWND hwndEditInfo = nullptr;
     HWND hwndBtnCopyCmd = nullptr;
+    HWND hwndBtnCopyJson = nullptr;
+    HWND hwndBtnToggleMode = nullptr;
     HWND hwndBtnOpenLog = nullptr;
+    HWND hwndBtnOpenStream = nullptr;
     HWND hwndBtnClose = nullptr;
+
+    bool isJsonMode = false;
+    bool showTreeView = true;
+    nlohmann::json rootJson;
+    std::unordered_map<HTREEITEM, std::string> nodeJsonMap;
+    std::unordered_map<HTREEITEM, std::string> nodePathMap;
 };
+
+static void PopulateJsonTreeRecursive(
+    HWND hTree,
+    HTREEITEM hParent,
+    const nlohmann::json& j,
+    const std::string& keyName,
+    const std::string& currentPath,
+    std::unordered_map<HTREEITEM, std::string>& nodeJsonMap,
+    std::unordered_map<HTREEITEM, std::string>& nodePathMap,
+    int depth = 0
+) {
+    TVINSERTSTRUCTW tvis = {};
+    tvis.hParent = hParent;
+    tvis.hInsertAfter = TVI_LAST;
+    tvis.item.mask = TVIF_TEXT;
+
+    std::wstring label;
+    if (j.is_object()) {
+        std::wstringstream ss;
+        if (!keyName.empty()) {
+            ss << Utf8ToWide(keyName) << L": ";
+        }
+        ss << L"{ ... } (" << j.size() << Tr(L" 個のキー", L" keys", L" claves") << L")";
+        label = ss.str();
+    } else if (j.is_array()) {
+        std::wstringstream ss;
+        if (!keyName.empty()) {
+            ss << Utf8ToWide(keyName) << L": ";
+        }
+        ss << L"[ ... ] (" << j.size() << Tr(L" 要素", L" items", L" elementos") << L")";
+        label = ss.str();
+    } else if (j.is_string()) {
+        std::string s = j.get<std::string>();
+        if (s.size() > 70) s = s.substr(0, 67) + "...";
+        label = (keyName.empty() ? L"" : Utf8ToWide(keyName) + L": ") + L"\"" + Utf8ToWide(s) + L"\"";
+    } else if (j.is_number()) {
+        label = (keyName.empty() ? L"" : Utf8ToWide(keyName) + L": ") + Utf8ToWide(j.dump());
+    } else if (j.is_boolean()) {
+        label = (keyName.empty() ? L"" : Utf8ToWide(keyName) + L": ") + (j.get<bool>() ? L"true" : L"false");
+    } else if (j.is_null()) {
+        label = (keyName.empty() ? L"" : Utf8ToWide(keyName) + L": ") + L"null";
+    }
+
+    tvis.item.pszText = const_cast<wchar_t*>(label.c_str());
+    tvis.item.cchTextMax = static_cast<int>(label.size());
+    HTREEITEM hItem = TreeView_InsertItem(hTree, &tvis);
+    if (!hItem) return;
+
+    try {
+        nodeJsonMap[hItem] = j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+    } catch (...) {
+        nodeJsonMap[hItem] = "(JSON serialization error)";
+    }
+    nodePathMap[hItem] = currentPath;
+
+    if (depth < 2) {
+        TreeView_Expand(hTree, hItem, TVE_EXPAND);
+    }
+
+    if (j.is_object()) {
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            std::string subPath = currentPath.empty() ? it.key() : (currentPath + "." + it.key());
+            PopulateJsonTreeRecursive(hTree, hItem, it.value(), it.key(), subPath, nodeJsonMap, nodePathMap, depth + 1);
+        }
+    } else if (j.is_array()) {
+        size_t idx = 0;
+        for (const auto& item : j) {
+            std::string itemKey = "[" + std::to_string(idx) + "]";
+            std::string subPath = currentPath + itemKey;
+            PopulateJsonTreeRecursive(hTree, hItem, item, itemKey, subPath, nodeJsonMap, nodePathMap, depth + 1);
+            idx++;
+        }
+    }
+}
 
 static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto* ds = reinterpret_cast<TaskDetailsDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -1806,62 +2213,136 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             ds = reinterpret_cast<TaskDetailsDlgState*>(cs->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
 
+            HDC hdc = GetDC(hwnd);
+            int logPixelsY = GetDeviceCaps(hdc, LOGPIXELSY);
+            ReleaseDC(hwnd, hdc);
+            int fontSize = -MulDiv(9, logPixelsY, 72);
+            ds->hFontMono = CreateFontW(fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                FIXED_PITCH | FF_MODERN, L"Consolas");
+            if (!ds->hFontMono) {
+                ds->hFontMono = CreateFontW(fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                    FIXED_PITCH | FF_MODERN, L"Courier New");
+            }
+
             HWND hLblCmd = CreateWindowExW(0, L"STATIC", Tr(L"コマンドライン:", L"Command Line:", L"Línea de comandos:"),
-                WS_CHILD | WS_VISIBLE, 14, 12, 400, 20, hwnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 14, 10, 400, 18, hwnd, nullptr, nullptr, nullptr);
 
             std::wstring cmdW = Utf8ToWide(ds->snap.commandLine);
             ds->hwndEditCmd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", cmdW.c_str(),
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-                14, 34, 730, 82, hwnd, (HMENU)2001, nullptr, nullptr);
+                14, 30, 890, 60, hwnd, (HMENU)2001, nullptr, nullptr);
 
-            HWND hLblInfo = CreateWindowExW(0, L"STATIC", Tr(L"タスク詳細・出力:", L"Task Details & Output Preview:", L"Detalles de tarea y salida:"),
-                WS_CHILD | WS_VISIBLE, 14, 124, 400, 20, hwnd, nullptr, nullptr, nullptr);
+            ds->hwndLblInfo = CreateWindowExW(0, L"STATIC",
+                ds->isJsonMode ? Tr(L"JSON ツリー / エディタ (ノード選択で展開・詳細表示):", L"JSON Tree / Editor (select node to view/edit):", L"Árbol / Editor JSON:")
+                               : Tr(L"タスク詳細・出力:", L"Task Details & Output Preview:", L"Detalles de tarea y salida:"),
+                WS_CHILD | WS_VISIBLE, 14, 96, 890, 20, hwnd, nullptr, nullptr, nullptr);
 
-            std::wstringstream ss;
-            ss << Tr(L"ID              : ", L"ID              : ", L"ID              : ") << L"#" << ds->snap.id << L"\r\n"
-               << Tr(L"名前            : ", L"Name            : ", L"Nombre          : ") << Utf8ToWide(ds->snap.name) << L"\r\n"
-               << Tr(L"状態            : ", L"Status          : ", L"Estado          : ") << StateLabelWide(ds->snap.state, ds->snap.idleMs >= 10000);
-            if (ds->snap.state != ProcState::Running && ds->snap.exitCode != STILL_ACTIVE) {
-                ss << Tr(L" (終了コード: ", L" (Exit Code: ", L" (Código de salida: ") << ds->snap.exitCode << L")";
+            ds->hwndTree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
+                WS_CHILD | (ds->isJsonMode && ds->showTreeView ? WS_VISIBLE : 0) |
+                TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS | TVS_SHOWSELALWAYS,
+                14, 122, 390, 470, hwnd, (HMENU)2008, nullptr, nullptr);
+            TreeView_SetBkColor(ds->hwndTree, g_theme.panel);
+            TreeView_SetTextColor(ds->hwndTree, g_theme.listText);
+            TreeView_SetLineColor(ds->hwndTree, g_theme.border);
+
+            ds->hwndEditInfo = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+                ds->isJsonMode ? 414 : 14, 122, ds->isJsonMode ? 490 : 890, 470, hwnd, (HMENU)2002, nullptr, nullptr);
+
+            if (ds->isJsonMode) {
+                SendMessageW(ds->hwndTree, WM_SETREDRAW, FALSE, 0);
+                PopulateJsonTreeRecursive(ds->hwndTree, TVI_ROOT, ds->rootJson, "root", "root", ds->nodeJsonMap, ds->nodePathMap, 0);
+                SendMessageW(ds->hwndTree, WM_SETREDRAW, TRUE, 0);
+                InvalidateRect(ds->hwndTree, nullptr, TRUE);
+
+                std::wstring dumpW = NormalizeCrLfWide(ds->rootJson.dump(2, ' ', false, nlohmann::json::error_handler_t::replace));
+                SetWindowTextW(ds->hwndEditInfo, dumpW.c_str());
+            } else {
+                std::wstringstream ss;
+                ss << Tr(L"ID              : ", L"ID              : ", L"ID              : ") << L"#" << ds->snap.id << L"\r\n"
+                   << Tr(L"名前            : ", L"Name            : ", L"Nombre          : ") << Utf8ToWide(ds->snap.name) << L"\r\n"
+                   << Tr(L"状態            : ", L"Status          : ", L"Estado          : ") << StateLabelWide(ds->snap.state, ds->snap.idleMs >= 10000);
+                if (ds->snap.state != ProcState::Running && ds->snap.exitCode != STILL_ACTIVE) {
+                    ss << Tr(L" (終了コード: ", L" (Exit Code: ", L" (Código de salida: ") << ds->snap.exitCode << L")";
+                }
+                ss << L"\r\n"
+                   << Tr(L"コマンドライン  : ", L"Command Line    : ", L"Línea de comandos: ") << Utf8ToWide(ds->snap.commandLine) << L"\r\n"
+                   << Tr(L"作業ディレクトリ: ", L"Working Dir     : ", L"Directorio      : ")
+                   << (ds->snap.workingDir.empty() ? Tr(L"(既定)", L"(default)", L"(predeterminado)") : Utf8ToWide(ds->snap.workingDir)) << L"\r\n"
+                   << Tr(L"ルート PID      : ", L"Root PID        : ", L"PID raíz        : ") << ds->snap.rootPid
+                   << L" (" << ds->snap.treeProcessCount << Tr(L" プロセス (Job Object)", L" processes in Job Object", L" procesos en Job Object") << L")\r\n"
+                   << Tr(L"メモリ使用量    : ", L"Memory Usage    : ", L"Uso de memoria  : ") << Utf8ToWide(FormatBytes(ds->snap.treeMemoryBytes)) << L"\r\n"
+                   << Tr(L"開始時刻        : ", L"Start Time      : ", L"Hora de inicio  : ") << Utf8ToWide(ds->snap.startTimeStr) << L"\r\n"
+                   << Tr(L"終了時刻        : ", L"End Time        : ", L"Hora de fin     : ")
+                   << (ds->snap.endTimeStr.empty() ? Tr(L"(実行中)", L"(running)", L"(en ejecución)") : Utf8ToWide(ds->snap.endTimeStr)) << L"\r\n";
+                if (ds->snap.state == ProcState::Running && ds->snap.timeoutSec > 0) {
+                    int64_t remainingMs = static_cast<int64_t>(ds->snap.timeoutSec) * 1000 - static_cast<int64_t>(ds->snap.elapsedMs);
+                    int64_t remSec = (remainingMs + 999) / 1000;
+                    if (remSec < 0) remSec = 0;
+                    ss << Tr(L"残り時間        : ", L"Time Remaining  : ", L"Tiempo restante : ") << FormatRemainingTime(remSec)
+                       << L" (" << Tr(L"タイムアウト: ", L"Timeout: ", L"Tiempo límite: ") << ds->snap.timeoutSec << L"s)\r\n";
+                }
+                ss << Tr(L"稼働時間        : ", L"Uptime          : ", L"Tiempo activo   : ") << Utf8ToWide(FormatUptimeHMS(ds->snap.elapsedMs))
+                   << L" (" << Utf8ToWide(FormatDurationSec(ds->snap.elapsedMs)) << L")\r\n"
+                   << Tr(L"CPU時間         : ", L"CPU Time        : ", L"Tiempo de CPU   : ") << Utf8ToWide(FormatUptimeHMS(ds->snap.cpuTimeMs)) << L"\r\n"
+                   << Tr(L"ログファイル    : ", L"Log File        : ", L"Archivo de log  : ") << Utf8ToWide(ds->snap.logFilePath) << L"\r\n"
+                   << Tr(L"完了ファイル    : ", L"Done File       : ", L"Archivo .done   : ") << Utf8ToWide(ds->snap.doneFilePath) << L"\r\n"
+                   << L"--------------------------------------------------------------------------------\r\n"
+                   << ds->fullOutput;
+                SetWindowTextW(ds->hwndEditInfo, ss.str().c_str());
             }
-            ss << L"\r\n"
-               << Tr(L"コマンドライン  : ", L"Command Line    : ", L"Línea de comandos: ") << Utf8ToWide(ds->snap.commandLine) << L"\r\n"
-               << Tr(L"作業ディレクトリ: ", L"Working Dir     : ", L"Directorio      : ")
-               << (ds->snap.workingDir.empty() ? Tr(L"(既定)", L"(default)", L"(predeterminado)") : Utf8ToWide(ds->snap.workingDir)) << L"\r\n"
-               << Tr(L"ルート PID      : ", L"Root PID        : ", L"PID raíz        : ") << ds->snap.rootPid
-               << L" (" << ds->snap.treeProcessCount << Tr(L" プロセス (Job Object)", L" processes in Job Object", L" procesos en Job Object") << L")\r\n"
-               << Tr(L"メモリ使用量    : ", L"Memory Usage    : ", L"Uso de memoria  : ") << Utf8ToWide(FormatBytes(ds->snap.treeMemoryBytes)) << L"\r\n"
-               << Tr(L"開始時刻        : ", L"Start Time      : ", L"Hora de inicio  : ") << Utf8ToWide(ds->snap.startTimeStr) << L"\r\n"
-               << Tr(L"終了時刻        : ", L"End Time        : ", L"Hora de fin     : ")
-               << (ds->snap.endTimeStr.empty() ? Tr(L"(実行中)", L"(running)", L"(en ejecución)") : Utf8ToWide(ds->snap.endTimeStr)) << L"\r\n"
-               << Tr(L"稼働時間        : ", L"Uptime          : ", L"Tiempo activo   : ") << Utf8ToWide(FormatUptimeHMS(ds->snap.elapsedMs))
-               << L" (" << Utf8ToWide(FormatDurationSec(ds->snap.elapsedMs)) << L")\r\n"
-               << Tr(L"CPU時間         : ", L"CPU Time        : ", L"Tiempo de CPU   : ") << Utf8ToWide(FormatUptimeHMS(ds->snap.cpuTimeMs)) << L"\r\n"
-               << Tr(L"ログファイル    : ", L"Log File        : ", L"Archivo de log  : ") << Utf8ToWide(ds->snap.logFilePath) << L"\r\n"
-               << Tr(L"完了ファイル    : ", L"Done File       : ", L"Archivo .done   : ") << Utf8ToWide(ds->snap.doneFilePath) << L"\r\n"
-               << L"--------------------------------------------------------------------------------\r\n"
-               << ds->fullOutput;
-
-            std::wstring infoW = ss.str();
-            ds->hwndEditInfo = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", infoW.c_str(),
-                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY,
-                14, 146, 730, 310, hwnd, (HMENU)2002, nullptr, nullptr);
 
             ds->hwndBtnCopyCmd = CreateWindowExW(0, L"BUTTON", Tr(L"コマンドラインをコピー", L"Copy Command Line", L"Copiar línea de comandos"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 14, 468, 250, 30, hwnd, (HMENU)2003, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 14, 600, 180, 30, hwnd, (HMENU)2003, nullptr, nullptr);
+            ds->hwndBtnCopyJson = CreateWindowExW(0, L"BUTTON", Tr(L"JSONをコピー", L"Copy JSON", L"Copiar JSON"),
+                WS_CHILD | (ds->isJsonMode ? WS_VISIBLE : 0) | BS_OWNERDRAW, 202, 600, 130, 30, hwnd, (HMENU)2006, nullptr, nullptr);
+            ds->hwndBtnToggleMode = CreateWindowExW(0, L"BUTTON",
+                ds->showTreeView ? Tr(L"生テキスト表示に切替", L"Switch to Raw Text", L"Cambiar a texto")
+                                 : Tr(L"JSONツリー表示に切替", L"Switch to JSON Tree", L"Cambiar a árbol JSON"),
+                WS_CHILD | (ds->isJsonMode ? WS_VISIBLE : 0) | BS_OWNERDRAW, 340, 600, 175, 30, hwnd, (HMENU)2005, nullptr, nullptr);
             ds->hwndBtnOpenLog = CreateWindowExW(0, L"BUTTON", Tr(L"ログファイルを開く", L"Open Log File", L"Abrir archivo de registro"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 274, 468, 220, 30, hwnd, (HMENU)2004, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 523, 600, 160, 30, hwnd, (HMENU)2004, nullptr, nullptr);
+            ds->hwndBtnOpenStream = CreateWindowExW(0, L"BUTTON", Tr(L"ストリーム (jsonl) を開く", L"Open Stream File", L"Abrir flujo"),
+                WS_CHILD | (!ds->snap.streamFilePath.empty() ? WS_VISIBLE : 0) | BS_OWNERDRAW, 691, 600, 160, 30, hwnd, (HMENU)2007, nullptr, nullptr);
             ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる", L"Close", L"Cerrar"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 634, 468, 110, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 860, 600, 95, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
 
             SendMessageW(hLblCmd, WM_SETFONT, (WPARAM)ds->hFontBold, TRUE);
-            SendMessageW(hLblInfo, WM_SETFONT, (WPARAM)ds->hFontBold, TRUE);
-            HWND ctrls[] = {ds->hwndEditCmd, ds->hwndEditInfo, ds->hwndBtnCopyCmd, ds->hwndBtnOpenLog, ds->hwndBtnClose};
-            for (HWND h : ctrls) {
-                SendMessageW(h, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+            SendMessageW(ds->hwndLblInfo, WM_SETFONT, (WPARAM)ds->hFontBold, TRUE);
+            HWND uiCtrls[] = {ds->hwndEditCmd, ds->hwndTree, ds->hwndBtnCopyCmd, ds->hwndBtnCopyJson, ds->hwndBtnToggleMode, ds->hwndBtnOpenLog, ds->hwndBtnOpenStream, ds->hwndBtnClose};
+            for (HWND h : uiCtrls) {
+                if (h) SendMessageW(h, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
             }
+            if (ds->hFontMono) {
+                SendMessageW(ds->hwndEditInfo, WM_SETFONT, (WPARAM)ds->hFontMono, TRUE);
+            }
+
             ApplyNativeThemeToWindow(hwnd);
             return 0;
+        }
+        case WM_NOTIFY: {
+            auto* pnmh = reinterpret_cast<NMHDR*>(lParam);
+            if (ds && pnmh && ds->hwndTree && pnmh->hwndFrom == ds->hwndTree) {
+                if (pnmh->code == TVN_SELCHANGEDW) {
+                    auto* pnmtv = reinterpret_cast<NMTREEVIEWW*>(lParam);
+                    HTREEITEM hSel = pnmtv->itemNew.hItem;
+                    if (hSel) {
+                        auto it = ds->nodeJsonMap.find(hSel);
+                        if (it != ds->nodeJsonMap.end()) {
+                            std::wstring jsonW = NormalizeCrLfWide(it->second);
+                            SetWindowTextW(ds->hwndEditInfo, jsonW.c_str());
+                        }
+                        auto itP = ds->nodePathMap.find(hSel);
+                        if (itP != ds->nodePathMap.end() && ds->hwndLblInfo) {
+                            std::wstring pathLbl = std::wstring(Tr(L"JSON パス: ", L"JSON Path: ", L"Ruta JSON: ")) + Utf8ToWide(itP->second);
+                            SetWindowTextW(ds->hwndLblInfo, pathLbl.c_str());
+                        }
+                    }
+                }
+            }
+            break;
         }
         case WM_SIZE: {
             if (!ds) return 0;
@@ -1869,12 +2350,64 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             int h = HIWORD(lParam);
             int pad = 14;
             int editW = (std::max)(200, w - pad * 2);
-            MoveWindow(ds->hwndEditCmd, pad, 34, editW, 82, TRUE);
+            MoveWindow(ds->hwndEditCmd, pad, 30, editW, 60, TRUE);
+            if (ds->hwndLblInfo) {
+                MoveWindow(ds->hwndLblInfo, pad, 96, editW, 20, TRUE);
+            }
             int btnY = (std::max)(220, h - 42);
-            MoveWindow(ds->hwndEditInfo, pad, 146, editW, (std::max)(80, btnY - 156), TRUE);
-            MoveWindow(ds->hwndBtnCopyCmd, pad, btnY, 250, 30, TRUE);
-            MoveWindow(ds->hwndBtnOpenLog, pad + 260, btnY, 220, 30, TRUE);
-            MoveWindow(ds->hwndBtnClose, (std::max)(pad + 490, w - pad - 110), btnY, 110, 30, TRUE);
+            int mainY = 122;
+            int mainH = (std::max)(100, btnY - mainY - 8);
+
+            if (ds->isJsonMode && ds->showTreeView && ds->hwndTree) {
+                int treeW = (editW - 12) * 44 / 100;
+                int jsonW = editW - treeW - 12;
+                ShowWindow(ds->hwndTree, SW_SHOW);
+                MoveWindow(ds->hwndTree, pad, mainY, treeW, mainH, TRUE);
+                MoveWindow(ds->hwndEditInfo, pad + treeW + 12, mainY, jsonW, mainH, TRUE);
+            } else {
+                if (ds->hwndTree) ShowWindow(ds->hwndTree, SW_HIDE);
+                MoveWindow(ds->hwndEditInfo, pad, mainY, editW, mainH, TRUE);
+            }
+
+            int curX = pad;
+            if (ds->hwndBtnCopyCmd) {
+                MoveWindow(ds->hwndBtnCopyCmd, curX, btnY, 170, 30, TRUE);
+                curX += 176;
+            }
+            if (ds->hwndBtnCopyJson) {
+                if (ds->isJsonMode) {
+                    ShowWindow(ds->hwndBtnCopyJson, SW_SHOW);
+                    MoveWindow(ds->hwndBtnCopyJson, curX, btnY, 120, 30, TRUE);
+                    curX += 126;
+                } else {
+                    ShowWindow(ds->hwndBtnCopyJson, SW_HIDE);
+                }
+            }
+            if (ds->hwndBtnToggleMode) {
+                if (ds->isJsonMode) {
+                    ShowWindow(ds->hwndBtnToggleMode, SW_SHOW);
+                    MoveWindow(ds->hwndBtnToggleMode, curX, btnY, 175, 30, TRUE);
+                    curX += 181;
+                } else {
+                    ShowWindow(ds->hwndBtnToggleMode, SW_HIDE);
+                }
+            }
+            if (ds->hwndBtnOpenLog) {
+                MoveWindow(ds->hwndBtnOpenLog, curX, btnY, 150, 30, TRUE);
+                curX += 156;
+            }
+            if (ds->hwndBtnOpenStream) {
+                if (!ds->snap.streamFilePath.empty()) {
+                    ShowWindow(ds->hwndBtnOpenStream, SW_SHOW);
+                    MoveWindow(ds->hwndBtnOpenStream, curX, btnY, 150, 30, TRUE);
+                    curX += 156;
+                } else {
+                    ShowWindow(ds->hwndBtnOpenStream, SW_HIDE);
+                }
+            }
+            if (ds->hwndBtnClose) {
+                MoveWindow(ds->hwndBtnClose, (std::max)(curX + 10, w - pad - 100), btnY, 100, 30, TRUE);
+            }
             return 0;
         }
         case WM_COMMAND: {
@@ -1885,6 +2418,37 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 if (!ds->snap.logFilePath.empty()) {
                     std::wstring logW = Utf8ToWide(ds->snap.logFilePath);
                     ShellExecuteW(hwnd, L"open", L"notepad.exe", logW.c_str(), nullptr, SW_SHOWNORMAL);
+                }
+            } else if (id == 2005 && ds) {
+                if (ds->isJsonMode) {
+                    ds->showTreeView = !ds->showTreeView;
+                    if (ds->showTreeView) {
+                        SetWindowTextW(ds->hwndBtnToggleMode, Tr(L"生テキスト表示に切替", L"Switch to Raw Text", L"Cambiar a texto"));
+                        HTREEITEM hSel = ds->hwndTree ? TreeView_GetSelection(ds->hwndTree) : nullptr;
+                        if (hSel && ds->nodeJsonMap.count(hSel)) {
+                            SetWindowTextW(ds->hwndEditInfo, NormalizeCrLfWide(ds->nodeJsonMap[hSel]).c_str());
+                        } else {
+                            SetWindowTextW(ds->hwndEditInfo, NormalizeCrLfWide(ds->rootJson.dump(2, ' ', false, nlohmann::json::error_handler_t::replace)).c_str());
+                        }
+                    } else {
+                        SetWindowTextW(ds->hwndBtnToggleMode, Tr(L"JSONツリー表示に切替", L"Switch to JSON Tree", L"Cambiar a árbol JSON"));
+                        SetWindowTextW(ds->hwndEditInfo, ds->fullOutput.c_str());
+                    }
+                    RECT rc;
+                    GetClientRect(hwnd, &rc);
+                    SendMessageW(hwnd, WM_SIZE, 0, MAKELPARAM(rc.right - rc.left, rc.bottom - rc.top));
+                }
+            } else if (id == 2006 && ds) {
+                HTREEITEM hSel = (ds->hwndTree && ds->showTreeView) ? TreeView_GetSelection(ds->hwndTree) : nullptr;
+                if (hSel && ds->nodeJsonMap.count(hSel)) {
+                    CopyTextToClipboard(hwnd, Utf8ToWide(ds->nodeJsonMap[hSel]));
+                } else if (!ds->rootJson.is_null()) {
+                    CopyTextToClipboard(hwnd, Utf8ToWide(ds->rootJson.dump(2, ' ', false, nlohmann::json::error_handler_t::replace)));
+                }
+            } else if (id == 2007 && ds) {
+                if (!ds->snap.streamFilePath.empty()) {
+                    std::wstring streamW = Utf8ToWide(ds->snap.streamFilePath);
+                    ShellExecuteW(hwnd, L"open", L"notepad.exe", streamW.c_str(), nullptr, SW_SHOWNORMAL);
                 }
             } else if (id == IDOK || id == IDCANCEL) {
                 DestroyWindow(hwnd);
@@ -1942,7 +2506,10 @@ static LRESULT CALLBACK TaskDetailsWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
             DestroyWindow(hwnd);
             return 0;
         case WM_NCDESTROY:
-            delete ds;
+            if (ds) {
+                if (ds->hFontMono) DeleteObject(ds->hFontMono);
+                delete ds;
+            }
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             return 0;
     }
@@ -1971,24 +2538,482 @@ static void ShowTaskDetailsDialog(DashboardState* st, int procId) {
     }
 
     auto* ds = new TaskDetailsDlgState();
+    ds->dash = st;
+    ds->procId = procId;
     ds->snap = snap;
     ds->hFontUi = st->hFontUi;
     ds->hFontBold = st->hFontUiBold;
+
     std::string outUtf8;
-    st->pm->GetOutput(procId, true, 120, outUtf8);
+    st->pm->GetOutput(procId, true, 200, outUtf8);
     ds->fullOutput = NormalizeCrLfWide(outUtf8);
 
+    bool isStream = snap.jsonStream || !snap.agentType.empty() || snap.streamEventCount > 0;
+    if (isStream) {
+        nlohmann::json root = nlohmann::json::object();
+
+        nlohmann::json proc = nlohmann::json::object();
+        proc["id"] = snap.id;
+        proc["name"] = snap.name;
+        proc["agentType"] = snap.agentType;
+        proc["state"] = ProcStateToString(snap.state);
+        proc["exitCode"] = snap.exitCode;
+        proc["commandLine"] = snap.commandLine;
+        proc["workingDir"] = snap.workingDir;
+        proc["rootPid"] = snap.rootPid;
+        proc["treeProcessCount"] = snap.treeProcessCount;
+        proc["memoryBytes"] = snap.treeMemoryBytes;
+        proc["startTime"] = snap.startTimeStr;
+        proc["endTime"] = snap.endTimeStr;
+        proc["elapsedMs"] = snap.elapsedMs;
+        proc["cpuTimeMs"] = snap.cpuTimeMs;
+        proc["logFilePath"] = snap.logFilePath;
+        proc["streamFilePath"] = snap.streamFilePath;
+        proc["jsonStream"] = snap.jsonStream;
+        if (snap.state == ProcState::Running && snap.timeoutSec > 0) {
+            int64_t remainingMs = static_cast<int64_t>(snap.timeoutSec) * 1000 - static_cast<int64_t>(snap.elapsedMs);
+            int64_t remSec = (remainingMs + 999) / 1000;
+            if (remSec < 0) remSec = 0;
+            proc["remainingSec"] = remSec;
+            proc["remainingTime"] = WideToUtf8(FormatRemainingTime(remSec));
+            proc["timeoutSec"] = snap.timeoutSec;
+        }
+        root["process"] = proc;
+
+        std::vector<LlmStreamEvent> events;
+        LlmAgentState agStateObj;
+        if (st->pm) {
+            st->pm->GetAgentStream(procId, 0, "", 0, events, agStateObj);
+        }
+
+        nlohmann::json agState = nlohmann::json::object();
+        agState["agentType"] = snap.agentType;
+        agState["status"] = agStateObj.status.empty() ? snap.agentStatus : agStateObj.status;
+        agState["currentTool"] = agStateObj.currentTool.empty() ? snap.currentTool : agStateObj.currentTool;
+        agState["currentToolAction"] = agStateObj.currentToolAction.empty() ? snap.currentToolAction : agStateObj.currentToolAction;
+        agState["supervisorGoal"] = agStateObj.supervisorGoal.empty() ? snap.supervisorGoal : agStateObj.supervisorGoal;
+        agState["supervisorNotes"] = agStateObj.supervisorNotes.empty() ? snap.supervisorNotes : agStateObj.supervisorNotes;
+        agState["totalTokens"] = agStateObj.totalTokens;
+        agState["costUsd"] = agStateObj.costUsd;
+        agState["stepCount"] = agStateObj.stepCount;
+        agState["lastThought"] = agStateObj.lastThought.empty() ? snap.lastThought : agStateObj.lastThought;
+        agState["lastMessage"] = agStateObj.lastMessage.empty() ? snap.lastMessage : agStateObj.lastMessage;
+        root["agentState"] = agState;
+
+        nlohmann::json evArray = nlohmann::json::array();
+        for (const auto& ev : events) {
+            nlohmann::json evObj = nlohmann::json::object();
+            evObj["seq"] = ev.seq;
+            evObj["timestamp"] = ev.timestamp;
+            evObj["type"] = ev.type;
+            evObj["agentType"] = ev.agentType;
+            if (!ev.toolName.empty()) evObj["toolName"] = ev.toolName;
+            if (!ev.toolAction.empty()) evObj["toolAction"] = ev.toolAction;
+            if (!ev.toolInput.empty()) {
+                auto parsedInput = nlohmann::json::parse(ev.toolInput, nullptr, false);
+                if (!parsedInput.is_discarded()) {
+                    evObj["toolInput"] = parsedInput;
+                } else {
+                    evObj["toolInput"] = ev.toolInput;
+                }
+            }
+            if (!ev.content.empty()) {
+                evObj["content"] = ev.content;
+            }
+            if (ev.totalTokens > 0) evObj["totalTokens"] = ev.totalTokens;
+            if (ev.costUsd > 0.0) evObj["costUsd"] = ev.costUsd;
+            if (!ev.rawJson.empty()) {
+                auto parsedRaw = nlohmann::json::parse(ev.rawJson, nullptr, false);
+                if (!parsedRaw.is_discarded()) {
+                    evObj["rawEvent"] = parsedRaw;
+                }
+            }
+            evArray.push_back(evObj);
+        }
+        root["streamEvents"] = evArray;
+
+        ds->rootJson = std::move(root);
+        ds->isJsonMode = true;
+        ds->showTreeView = true;
+    } else {
+        std::string trimmed = outUtf8;
+        size_t first = trimmed.find_first_not_of(" \t\r\n");
+        if (first != std::string::npos && (trimmed[first] == '{' || trimmed[first] == '[')) {
+            try {
+                auto j = nlohmann::json::parse(trimmed, nullptr, false);
+                if (!j.is_discarded() && (j.is_object() || j.is_array())) {
+                    ds->rootJson = std::move(j);
+                    ds->isJsonMode = true;
+                    ds->showTreeView = true;
+                }
+            } catch (...) {}
+        }
+    }
+
     std::wstring title = std::wstring(Tr(L"タスク詳細", L"Task Details", L"Detalles de tarea")) + L" — #" + std::to_wstring(snap.id) + L" [" + Utf8ToWide(snap.name) + L"]";
+    if (ds->isJsonMode) {
+        title += L" [JSON Tree Editor]";
+    }
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
-    int dlgW = 775;
-    int dlgH = 550;
+    int dlgW = ds->isJsonMode ? 960 : 775;
+    int dlgH = ds->isJsonMode ? 680 : 550;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
         L"ProcessCommanderTaskDetailsWnd",
+        title.c_str(),
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        x, y, dlgW, dlgH,
+        st->hwndMain, nullptr, hInst, ds
+    );
+    if (hDlg) {
+        ShowWindow(hDlg, SW_SHOW);
+        SetForegroundWindow(hDlg);
+    } else {
+        delete ds;
+    }
+}
+
+struct LlmStreamDlgState {
+    DashboardState* dash = nullptr;
+    int procId = 0;
+    ProcessSnapshot snap;
+    std::vector<LlmStreamEvent> events;
+    LlmAgentState agentState;
+    HFONT hFontUi = nullptr;
+    HFONT hFontBold = nullptr;
+    HFONT hFontMono = nullptr;
+    HWND hwndHeader = nullptr;
+    HWND hwndList = nullptr;
+    HWND hwndEditPreview = nullptr;
+    HWND hwndBtnRefresh = nullptr;
+    HWND hwndBtnOpenStream = nullptr;
+    HWND hwndBtnClose = nullptr;
+    UINT_PTR timerId = 0;
+    size_t lastEventCount = 0;
+};
+
+static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
+    if (!ds || !ds->dash || !ds->dash->pm) return;
+    ds->dash->pm->GetSnapshot(ds->procId, ds->snap);
+    ds->events.clear();
+    ds->dash->pm->GetAgentStream(ds->procId, 300, "", 0, ds->events, ds->agentState);
+
+    std::wstringstream hdr;
+    hdr << L"ID: #" << ds->snap.id << L"  |  "
+        << Utf8ToWide(ds->snap.name) << L"  |  Agent: ["
+        << Utf8ToWide(ds->snap.agentType.empty() ? "generic" : ds->snap.agentType) << L"] "
+        << StateLabelWide(ds->snap.state, ds->snap.idleMs >= 10000)
+        << L" (" << Utf8ToWide(ds->agentState.status) << L")\r\n";
+    if (!ds->agentState.currentTool.empty()) {
+        hdr << L"Tool: " << Utf8ToWide(ds->agentState.currentTool);
+        if (!ds->agentState.currentToolAction.empty()) {
+            hdr << L" (" << Utf8ToWide(ds->agentState.currentToolAction) << L")";
+        }
+        hdr << L"  |  ";
+    }
+    hdr << L"Steps: " << ds->agentState.stepCount
+        << L"  |  Events: " << ds->events.size();
+    if (ds->agentState.totalTokens > 0) {
+        hdr << L"  |  Tokens: " << ds->agentState.totalTokens;
+    }
+    if (ds->agentState.costUsd > 0.0) {
+        hdr << L"  |  Cost: $" << ds->agentState.costUsd;
+    }
+    hdr << L"\r\n";
+    if (!ds->snap.supervisorGoal.empty()) {
+        hdr << Tr(L"目標: ", L"Goal: ", L"Objetivo: ") << Utf8ToWide(ds->snap.supervisorGoal) << L"\r\n";
+    }
+    if (!ds->snap.supervisorNotes.empty()) {
+        hdr << Tr(L"メモ: ", L"Notes: ", L"Notas: ") << Utf8ToWide(ds->snap.supervisorNotes) << L"\r\n";
+    }
+    if (ds->hwndHeader) {
+        SetWindowTextW(ds->hwndHeader, hdr.str().c_str());
+    }
+
+    if (ds->hwndList && ds->lastEventCount != ds->events.size()) {
+        ds->lastEventCount = ds->events.size();
+        SendMessageW(ds->hwndList, WM_SETREDRAW, FALSE, 0);
+        ListView_DeleteAllItems(ds->hwndList);
+        for (int i = 0; i < static_cast<int>(ds->events.size()); ++i) {
+            const auto& ev = ds->events[i];
+            std::wstring seqStr = std::to_wstring(ev.seq);
+            std::wstring timeStr = Utf8ToWide(ev.timestamp);
+            std::wstring typeStr = Utf8ToWide(ev.type);
+            std::wstring toolStr = Utf8ToWide(ev.toolName);
+            std::wstring actionStr = Utf8ToWide(ev.toolAction);
+            std::string content = ev.content;
+            if (content.empty() && !ev.toolInput.empty()) content = ev.toolInput;
+            std::wstring contentStr = Utf8ToWide(content);
+            if (contentStr.size() > 100) contentStr = contentStr.substr(0, 97) + L"...";
+
+            LVITEMW lvi = {};
+            lvi.mask = LVIF_TEXT | LVIF_PARAM;
+            lvi.iItem = i;
+            lvi.iSubItem = 0;
+            lvi.pszText = seqStr.data();
+            lvi.lParam = i;
+            ListView_InsertItem(ds->hwndList, &lvi);
+            ListView_SetItemText(ds->hwndList, i, 1, timeStr.data());
+            ListView_SetItemText(ds->hwndList, i, 2, typeStr.data());
+            ListView_SetItemText(ds->hwndList, i, 3, toolStr.data());
+            ListView_SetItemText(ds->hwndList, i, 4, actionStr.data());
+            ListView_SetItemText(ds->hwndList, i, 5, contentStr.data());
+        }
+        SendMessageW(ds->hwndList, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(ds->hwndList, nullptr, FALSE);
+        if (!ds->events.empty()) {
+            int lastIdx = static_cast<int>(ds->events.size()) - 1;
+            ListView_EnsureVisible(ds->hwndList, lastIdx, FALSE);
+        }
+    }
+}
+
+static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ds = reinterpret_cast<LlmStreamDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            ds = reinterpret_cast<LlmStreamDlgState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+
+            ds->hFontMono = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                        FIXED_PITCH | FF_MODERN, L"Consolas");
+
+            ds->hwndHeader = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                12, 12, 820, 75, hwnd, (HMENU)2100, nullptr, nullptr);
+
+            ds->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+                12, 95, 820, 260, hwnd, (HMENU)2101, nullptr, nullptr);
+            ListView_SetExtendedListViewStyle(ds->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            ListView_SetBkColor(ds->hwndList, g_theme.panel);
+            ListView_SetTextBkColor(ds->hwndList, g_theme.panel);
+            ListView_SetTextColor(ds->hwndList, g_theme.listText);
+
+            const wchar_t* colTitles[] = {
+                Tr(L"#", L"#", L"#"),
+                Tr(L"時刻", L"Time", L"Hora"),
+                Tr(L"種別", L"Type", L"Tipo"),
+                Tr(L"ツール", L"Tool", L"Herramienta"),
+                Tr(L"アクション", L"Action", L"Acción"),
+                Tr(L"内容 / サマリ", L"Content / Summary", L"Contenido")
+            };
+            const int colWidths[] = {55, 90, 85, 120, 160, 320};
+            for (int i = 0; i < 6; ++i) {
+                LVCOLUMNW lvc = {};
+                lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                lvc.pszText = const_cast<wchar_t*>(colTitles[i]);
+                lvc.cx = colWidths[i];
+                lvc.iSubItem = i;
+                ListView_InsertColumn(ds->hwndList, i, &lvc);
+            }
+
+            ds->hwndEditPreview = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+                12, 365, 820, 180, hwnd, (HMENU)2102, nullptr, nullptr);
+
+            ds->hwndBtnRefresh = CreateWindowExW(0, L"BUTTON", Tr(L"更新", L"Refresh", L"Actualizar"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 12, 555, 130, 30, hwnd, (HMENU)2103, nullptr, nullptr);
+            ds->hwndBtnOpenStream = CreateWindowExW(0, L"BUTTON", Tr(L"ストリームファイル (jsonl) を開く", L"Open Stream File (jsonl)", L"Abrir jsonl"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 150, 555, 260, 30, hwnd, (HMENU)2104, nullptr, nullptr);
+            ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる", L"Close", L"Cerrar"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 702, 555, 110, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
+
+            if (ds->hFontUi) {
+                SendMessageW(ds->hwndHeader, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+                SendMessageW(ds->hwndList, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+                SendMessageW(ds->hwndBtnRefresh, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+                SendMessageW(ds->hwndBtnOpenStream, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+                SendMessageW(ds->hwndBtnClose, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+            }
+            if (ds->hFontMono) {
+                SendMessageW(ds->hwndEditPreview, WM_SETFONT, (WPARAM)ds->hFontMono, TRUE);
+            }
+
+            ApplyNativeThemeToWindow(hwnd);
+            ReloadStreamDialogData(hwnd, ds);
+            ds->timerId = SetTimer(hwnd, 1, 1000, nullptr);
+            return 0;
+        }
+        case WM_TIMER: {
+            if (ds) {
+                ReloadStreamDialogData(hwnd, ds);
+            }
+            return 0;
+        }
+        case WM_NOTIFY: {
+            auto* pnmh = reinterpret_cast<NMHDR*>(lParam);
+            if (ds && pnmh && pnmh->hwndFrom == ds->hwndList) {
+                if (pnmh->code == LVN_ITEMCHANGED) {
+                    auto* pnmlv = reinterpret_cast<NMLISTVIEW*>(lParam);
+                    if ((pnmlv->uNewState & LVIS_SELECTED) && pnmlv->iItem >= 0 &&
+                        pnmlv->iItem < static_cast<int>(ds->events.size())) {
+                        const auto& ev = ds->events[pnmlv->iItem];
+                        std::wstringstream detail;
+                        detail << L"=== Event #" << ev.seq << L" [" << Utf8ToWide(ev.type) << L"] ===\r\n"
+                               << L"Timestamp : " << Utf8ToWide(ev.timestamp) << L"\r\n"
+                               << L"Agent     : " << Utf8ToWide(ev.agentType) << L"\r\n";
+                        if (!ev.toolName.empty()) {
+                            detail << L"Tool      : " << Utf8ToWide(ev.toolName) << L"\r\n";
+                        }
+                        if (!ev.toolAction.empty()) {
+                            detail << L"Action    : " << Utf8ToWide(ev.toolAction) << L"\r\n";
+                        }
+                        if (!ev.toolInput.empty()) {
+                            detail << L"Input     : " << Utf8ToWide(ev.toolInput) << L"\r\n";
+                        }
+                        if (!ev.content.empty()) {
+                            detail << L"Content   :\r\n" << Utf8ToWide(ev.content) << L"\r\n";
+                        }
+                        if (ev.totalTokens > 0) {
+                            detail << L"Tokens    : " << ev.totalTokens << L"\r\n";
+                        }
+                        detail << L"\r\n=== Raw JSON ===\r\n"
+                               << Utf8ToWide(ev.rawJson) << L"\r\n";
+                        SetWindowTextW(ds->hwndEditPreview, detail.str().c_str());
+                    }
+                }
+            }
+            break;
+        }
+        case WM_SIZE: {
+            if (!ds) return 0;
+            int w = LOWORD(lParam);
+            int h = HIWORD(lParam);
+            int pad = 12;
+            int availW = (std::max)(200, w - pad * 2);
+            int hdrH = 75;
+            MoveWindow(ds->hwndHeader, pad, pad, availW, hdrH, TRUE);
+            int btnY = (std::max)(250, h - 38);
+            int middleH = btnY - (pad + hdrH + pad) - pad;
+            int listH = (std::max)(80, middleH * 55 / 100);
+            int editH = (std::max)(60, middleH - listH - 6);
+            MoveWindow(ds->hwndList, pad, pad + hdrH + 6, availW, listH, TRUE);
+            MoveWindow(ds->hwndEditPreview, pad, pad + hdrH + 6 + listH + 6, availW, editH, TRUE);
+            MoveWindow(ds->hwndBtnRefresh, pad, btnY, 130, 30, TRUE);
+            MoveWindow(ds->hwndBtnOpenStream, pad + 140, btnY, 260, 30, TRUE);
+            MoveWindow(ds->hwndBtnClose, (std::max)(pad + 410, w - pad - 110), btnY, 110, 30, TRUE);
+            return 0;
+        }
+        case WM_COMMAND: {
+            int id = LOWORD(wParam);
+            if (id == 2103 && ds) {
+                ReloadStreamDialogData(hwnd, ds);
+            } else if (id == 2104 && ds) {
+                if (!ds->snap.streamFilePath.empty()) {
+                    std::wstring streamW = Utf8ToWide(ds->snap.streamFilePath);
+                    ShellExecuteW(hwnd, L"open", L"notepad.exe", streamW.c_str(), nullptr, SW_SHOWNORMAL);
+                }
+            } else if (id == IDOK || id == IDCANCEL) {
+                DestroyWindow(hwnd);
+            }
+            return 0;
+        }
+        case WM_DRAWITEM: {
+            auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!dis || !ds) break;
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bg = pressed ? g_theme.border : g_theme.panel;
+            HBRUSH bgBrush = CreateSolidBrush(bg);
+            FillRect(dis->hDC, &dis->rcItem, bgBrush);
+            DeleteObject(bgBrush);
+            HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+            HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+            HGDIOBJ oldBrush = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+            SelectObject(dis->hDC, oldBrush);
+            SelectObject(dis->hDC, oldPen);
+            DeleteObject(borderPen);
+            wchar_t text[256] = {};
+            GetWindowTextW(dis->hwndItem, text, 256);
+            RECT rc = dis->rcItem;
+            InflateRect(&rc, -4, 0);
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, g_theme.text);
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, ds->hFontUi));
+            DrawTextW(dis->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dis->hDC, oldFont);
+            return TRUE;
+        }
+        case WM_ERASEBKGND: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            RECT rc = {};
+            GetClientRect(hwnd, &rc);
+            FillRect(hdc, &rc, g_dialogBgBrush);
+            return 1;
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(hdc, g_theme.text);
+            SetBkColor(hdc, g_theme.panel);
+            return reinterpret_cast<LRESULT>(g_dialogBgBrush);
+        }
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_NCDESTROY:
+            if (ds) {
+                if (ds->timerId) KillTimer(hwnd, ds->timerId);
+                if (ds->hFontMono) DeleteObject(ds->hFontMono);
+                delete ds;
+            }
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void ShowLlmStreamDialog(DashboardState* st, int procId) {
+    if (!st || !st->pm || procId <= 0) return;
+    ProcessSnapshot snap;
+    if (!st->pm->GetSnapshot(procId, snap)) return;
+
+    static bool regDone = false;
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    if (!regDone) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = LlmStreamWndProc;
+        wc.hInstance = hInst;
+        wc.hIcon = LoadIconW(nullptr, IDI_INFORMATION);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"ProcessCommanderLlmStreamWnd";
+        RegisterClassExW(&wc);
+        regDone = true;
+    }
+
+    auto* ds = new LlmStreamDlgState();
+    ds->dash = st;
+    ds->procId = procId;
+    ds->snap = snap;
+    ds->hFontUi = st->hFontUi;
+    ds->hFontBold = st->hFontUiBold;
+
+    std::wstring title = std::wstring(Tr(L"LLM JSON ストリーム・イベント表示", L"LLM JSON Stream & Events", L"Flujo de eventos JSON de LLM"))
+        + L" — #" + std::to_wstring(snap.id) + L" [" + Utf8ToWide(snap.name) + L"]";
+    if (!snap.agentType.empty()) {
+        title += L" (" + Utf8ToWide(snap.agentType) + L")";
+    }
+
+    RECT rcParent = {};
+    GetWindowRect(st->hwndMain, &rcParent);
+    int dlgW = 860;
+    int dlgH = 620;
+    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
+    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
+
+    HWND hDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"ProcessCommanderLlmStreamWnd",
         title.c_str(),
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         x, y, dlgW, dlgH,
@@ -2009,9 +3034,13 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
 
     HMENU hMenu = CreatePopupMenu();
     AppendMenuW(hMenu, MF_STRING, 3001, Tr(L"詳細を表示 (タスク詳細・コマンドライン)...", L"Task Details & Command Line...", L"Detalles de tarea y línea de comandos..."));
+    AppendMenuW(hMenu, MF_STRING, 3007, Tr(L"LLM JSON ストリーム・イベント表示...", L"LLM JSON Stream Events...", L"Eventos de flujo JSON de LLM..."));
     AppendMenuW(hMenu, MF_STRING, 3002, Tr(L"コマンドラインをコピー", L"Copy Command Line", L"Copiar línea de comandos"));
     if (!snap.logFilePath.empty()) {
         AppendMenuW(hMenu, MF_STRING, 3003, Tr(L"ログファイルを開く", L"Open Log File", L"Abrir archivo de registro"));
+    }
+    if (!snap.streamFilePath.empty()) {
+        AppendMenuW(hMenu, MF_STRING, 3008, Tr(L"ストリームファイル (jsonl) を開く", L"Open Stream File (jsonl)", L"Abrir archivo de flujo (jsonl)"));
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     if (snap.state == ProcState::Running) {
@@ -2026,6 +3055,11 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
 
     if (cmd == 3001) {
         ShowTaskDetailsDialog(st, procId);
+    } else if (cmd == 3007) {
+        ShowLlmStreamDialog(st, procId);
+    } else if (cmd == 3008) {
+        std::wstring streamW = Utf8ToWide(snap.streamFilePath);
+        ShellExecuteW(st->hwndMain, L"open", L"notepad.exe", streamW.c_str(), nullptr, SW_SHOWNORMAL);
     } else if (cmd == 3002) {
         CopyTextToClipboard(st->hwndMain, Utf8ToWide(snap.commandLine));
     } else if (cmd == 3003) {
@@ -2082,6 +3116,14 @@ static void LoadShellConfig(DashboardState* st) {
     st->completionSoundPath = JsonGetString(content, "completion_sound_path", "");
     int listH = static_cast<int>(JsonGetInt(content, "process_list_height", st->processListHeight));
     if (listH >= kMinListH && listH <= 4000) st->processListHeight = listH;
+    int modeVal = static_cast<int>(JsonGetInt(content, "list_display_mode", static_cast<int64_t>(ListDisplayMode::TwoRows)));
+    if (modeVal >= 0 && modeVal <= 2) {
+        st->listDisplayMode = static_cast<ListDisplayMode>(modeVal);
+    }
+    int ratioPct = static_cast<int>(JsonGetInt(content, "proc_row_ratio", 50));
+    if (ratioPct >= 15 && ratioPct <= 85) {
+        st->procRowRatio = ratioPct / 100.0f;
+    }
     std::string langCode = JsonGetString(content, "language", "");
     if (!langCode.empty()) g_uiLanguage = ParseLanguage(langCode);
     std::string themeCode = JsonGetString(content, "theme", "");
@@ -2107,6 +3149,8 @@ static void SaveShellConfig(const DashboardState* st) {
        << "  \"completion_sound_enabled\": " << (st->completionSoundEnabled ? "true" : "false") << ",\n"
        << "  \"completion_sound_path\": \"" << JsonEscape(st->completionSoundPath) << "\",\n"
        << "  \"process_list_height\": " << st->processListHeight << ",\n"
+       << "  \"list_display_mode\": " << static_cast<int>(st->listDisplayMode) << ",\n"
+       << "  \"proc_row_ratio\": " << static_cast<int>(st->procRowRatio * 100.0f + 0.5f) << ",\n"
        << "  \"language\": \"" << LanguageCode(g_uiLanguage) << "\",\n"
        << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\"\n"
        << "}\n";
@@ -2166,10 +3210,15 @@ static void UpdateToolbarLabels(DashboardState* st) {
     UpdatePanelToggleLabels(st);
     if (st->hwndBtnHideTray)
         SetWindowTextW(st->hwndBtnHideTray, Tr(L"トレイに格納", L"Tray", L"Bandeja"));
-    if (st->hwndBtnViewTasks)
-        SetWindowTextW(st->hwndBtnViewTasks, st->showTaskQueue
-            ? Tr(L"プロセスを表示", L"Show Processes", L"Ver procesos")
-            : Tr(L"タスクキューを表示", L"Show Task Queue", L"Ver cola de tareas"));
+    if (st->hwndBtnViewTasks) {
+        const wchar_t* btnLabel = Tr(L"表示: 2行 (上下)", L"View: 2 Rows", L"Vista: 2 Filas");
+        if (st->listDisplayMode == ListDisplayMode::ProcessOnly) {
+            btnLabel = Tr(L"表示: プロセス", L"View: Process Only", L"Vista: Solo Proc");
+        } else if (st->listDisplayMode == ListDisplayMode::TaskOnly) {
+            btnLabel = Tr(L"表示: タスク", L"View: Task Only", L"Vista: Solo Tareas");
+        }
+        SetWindowTextW(st->hwndBtnViewTasks, btnLabel);
+    }
 }
 
 static void ApplyLanguageToUi(DashboardState* st) {
@@ -2985,7 +4034,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ListView_SetExtendedListViewStyle(st->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
             ApplyListTheme(st);
 
-            const int colWidths[13] = {56, 115, 125, 145, 135, 110, 95, 80, 80, 60, 250, 250, 120};
+            const int colWidths[13] = {56, 115, 125, 145, 165, 110, 95, 80, 80, 80, 250, 250, 120};
             for (int i = 0; i < 13; ++i) {
                 LVCOLUMNW lvc = {};
                 lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
@@ -3023,13 +4072,13 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     Tr(L"サマリ", L"Summary", L"Resumen"),
                     Tr(L"状態", L"State", L"Estado"),
                     Tr(L"開始時刻", L"Start", L"Inicio"),
-                    Tr(L"終了（見込み）", L"End (est.)", L"Fin (est.)"),
+                    Tr(L"終了 / 残り時間", L"End / Left", L"Fin / Restante"),
                     Tr(L"試行上限", L"Max Attempts", L"Intentos"),
                     Tr(L"タイムアウト", L"Timeout", L"Tiempo limite"),
                     Tr(L"依存 / 理由", L"Depends / Reason", L"Dependencias"),
                     Tr(L"キュー", L"Queue", L"Cola")
                 };
-                const int taskWidths[9] = {90, 400, 100, 100, 115, 90, 100, 190, 110};
+                const int taskWidths[9] = {90, 350, 100, 100, 165, 90, 100, 190, 110};
                 for (int i = 0; i < 9; ++i) {
                     LVCOLUMNW lvc = {};
                     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
@@ -3067,7 +4116,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 SetWindowPos(st->hwndKpiTip, HWND_TOPMOST, 0, 0, 0, 0,
                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 SendMessageW(st->hwndKpiTip, TTM_SETMAXTIPWIDTH, 0, 420);
-                for (int i = 0; i < 6; ++i) {
+                for (int i = 0; i < kNumKpiCards; ++i) {
                     TOOLINFOW ti = {};
                     ti.cbSize = sizeof(ti);
                     ti.uFlags = TTF_SUBCLASS;
@@ -3164,6 +4213,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     g_kpiBarPhase += 0.05f;
                     if (g_kpiBarPhase >= 1.0f) g_kpiBarPhase -= 1.0f;
                     InvalidateRect(hwnd, &st->kpiCardRects[1], FALSE);
+                    InvalidateRect(hwnd, &st->kpiCardRects[8], FALSE);
                 }
             }
             return 0;
@@ -3185,7 +4235,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 POINT pt = {};
                 GetCursorPos(&pt);
                 ScreenToClient(hwnd, &pt);
-                if (PtInRect(&st->rcSplitter, pt)) {
+                if ((st->rcRowsSplitter.bottom > st->rcRowsSplitter.top && PtInRect(&st->rcRowsSplitter, pt)) ||
+                    (st->rcSplitter.bottom > st->rcSplitter.top && PtInRect(&st->rcSplitter, pt))) {
                     SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
                     return TRUE;
                 }
@@ -3196,7 +4247,13 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         case WM_LBUTTONDOWN: {
             if (st) {
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-                if (PtInRect(&st->rcSplitter, pt)) {
+                if (st->rcRowsSplitter.bottom > st->rcRowsSplitter.top && PtInRect(&st->rcRowsSplitter, pt)) {
+                    st->rowsSplitterDragging = true;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, &st->rcRowsSplitter, FALSE);
+                    return 0;
+                }
+                if (st->rcSplitter.bottom > st->rcSplitter.top && PtInRect(&st->rcSplitter, pt)) {
                     st->splitterDragging = true;
                     SetCapture(hwnd);
                     InvalidateRect(hwnd, &st->rcSplitter, FALSE);
@@ -3218,6 +4275,19 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         }
 
         case WM_MOUSEMOVE: {
+            if (st && st->rowsSplitterDragging) {
+                POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                if (st->lastTotalListHeight > kMinRowListH * 2) {
+                    int relY = pt.y - st->processListTop;
+                    float ratio = static_cast<float>(relY) / static_cast<float>(st->lastTotalListHeight);
+                    st->procRowRatio = (std::clamp)(ratio, 0.15f, 0.85f);
+                    RECT rcClient = {};
+                    GetClientRect(hwnd, &rcClient);
+                    LayoutControls(st, rcClient.right, rcClient.bottom);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
             if (st && st->splitterDragging) {
                 POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 st->processListHeight = pt.y - st->processListTop;
@@ -3231,6 +4301,13 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         }
 
         case WM_LBUTTONUP: {
+            if (st && st->rowsSplitterDragging) {
+                st->rowsSplitterDragging = false;
+                if (GetCapture() == hwnd) ReleaseCapture();
+                SaveShellConfig(st);
+                InvalidateRect(hwnd, &st->rcRowsSplitter, FALSE);
+                return 0;
+            }
             if (st && st->splitterDragging) {
                 st->splitterDragging = false;
                 if (GetCapture() == hwnd) ReleaseCapture();
@@ -3242,7 +4319,10 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         }
 
         case WM_CAPTURECHANGED: {
-            if (st) st->splitterDragging = false;
+            if (st) {
+                st->splitterDragging = false;
+                st->rowsSplitterDragging = false;
+            }
             break;
         }
 
@@ -3377,8 +4457,19 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 SaveShellConfig(st);
                 RefreshDashboardData(st);
             } else if (id == IDC_BTN_VIEW_TASKS) {
-                st->showTaskQueue = !st->showTaskQueue;
+                if (st->listDisplayMode == ListDisplayMode::TwoRows) {
+                    st->listDisplayMode = ListDisplayMode::ProcessOnly;
+                } else if (st->listDisplayMode == ListDisplayMode::ProcessOnly) {
+                    st->listDisplayMode = ListDisplayMode::TaskOnly;
+                } else {
+                    st->listDisplayMode = ListDisplayMode::TwoRows;
+                }
+                if (st->hideProcessList) {
+                    st->hideProcessList = false;
+                    UpdatePanelToggleLabels(st);
+                }
                 UpdateToolbarLabels(st);
+                SaveShellConfig(st);
                 RECT rcClient = {};
                 GetClientRect(hwnd, &rcClient);
                 LayoutControls(st, rcClient.right, rcClient.bottom);

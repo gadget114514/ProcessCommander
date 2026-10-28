@@ -164,9 +164,40 @@ int RunMcpServer() {
                 << "\"timeout_sec\":{\"type\":\"integer\",\"description\":\"Max runtime timeout in seconds (0 = unlimited)\"},"
                 << "\"idle_timeout_sec\":{\"type\":\"integer\",\"description\":\"Auto-kill if no output for N seconds (0 = unlimited)\"},"
                 << "\"estimate_end\":{\"type\":\"string\",\"description\":\"Optional estimated end time shown in gray in the End Time column while running (e.g. '18:30' or '2026-10-22 18:30:00'). If omitted, timeout_sec makes the column show remaining seconds.\"},"
+                << "\"agent_type\":{\"type\":\"string\",\"description\":\"LLM agent type: 'claude', 'agy', 'opencode', or 'auto' (default: auto-detected from command/name)\"},"
+                << "\"json_stream\":{\"type\":\"boolean\",\"description\":\"Enable JSON stream parser and event log (automatically enabled when agent_type is detected or set)\"},"
+                << "\"supervisor_notes\":{\"type\":\"string\",\"description\":\"Notes or context provided by the supervisor LLM for this worker agent\"},"
+                << "\"supervisor_goal\":{\"type\":\"string\",\"description\":\"High-level goal or instruction provided by the supervisor LLM for this worker agent\"},"
                 << "\"wait\":{\"type\":\"boolean\",\"description\":\"Wait until the process exits before returning (blocking completion notification)\"},"
                 << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"With wait=true: maximum wait in ms (0 = unlimited). With wait=false: initial output wait. Default: 500.\"}"
                 << "},\"required\":[\"cmd\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"get_agent_stream\","
+                << "\"description\":\"Read structured JSON streaming events (tools called, arguments, reasoning/thoughts, assistant responses, status) emitted by Claude, agy, or OpenCode worker agents. Events are automatically captured and saved to logs/proc_<id>_<name>_stream.jsonl.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID of the agent\"},"
+                << "\"tail\":{\"type\":\"integer\",\"description\":\"Number of recent events to return (default 50, 0 = all)\"},"
+                << "\"type\":{\"type\":\"string\",\"description\":\"Filter by event type: 'tool_call', 'tool_result', 'thinking', 'message', 'status', 'step', 'error', 'usage'\"},"
+                << "\"since_seq\":{\"type\":\"integer\",\"description\":\"Return only events with sequence number greater than since_seq\"},"
+                << "\"format\":{\"type\":\"string\",\"enum\":[\"json\",\"summary\"],\"description\":\"Return format: 'json' (structured events array, default) or 'summary' (compact text summary)\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"get_agent_state\","
+                << "\"description\":\"Get current live state of an LLM agent process, including active tool, current tool action, thinking status, last thoughts, assistant message, token usage, supervisor notes and goal.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID of the agent\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"update_agent_info\","
+                << "\"description\":\"Update supervisor instructions, notes, or goals for an ongoing or queued LLM worker agent process.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID of the agent\"},"
+                << "\"supervisor_notes\":{\"type\":\"string\",\"description\":\"Supervisor notes/context for the worker agent\"},"
+                << "\"supervisor_goal\":{\"type\":\"string\",\"description\":\"Supervisor goal for the worker agent\"}"
+                << "},\"required\":[\"id\"]}"
                 << "},"
                 << "{"
                 << "\"name\":\"list_processes\","
@@ -347,6 +378,10 @@ int RunMcpServer() {
                 int64_t timeoutSec = JsonGetInt(argsJson, "timeout_sec", 0);
                 int64_t idleTimeoutSec = JsonGetInt(argsJson, "idle_timeout_sec", 0);
                 std::string estimateEnd = JsonGetString(argsJson, "estimate_end", "");
+                std::string agentType = JsonGetString(argsJson, "agent_type", "");
+                bool jsonStream = JsonGetBool(argsJson, "json_stream", false);
+                std::string supervisorNotes = JsonGetString(argsJson, "supervisor_notes", "");
+                std::string supervisorGoal = JsonGetString(argsJson, "supervisor_goal", "");
                 bool wait = JsonGetBool(argsJson, "wait", false);
                 int64_t waitMs = JsonGetInt(argsJson, "wait_ms", -1);
                 if (waitMs < 0) {
@@ -364,8 +399,39 @@ int RunMcpServer() {
                        << ",\"timeout_sec\":" << timeoutSec
                        << ",\"idle_timeout_sec\":" << idleTimeoutSec
                        << ",\"estimate_end\":\"" << JsonEscape(estimateEnd) << "\""
+                       << ",\"agent_type\":\"" << JsonEscape(agentType) << "\""
+                       << ",\"json_stream\":" << (jsonStream ? "true" : "false")
+                       << ",\"supervisor_notes\":\"" << JsonEscape(supervisorNotes) << "\""
+                       << ",\"supervisor_goal\":\"" << JsonEscape(supervisorGoal) << "\""
                        << ",\"wait\":" << (wait ? "true" : "false")
                        << ",\"wait_ms\":" << waitMs << "}";
+            }
+            else if (toolName == "get_agent_stream") {
+                int64_t id = JsonGetInt(argsJson, "id", 0);
+                int64_t tail = JsonGetInt(argsJson, "tail", 50);
+                std::string typeFilter = JsonGetString(argsJson, "type", "");
+                if (typeFilter.empty()) typeFilter = JsonGetString(argsJson, "filter", "");
+                int64_t sinceSeq = JsonGetInt(argsJson, "since_seq", 0);
+                std::string format = JsonGetString(argsJson, "format", "json");
+                ipcReq << "{\"action\":\"get_agent_stream\",\"id\":" << id
+                       << ",\"tail\":" << tail
+                       << ",\"type\":\"" << JsonEscape(typeFilter) << "\""
+                       << ",\"since_seq\":" << sinceSeq
+                       << ",\"format\":\"" << JsonEscape(format) << "\"}";
+            }
+            else if (toolName == "get_agent_state") {
+                int64_t id = JsonGetInt(argsJson, "id", 0);
+                ipcReq << "{\"action\":\"get_agent_state\",\"id\":" << id << "}";
+            }
+            else if (toolName == "update_agent_info") {
+                int64_t id = JsonGetInt(argsJson, "id", 0);
+                std::string notes = JsonGetString(argsJson, "supervisor_notes", "");
+                if (notes.empty()) notes = JsonGetString(argsJson, "notes", "");
+                std::string goal = JsonGetString(argsJson, "supervisor_goal", "");
+                if (goal.empty()) goal = JsonGetString(argsJson, "goal", "");
+                ipcReq << "{\"action\":\"update_agent_info\",\"id\":" << id
+                       << ",\"supervisor_notes\":\"" << JsonEscape(notes) << "\""
+                       << ",\"supervisor_goal\":\"" << JsonEscape(goal) << "\"}";
             }
             else if (toolName == "list_processes") {
                 int64_t id = JsonGetInt(argsJson, "id", 0);

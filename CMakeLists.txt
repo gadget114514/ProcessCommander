@@ -16,6 +16,7 @@ add_executable(ProcessCommander
     src/ipc_client.cpp
     src/cli.cpp
     src/mcp_server.cpp
+    src/llm_stream.cpp
     src/gui_dashboard.cpp
     src/app.rc
     src/Terminal/src/ConPtySession.cpp
@@ -100,6 +101,7 @@ add_executable(taskqueue_smoke
     src/taskqueue.cpp
     src/chain_guard.cpp
     src/process_manager.cpp
+    src/llm_stream.cpp
     src/common.cpp
     src/Terminal/src/ConPtySession.cpp
     src/Terminal/src/ImageManager.cpp

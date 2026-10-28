@@ -27,6 +27,18 @@ enum class TaskQueueState {
 std::string TaskQueueStateToString(TaskQueueState state);
 TaskQueueState TaskQueueStateFromString(const std::string& s);
 
+struct TaskQueueCounts {
+    int running = 0;
+    int waiting = 0;   // Ready to run (state == "pending", dependencies satisfied)
+    int pending = 0;   // Waiting for dependencies (state == "pending", dependencies not satisfied)
+    int blocked = 0;
+    int succeeded = 0;
+    int failed = 0;
+    int cancelled = 0;
+    int total = 0;
+    int64_t minRemainingSec = -1;
+};
+
 // ---------------------------------------------------------------------------
 // TaskQueue data model
 // ---------------------------------------------------------------------------
@@ -143,6 +155,8 @@ public:
     void ShutdownTaskQueueManager();
 
     int64_t GetTaskQueueVersion(const std::string& taskqueue) const;
+
+    TaskQueueCounts GetJobCounts() const;
 
     // Returns true and fills outJobId when an unfinished job (pending/running/
     // blocked/failed) uses exactly the given command.

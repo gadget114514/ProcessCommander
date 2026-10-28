@@ -234,6 +234,9 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
             if (!logPathW.empty() && !cleanChunk.empty()) {
                 AppendToLogFileWide(logPathW, cleanChunk);
             }
+            if (sp->streamTracker && !cleanChunk.empty()) {
+                sp->streamTracker->IngestChunk(cleanChunk.data(), cleanChunk.size());
+            }
         };
 
         if (createTerminalCb_) {
@@ -406,6 +409,21 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
             DeleteFileW(proc->doneFilePathWide.c_str());
         }
 
+        std::string detectedAgent = req.agentType;
+        if (detectedAgent.empty() || detectedAgent == "auto") {
+            detectedAgent = DetectAgentType(proc->commandLine, proc->name);
+        }
+        proc->agentType = detectedAgent;
+        proc->jsonStream = req.jsonStream || (!detectedAgent.empty());
+        proc->supervisorNotes = req.supervisorNotes;
+        proc->supervisorGoal = req.supervisorGoal;
+
+        if (proc->jsonStream) {
+            std::wstring streamPathW = logsDirW + L"\\proc_" + std::to_wstring(proc->id) + L"_" + Utf8ToWide(safeName) + L"_stream.jsonl";
+            proc->streamTracker = std::make_unique<LlmStreamTracker>();
+            proc->streamTracker->Init(proc->id, proc->agentType, WideToUtf8(streamPathW), proc->supervisorNotes, proc->supervisorGoal);
+        }
+
         {
             std::ostringstream hdr;
             hdr << "================================================================================\r\n"
@@ -491,6 +509,9 @@ void ProcessManager::ReaderThreadFunc(std::shared_ptr<ManagedProcess> proc) {
         }
         if (!logPathW.empty() && !cleanChunk.empty()) {
             AppendToLogFileWide(logPathW, cleanChunk);
+        }
+        if (proc->streamTracker && !cleanChunk.empty()) {
+            proc->streamTracker->IngestChunk(cleanChunk.data(), cleanChunk.size());
         }
     }
 }
@@ -1033,6 +1054,34 @@ ProcessSnapshot ProcessManager::BuildSnapshot(ProcessManager::ManagedProcess& p,
             snap.lastLinePreview = termLast;
         }
     }
+
+    snap.agentType = p.agentType;
+    snap.supervisorNotes = p.supervisorNotes;
+    snap.supervisorGoal = p.supervisorGoal;
+    snap.agentStatus = "idle";
+    if (p.streamTracker) {
+        LlmAgentState ast = p.streamTracker->GetState();
+        snap.agentStatus = ast.status;
+        snap.currentTool = ast.currentTool;
+        snap.currentToolAction = ast.currentToolAction;
+        snap.lastThought = ast.lastThought;
+        snap.lastMessage = ast.lastMessage;
+        snap.stepCount = ast.stepCount;
+        snap.streamEventCount = ast.eventCount;
+        snap.streamFilePath = ast.streamFilePath;
+        if (!snap.currentTool.empty()) {
+            std::string toolDesc = "Tool: " + snap.currentTool;
+            if (!snap.currentToolAction.empty()) {
+                toolDesc += " (" + snap.currentToolAction + ")";
+            }
+            snap.lastLinePreview = toolDesc;
+        } else if (!snap.lastMessage.empty()) {
+            snap.lastLinePreview = snap.lastMessage;
+        } else if (!snap.lastThought.empty()) {
+            snap.lastLinePreview = "Thinking: " + snap.lastThought;
+        }
+    }
+
     return snap;
 }
 
@@ -1113,6 +1162,79 @@ bool ProcessManager::GetOutput(int id, bool stripAnsi, int tailLines, std::strin
     return true;
 }
 
+bool ProcessManager::GetAgentStream(int id, int tail, const std::string& typeFilter, uint64_t sinceSeq,
+                                    std::vector<LlmStreamEvent>& outEvents, LlmAgentState& outState) {
+    std::shared_ptr<ManagedProcess> proc;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& p : processes_) {
+            if (p->id == id) {
+                proc = p;
+                break;
+            }
+        }
+    }
+    if (!proc) return false;
+
+    if (proc->streamTracker) {
+        outEvents = proc->streamTracker->GetEvents(tail, typeFilter, sinceSeq);
+        outState = proc->streamTracker->GetState();
+        return true;
+    }
+
+    std::wstring logsDirW = GetLogsDirectoryWide();
+    std::string safeName = SanitizeFileNameComponent(proc->name);
+    std::wstring streamPathW = logsDirW + L"\\proc_" + std::to_wstring(proc->id) + L"_" + Utf8ToWide(safeName) + L"_stream.jsonl";
+    std::string content = ReadFileUtf8Wide(streamPathW);
+    if (!content.empty()) {
+        std::istringstream iss(content);
+        std::string line;
+        uint64_t seq = 1;
+        while (std::getline(iss, line)) {
+            if (line.empty()) continue;
+            LlmStreamEvent ev;
+            if (ParseLlmStreamLine(line, proc->agentType, ev)) {
+                ev.seq = seq++;
+                if (ev.seq > sinceSeq && (typeFilter.empty() || ev.type == typeFilter)) {
+                    outEvents.push_back(ev);
+                }
+            }
+        }
+        if (tail > 0 && outEvents.size() > static_cast<size_t>(tail)) {
+            outEvents.erase(outEvents.begin(), outEvents.end() - tail);
+        }
+        outState.agentType = proc->agentType;
+        outState.streamFilePath = WideToUtf8(streamPathW);
+        outState.eventCount = static_cast<int>(seq - 1);
+        outState.status = (proc->state.load() == ProcState::Running) ? "idle" : "completed";
+        return true;
+    }
+    return false;
+}
+
+bool ProcessManager::UpdateAgentInfo(int id, const std::string& notes, const std::string& goal) {
+    std::shared_ptr<ManagedProcess> proc;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& p : processes_) {
+            if (p->id == id) {
+                proc = p;
+                break;
+            }
+        }
+    }
+    if (!proc) return false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!notes.empty()) proc->supervisorNotes = notes;
+        if (!goal.empty()) proc->supervisorGoal = goal;
+    }
+    if (proc->streamTracker) {
+        proc->streamTracker->UpdateSupervisorInfo(notes, goal);
+    }
+    return true;
+}
+
 bool ProcessManager::WaitForExit(int id, uint32_t maxWaitMs) {
     uint64_t start = GetNowTickMs();
     while (true) {
@@ -1163,7 +1285,10 @@ void ProcessManager::SaveState() {
             << "\"last_line\":\"" << JsonEscape(s.lastLinePreview) << "\","
             << "\"job_key\":\"" << JsonEscape(s.jobKey) << "\","
             << "\"job_id\":" << s.jobId << ","
-            << "\"attempt_n\":" << s.attemptN
+            << "\"attempt_n\":" << s.attemptN << ","
+            << "\"agent_type\":\"" << JsonEscape(s.agentType) << "\","
+            << "\"supervisor_notes\":\"" << JsonEscape(s.supervisorNotes) << "\","
+            << "\"supervisor_goal\":\"" << JsonEscape(s.supervisorGoal) << "\""
             << "}" << (i + 1 < snaps.size() ? "," : "") << "\r\n";
     }
     oss << "  ]\r\n}\r\n";
@@ -1251,6 +1376,9 @@ void ProcessManager::LoadState() {
         proc->jobKey = JsonGetString(itemJson, "job_key", "");
         proc->jobId = static_cast<int>(JsonGetInt(itemJson, "job_id", 0));
         proc->attemptN = static_cast<int>(JsonGetInt(itemJson, "attempt_n", 0));
+        proc->agentType = JsonGetString(itemJson, "agent_type", "");
+        proc->supervisorNotes = JsonGetString(itemJson, "supervisor_notes", "");
+        proc->supervisorGoal = JsonGetString(itemJson, "supervisor_goal", "");
 
         processes_.push_back(proc);
     }

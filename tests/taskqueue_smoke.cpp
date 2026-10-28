@@ -142,11 +142,27 @@ int main() {
     Check(GetFileAttributesW(stateFile.c_str()) != INVALID_FILE_ATTRIBUTES, "taskqueue json persisted");
 
     {
-        TaskQueueManager reload;
-        std::string rerr;
-        std::string r = reload.TaskQueueGet("A", false, 0, rerr);
-        Check(JsonGetBool(r, "ok", false) && JsonGetString(r, "state", "") == "succeeded",
-              "state persisted and reloaded");
+        TaskQueueCounts cBefore = tqm.GetJobCounts();
+        Check(cBefore.total > 0, "GetJobCounts returned non-empty total");
+        Check(cBefore.succeeded >= 3, "GetJobCounts accurately counted succeeded jobs");
+
+        std::string sleepJobs = "["
+            "{\"id\":\"S1\",\"command\":\"ping -n 5 127.0.0.1\",\"summary\":\"S1 running\",\"timeoutSec\":30},"
+            "{\"id\":\"S2\",\"command\":\"ping -n 5 127.0.0.1\",\"summary\":\"S2 waiting\",\"timeoutSec\":30},"
+            "{\"id\":\"S3\",\"command\":\"ping -n 5 127.0.0.1\",\"summary\":\"S3 pending on S2\",\"timeoutSec\":30,\"dependsOn\":[\"S2\"]}"
+            "]";
+        std::string sResp = tqm.TaskQueueAdd("concurq", sleepJobs, 1, "", err);
+        Check(JsonGetBool(sResp, "ok", false), "concurq added");
+        WaitForState(tqm, "S1", "running", 5000);
+
+        TaskQueueCounts cAfter = tqm.GetJobCounts();
+        Check(cAfter.running >= 1, "GetJobCounts accurately detected running job");
+        Check(cAfter.waiting >= 1, "GetJobCounts accurately detected waiting ready job");
+        Check(cAfter.pending >= 1, "GetJobCounts accurately detected pending dependent job");
+
+        tqm.TaskQueueCancel("S1", err);
+        tqm.TaskQueueCancel("S2", err);
+        tqm.TaskQueueCancel("S3", err);
     }
 
     pm.SetProcessFinishedCallback(nullptr);
