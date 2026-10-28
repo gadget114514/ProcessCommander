@@ -6,6 +6,8 @@
 
 ![ProcessCommander Dashboard](docs/images/dashboard.jpg)
 
+![Architecture](archimage.jpg)
+
 ---
 
 ## Quick Start for LLM Agents
