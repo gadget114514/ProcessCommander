@@ -1378,21 +1378,31 @@ static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobI
     if (cmd == 3101) {
         st->tqm->TaskQueueRetry(jobId, true, true, err);
     } else if (cmd == 3102) {
-        st->tqm->TaskQueueCancel(jobId, err);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"このタスクをキャンセルしますか？", L"Are you sure you want to cancel this task?", L"¿Seguro que desea cancelar esta tarea?"),
+                Tr(L"キャンセルの確認", L"Confirm Cancel", L"Confirmar cancelación"),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            st->tqm->TaskQueueCancel(jobId, err);
+        }
     } else if (cmd == 3103 || cmd == 3104) {
         std::string resp = st->tqm->TaskQueueGet(jobId, false, 0, err);
         std::string tqName = JsonGetString(resp, "taskqueue", "");
         if (!tqName.empty()) st->tqm->TaskQueuePause(tqName, cmd == 3103, err);
     } else if (cmd == 3105) {
-        std::string resp = st->tqm->TaskQueueList("", "", err);
-        auto jobs = SplitJsonObjectArray(resp, "jobs");
-        std::vector<std::string> queuesDone;
-        for (const auto& j : jobs) {
-            std::string tqName = JsonGetString(j, "taskqueue", "");
-            if (tqName.empty()) continue;
-            if (std::find(queuesDone.begin(), queuesDone.end(), tqName) != queuesDone.end()) continue;
-            queuesDone.push_back(tqName);
-            st->tqm->TaskQueuePurge(tqName, "[\"succeeded\",\"failed\",\"cancelled\"]", err);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"終了したすべてのタスクを消去しますか？", L"Are you sure you want to purge all finished tasks?", L"¿Seguro que desea purgar todas las tareas finalizadas?"),
+                Tr(L"消去の確認", L"Confirm Purge", L"Confirmar purga"),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            std::string resp = st->tqm->TaskQueueList("", "", err);
+            auto jobs = SplitJsonObjectArray(resp, "jobs");
+            std::vector<std::string> queuesDone;
+            for (const auto& j : jobs) {
+                std::string tqName = JsonGetString(j, "taskqueue", "");
+                if (tqName.empty()) continue;
+                if (std::find(queuesDone.begin(), queuesDone.end(), tqName) != queuesDone.end()) continue;
+                queuesDone.push_back(tqName);
+                st->tqm->TaskQueuePurge(tqName, "[\"succeeded\",\"failed\",\"cancelled\"]", err);
+            }
         }
     } else if (cmd == 3106) {
         ShowTaskQueueJobDetails(st, jobId);
@@ -2032,15 +2042,30 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
         std::wstring logW = Utf8ToWide(snap.logFilePath);
         ShellExecuteW(st->hwndMain, L"open", L"notepad.exe", logW.c_str(), nullptr, SW_SHOWNORMAL);
     } else if (cmd == 3004) {
-        std::string err;
-        st->pm->KillProcess(procId, err);
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"このプロセスツリーを強制終了しますか？", L"Are you sure you want to kill this process tree?", L"¿Seguro que desea terminar este árbol de procesos?"),
+                Tr(L"終了の確認", L"Confirm Kill", L"Confirmar cierre"),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            std::string err;
+            st->pm->KillProcess(procId, err);
+            RefreshDashboardData(st);
+        }
     } else if (cmd == 3005) {
-        st->pm->RemoveProcess(procId);
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"この履歴を削除しますか？", L"Are you sure you want to remove this entry?", L"¿Seguro que desea eliminar esta entrada?"),
+                Tr(L"削除の確認", L"Confirm Remove", L"Confirmar eliminación"),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            st->pm->RemoveProcess(procId);
+            RefreshDashboardData(st);
+        }
     } else if (cmd == 3006) {
-        st->pm->ClearFinished();
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"終了済みプロセスの履歴を消去しますか？", L"Are you sure you want to clear finished process history?", L"¿Seguro que desea borrar el historial de procesos finalizados?"),
+                Tr(L"履歴消去の確認", L"Confirm Clear", L"Confirmar borrado"),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            st->pm->ClearFinished();
+            RefreshDashboardData(st);
+        }
     }
 }
 
