@@ -135,7 +135,7 @@ int RunMcpServer() {
                 << ",\"result\":{"
                 << "\"protocolVersion\":\"2024-11-05\","
                 << "\"capabilities\":{\"tools\":{}},"
-                << "\"serverInfo\":{\"name\":\"ProcessCommander\",\"version\":\"1.0.0\"}"
+                << "\"serverInfo\":{\"name\":\"ProcessCommander\",\"version\":\"1.1.0\"}"
                 << "}}";
             std::cout << oss.str() << "\n" << std::flush;
         }
