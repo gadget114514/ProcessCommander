@@ -2692,8 +2692,15 @@ static void ShowTaskDetailsDialog(DashboardState* st, int procId) {
             st->pm->GetAgentStream(procId, 0, "", 0, events, agStateObj);
         }
 
+        std::string modelForState = agStateObj.model;
+        if (modelForState.empty()) {
+            for (const auto& ev : events) {
+                if (!ev.model.empty()) { modelForState = ev.model; break; }
+            }
+        }
         nlohmann::json agState = nlohmann::json::object();
-        agState["agentType"] = snap.agentType;
+        agState["agentType"] = snap.agentType.empty() ? agStateObj.agentType : snap.agentType;
+        agState["model"] = modelForState;
         agState["status"] = agStateObj.status.empty() ? snap.agentStatus : agStateObj.status;
         agState["currentTool"] = agStateObj.currentTool.empty() ? snap.currentTool : agStateObj.currentTool;
         agState["currentToolAction"] = agStateObj.currentToolAction.empty() ? snap.currentToolAction : agStateObj.currentToolAction;
@@ -2713,6 +2720,7 @@ static void ShowTaskDetailsDialog(DashboardState* st, int procId) {
             evObj["timestamp"] = ev.timestamp;
             evObj["type"] = ev.type;
             evObj["agentType"] = ev.agentType;
+            if (!ev.model.empty()) evObj["model"] = ev.model;
             if (!ev.toolName.empty()) evObj["toolName"] = ev.toolName;
             if (!ev.toolAction.empty()) evObj["toolAction"] = ev.toolAction;
             if (!ev.toolInput.empty()) {
@@ -2798,6 +2806,8 @@ struct LlmStreamDlgState {
     HWND hwndBtnRefresh = nullptr;
     HWND hwndBtnOpenStream = nullptr;
     HWND hwndBtnClose = nullptr;
+    HWND hwndAgentIcon = nullptr;
+    HWND hwndTooltip = nullptr;
     UINT_PTR timerId = 0;
     size_t lastEventCount = 0;
 };
@@ -2808,12 +2818,25 @@ static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
     ds->events.clear();
     ds->dash->pm->GetAgentStream(ds->procId, 300, "", 0, ds->events, ds->agentState);
 
+    std::string modelStr = ds->agentState.model;
+    if (modelStr.empty()) {
+        for (const auto& ev : ds->events) {
+            if (!ev.model.empty()) { modelStr = ev.model; break; }
+        }
+    }
+    if (!modelStr.empty()) ds->agentState.model = modelStr;
+
+    std::wstring agentLabel = Utf8ToWide(ds->snap.agentType.empty() ? (ds->agentState.agentType.empty() ? "generic" : ds->agentState.agentType) : ds->snap.agentType);
     std::wstringstream hdr;
     hdr << L"ID: #" << ds->snap.id << L"  |  "
         << Utf8ToWide(ds->snap.name) << L"  |  Agent: ["
-        << Utf8ToWide(ds->snap.agentType.empty() ? "generic" : ds->snap.agentType) << L"] "
+        << agentLabel << L"] "
         << StateLabelWide(ds->snap.state, ds->snap.idleMs >= 10000)
-        << L" (" << Utf8ToWide(ds->agentState.status) << L")\r\n";
+        << L" (" << Utf8ToWide(ds->agentState.status) << L")";
+    if (!modelStr.empty()) {
+        hdr << L"  |  Model: " << Utf8ToWide(modelStr);
+    }
+    hdr << L"\r\n";
     if (!ds->agentState.currentTool.empty()) {
         hdr << L"Tool: " << Utf8ToWide(ds->agentState.currentTool);
         if (!ds->agentState.currentToolAction.empty()) {
@@ -2892,7 +2915,10 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             ds->hwndHeader = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-                12, 12, 820, 75, hwnd, (HMENU)2100, nullptr, nullptr);
+                40, 12, 792, 75, hwnd, (HMENU)2100, nullptr, nullptr);
+            ds->hwndAgentIcon = CreateWindowExW(0, L"STATIC", L"🤖",
+                WS_CHILD | WS_VISIBLE | SS_CENTER,
+                12, 12, 24, 24, hwnd, (HMENU)2105, nullptr, nullptr);
 
             ds->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -2933,6 +2959,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             if (ds->hFontUi) {
                 SendMessageW(ds->hwndHeader, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+                if (ds->hwndAgentIcon) SendMessageW(ds->hwndAgentIcon, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 SendMessageW(ds->hwndList, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 SendMessageW(ds->hwndBtnRefresh, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 SendMessageW(ds->hwndBtnOpenStream, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
@@ -2944,12 +2971,54 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             ApplyNativeThemeToWindow(hwnd);
             ReloadStreamDialogData(hwnd, ds);
+            if (ds->hwndTooltip && ds->hwndAgentIcon) {
+                std::string modelTooltip = ds->agentState.model;
+                if (modelTooltip.empty()) {
+                    for (const auto& ev : ds->events) {
+                        if (!ev.model.empty()) { modelTooltip = ev.model; break; }
+                    }
+                }
+                if (!modelTooltip.empty()) {
+                    static wchar_t tipBuf2[512];
+                    std::wstring tip = L"Model: " + Utf8ToWide(modelTooltip);
+                    wcsncpy_s(tipBuf2, tip.c_str(), _TRUNCATE);
+                    TOOLINFOW ti = {};
+                    ti.cbSize = sizeof(ti);
+                    ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+                    ti.hwnd = hwnd;
+                    ti.uId = (UINT_PTR)ds->hwndAgentIcon;
+                    ti.hinst = GetModuleHandleW(nullptr);
+                    ti.lpszText = tipBuf2;
+                    SendMessageW(ds->hwndTooltip, TTM_ADDTOOL, 0, (LPARAM)&ti);
+                }
+            }
             ds->timerId = SetTimer(hwnd, 1, 1000, nullptr);
             return 0;
         }
         case WM_TIMER: {
             if (ds) {
                 ReloadStreamDialogData(hwnd, ds);
+                if (ds->hwndTooltip && ds->hwndAgentIcon) {
+                    std::string modelTooltip = ds->agentState.model;
+                    if (modelTooltip.empty()) {
+                        for (const auto& ev : ds->events) {
+                            if (!ev.model.empty()) { modelTooltip = ev.model; break; }
+                        }
+                    }
+                    if (!modelTooltip.empty()) {
+                        static wchar_t tipBuf3[512];
+                        std::wstring tip = L"Model: " + Utf8ToWide(modelTooltip);
+                        wcsncpy_s(tipBuf3, tip.c_str(), _TRUNCATE);
+                        TOOLINFOW ti = {};
+                        ti.cbSize = sizeof(ti);
+                        ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+                        ti.hwnd = hwnd;
+                        ti.uId = (UINT_PTR)ds->hwndAgentIcon;
+                        ti.hinst = GetModuleHandleW(nullptr);
+                        ti.lpszText = tipBuf3;
+                        SendMessageW(ds->hwndTooltip, TTM_UPDATETIPTEXT, 0, (LPARAM)&ti);
+                    }
+                }
             }
             return 0;
         }
@@ -2995,7 +3064,8 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             int pad = 12;
             int availW = (std::max)(200, w - pad * 2);
             int hdrH = 75;
-            MoveWindow(ds->hwndHeader, pad, pad, availW, hdrH, TRUE);
+            MoveWindow(ds->hwndHeader, pad + 28, pad, availW - 28, hdrH, TRUE);
+            if (ds->hwndAgentIcon) MoveWindow(ds->hwndAgentIcon, pad, pad, 24, 24, TRUE);
             int btnY = (std::max)(250, h - 38);
             int middleH = btnY - (pad + hdrH + pad) - pad;
             int listH = (std::max)(80, middleH * 55 / 100);

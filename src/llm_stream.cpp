@@ -78,6 +78,18 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
     if (j.contains("agent") && j["agent"].is_string()) {
         outEvent.agentType = j["agent"].get<std::string>();
     }
+    if (j.contains("model") && j["model"].is_string()) {
+        outEvent.model = j["model"].get<std::string>();
+    } else if (j.contains("modelId") && j["modelId"].is_string()) {
+        outEvent.model = j["modelId"].get<std::string>();
+    } else if (j.contains("model_name") && j["model_name"].is_string()) {
+        outEvent.model = j["model_name"].get<std::string>();
+    } else if (j.contains("llm") && j["llm"].is_object()) {
+        if (j["llm"].contains("model") && j["llm"]["model"].is_string()) outEvent.model = j["llm"]["model"].get<std::string>();
+        else if (j["llm"].contains("name") && j["llm"]["name"].is_string()) outEvent.model = j["llm"]["name"].get<std::string>();
+    } else if (j.contains("metadata") && j["metadata"].is_object()) {
+        if (j["metadata"].contains("model") && j["metadata"]["model"].is_string()) outEvent.model = j["metadata"]["model"].get<std::string>();
+    }
 
     // Step index
     if (j.contains("step_index") && j["step_index"].is_number()) {
@@ -252,6 +264,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         outEvent.status = "completed";
         outEvent.content = getStr(j, "summary");
         if (outEvent.content.empty()) outEvent.content = getStr(j, "result");
+        if (outEvent.model.empty() && j.contains("model") && j["model"].is_string()) outEvent.model = j["model"].get<std::string>();
         return true;
     }
 
@@ -268,6 +281,7 @@ std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const Llm
     nlohmann::json root;
     root["ok"] = true;
     root["agent_type"] = state.agentType;
+    root["model"] = state.model;
     root["status"] = state.status;
     root["current_tool"] = state.currentTool;
     root["current_tool_action"] = state.currentToolAction;
@@ -288,7 +302,8 @@ std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const Llm
         item["seq"] = ev.seq;
         item["timestamp"] = ev.timestamp;
         item["type"] = ev.type;
-        item["agent"] = ev.agentType;
+        item["agent_type"] = ev.agentType;
+        item["model"] = ev.model;
         item["tool_name"] = ev.toolName;
         item["tool_action"] = ev.toolAction;
         item["tool_input"] = ev.toolInput;
@@ -419,6 +434,9 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
     }
     if (ev.stepIndex > 0) {
         state_.stepCount = ev.stepIndex;
+    }
+    if (!ev.model.empty()) {
+        state_.model = ev.model;
     }
 
     if (ev.type == "tool_call") {

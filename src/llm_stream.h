@@ -16,6 +16,7 @@ struct LlmStreamEvent {
     std::string rawJson;
     std::string type;          // "tool_call", "tool_result", "thinking", "message", "status", "step", "error", "usage", "other"
     std::string agentType;     // "claude", "agy", "opencode", "generic"
+    std::string model;         // model name/id if present in stream
     std::string toolName;      // e.g. "view_file", "edit_file", "Bash"
     std::string toolAction;    // e.g. "Viewing file", "Editing src/gui_dashboard.cpp"
     std::string toolInput;     // arguments or parameters
@@ -29,6 +30,7 @@ struct LlmStreamEvent {
 // Summary state of an LLM agent process
 struct LlmAgentState {
     std::string agentType;      // "claude", "agy", "opencode", or empty
+    std::string model;          // model name/id if present in stream
     std::string status = "idle"; // "idle", "thinking", "calling_tool", "generating", "completed", "error"
     std::string currentTool;
     std::string currentToolAction;

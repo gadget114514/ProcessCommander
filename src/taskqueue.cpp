@@ -2095,7 +2095,23 @@ void TaskQueueManager::OnProcessFinished(int processId, int exitCode, const std:
                 a.exitCode = exitCode;
                 a.checkDetail = "cancelled";
                 job.updatedAt = a.end;
+                tq.version++;
+                std::string ev = "{"version":" + std::to_string(tq.version) +
+                                 ","type":"jobCancelled","taskqueue":"" + JsonEscape(tq.name) +
+                                 "","job_id":"" + JsonEscape(job.id) +
+                                 "","attempt":" + std::to_string(a.n) +
+                                 ","timestamp":"" + GetCurrentTimestampStr() + ""}
+";
+                AppendToLogFileWide(GetTaskEventsFileWide(tq.name), ev);
+                if (!tq.notifyFile.empty()) {
+                    std::string notify = ev;
+                    if (notify.size() >= 2 && notify[notify.size()-2]=='' && notify[notify.size()-1]=='
+') notify = notify.substr(0, notify.size()-2);
+                    WriteFileAtomicWide(Utf8ToWide(tq.notifyFile), notify);
+                }
                 SaveQueue(tq);
+                CheckQueueNotices(tq);
+                cv_.notify_all();
                 return;
             }
 
