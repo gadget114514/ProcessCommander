@@ -256,12 +256,6 @@ static void DrawHeaderItem(DRAWITEMSTRUCT* dis) {
 static LRESULT CALLBACK HeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                            UINT_PTR, DWORD_PTR) {
     if (msg == WM_ERASEBKGND) {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-        RECT rc = {};
-        GetClientRect(hwnd, &rc);
-        HBRUSH brush = CreateSolidBrush(g_theme.windowBg);
-        FillRect(hdc, &rc, brush);
-        DeleteObject(brush);
         return 1;
     }
     LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -4291,6 +4285,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             HWND hHeader = ListView_GetHeader(st->hwndList);
             if (hHeader) {
+                LONG_PTR style = GetWindowLongPtrW(hHeader, GWL_STYLE);
+                SetWindowLongPtrW(hHeader, GWL_STYLE, style | HDS_DOUBLEBUFFER);
                 for (int i = 0; i < 13; ++i) {
                     HDITEMW hdi = {};
                     hdi.mask = HDI_FORMAT;
@@ -4323,6 +4319,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             }
             HWND hTaskHeader = ListView_GetHeader(st->hwndTaskList);
             if (hTaskHeader) {
+                LONG_PTR style = GetWindowLongPtrW(hTaskHeader, GWL_STYLE);
+                SetWindowLongPtrW(hTaskHeader, GWL_STYLE, style | HDS_DOUBLEBUFFER);
                 for (int i = 0; i < 9; ++i) {
                     HDITEMW hdi = {};
                     hdi.mask = HDI_FORMAT;
