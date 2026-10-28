@@ -78,3 +78,34 @@ The parser is permissive and looks for common fields across agents:
 - Non-JSON lines are ignored by the parser.
 - The tracker caps stored events (`kMaxEvents`) and persists raw lines for post-mortem.
 - Model capture is best-effort from stream content; ProcessCommander cannot reliably infer the LLM model from process metadata alone.
+
+## Per-agent differences (as implemented)
+
+The parser normalizes many variants; notable mappings below:
+
+| Agent | Typical shapes seen/handled | Notes |
+|---|---|---|
+| Claude Code / Claude API style | `type: "thought"`/`"thinking"`, `type: "tool_call"` or `tool_calls[]` with `function.name`/`name` and `arguments`/`input`/`parameters`; `type: "tool_result"`/tool response; streaming deltas `content_block_delta` with `delta.type/content`. | Top-level `tool_calls` array or nested `tool_call`. `agent`/`model` may appear. |
+| OpenCode | `type: "tool_use"`, `tool_call`, or objects with `tool`/`name`; messages/deltas; sometimes `PLANNER_RESPONSE` with `tool_calls`. | Detected by name/cmd containing `opencode`. Model often in `model`/`llm.model`. |
+| Aider | JSON/tool events vary; parser looks for generic `tool_*`, `thinking`/`thought`, and message fields. | Detected by `aider`. Often less standardized; best-effort parsing. |
+| Codex (OpenAI Codex CLI) | `reasoning`/`thought`/`thinking` style, tool calls/results in various forms; parser accepts `reasoning` as thinking and generic `tool_call`/`function_call`. | Detected by `codex`. |
+| agy / Antigravity | Similar to Claude/opencode patterns; `type: "tool_call"`, `tool_use`, thinking fields. | Detected by `agy` or `antigravity`. |
+| Ollama / local models | Varies; parser falls back to generic JSON with `content`/`message`/`text`. | Detected by `ollama`. May not emit structured tool events consistently. |
+
+### Field mapping details
+- **Tool name**: `toolName` ← `name`/`tool`/`tool_name` or `function.name` (from `tool_call`/`tool_calls[]`).
+- **Tool input**: `toolInput` ← JSON string of `input`/`arguments`/`parameters`.
+- **Tool action**: `toolAction` ← `toolAction`/`action`/`summary` or derived as `"Calling " + toolName`.
+- **Thinking**: normalized to `type: "thinking"`, content from `thinking`/`thought`/`reasoning`/`message`/`content`.
+- **Tool result**: `type: "tool_result"`, content from `content`/`output`/`result`.
+- **Message/delta**: `type: "message"` (user → `user_input`), content from `content`/`message`/`text` or `delta.content`/`delta.text`.
+- **Status/error/result**: mapped to `status`/`error`/`result` types; `result`/`done`/`finish`/`completed` → `type: "result"`, `status: "completed"`.
+
+### Model detection
+- Checked on event parse and state update: top-level `model`, `modelId`, `model_name`; `llm.model`/`llm.name`; `metadata.model`. Also captured from `result` events if present. Stored in `LlmStreamEvent.model` and `LlmAgentState.model`, surfaced in GUI tooltip.
+
+## Known differences / notes
+- **Schema varies by vendor/version**: Claude, OpenCode, Codex, Aider emit different JSON schemas; the parser is intentionally permissive and normalizes to a common `LlmStreamEvent`.
+- **Streaming vs batch**: some emit deltas, others emit full messages/tool calls.
+- **Model reporting**: not all agents include `model` in every event; availability depends on the agent/CLI version.
+- **Tool naming**: names differ across agents (e.g. Claude tool names vs OpenCode internal names).
