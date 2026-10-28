@@ -51,6 +51,7 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 
 ### 1. Native Win32 + Direct2D Multi-Terminal Dashboard GUI
 - **14 Top KPI Summary Cards (Two Rows: Processes & Task Queues)**:
+  - **Compact Horizontal Layout**: Labels and numbers are placed side-by-side on a single line, minimizing header height to maximize vertical space for process lists and terminals.
   - **Top Row (Processes)**: Real-time metrics for Total Terminals, Active Running, Waiting/Idle (no output or CPU activity for `>= 10s`), Completed (`Exit 0`), Failed/Killed, **Shortest Remaining Time** (live countdown of nearest active process timeout), and Total Job Object Memory & Process Count.
   - **Bottom Row (Tasks)**: Real-time metrics for Total Tasks, Active Running, Waiting/Pending, Succeeded, Failed, **Shortest Remaining Time** (live countdown of nearest active task timeout), and Active Queues / Concurrency summary.
   - Hover over any card for detailed tooltips and breakdown counts.
@@ -78,10 +79,9 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 ![Shell Config Dialog](docs/images/config_dialog.png)
 
 ### 3. History Management, Task Details & LLM JSON Tree Viewer
-- **`[Clear Ended]`**: Deletes all completed/killed/failed process entries from history and updates `logs/processes_state.json`.
 - **`[Hide Ended]`**: Toggles hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
-- **`[Reset Process IDs]`** (Settings dialog): Renumbers finished processes sequentially from `#1` and resets the next process ID. All running processes must be stopped first.
-- **Right-Click Context Menu & Task Details Dialog**: Right-click any process row or terminal tab (or double-click a row) to inspect the full command line, working directory, PID/Job metrics, log file path, `.done` file path, and output preview, or copy the command line to the clipboard.
+- **`[Clear Ended]`** & **`[Reset Process IDs]`** (Settings dialog): Clear all completed/failed process history or renumber processes sequentially from `#1`.
+- **Right-Click Context Menu & Task Details Dialog**: Right-click any process row or terminal tab (or double-click a row) to terminate the process tree (**`Kill Tree`** with confirmation), inspect full command lines, working directory, PID/Job metrics, log paths, `.done` files, and output preview, or copy commands to the clipboard.
 - **LLM JSON Output Streaming & Interactive Tree Viewer**:
   - Native streaming event capture for major AI coding agents (`claude`, `agy`, `opencode`, `codex`).
   - Automatically captures structured event streams into `<logfile>.stream.jsonl` in addition to raw console logs.
@@ -103,7 +103,7 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 - Click **`[Settings]`** to open the settings dialog.
 - **Language**: switch between **Japanese / English / Español** buttons; the dashboard, dialogs, menus, and status bar update immediately.
 - **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, or **High Contrast**. Buttons, list headers, scrollbars, and tab labels follow the dark theme.
-- **`[Shell Config...]`** and **`[Reset Process IDs]`** are available here (previously toolbar buttons).
+- **`[Shell Config...]`**, **`[Reset Process IDs]`**, and **`[Clear Ended]`** are available here (keeping the toolbar clean and focused).
 - Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
 
 ![Settings Dialog](docs/images/settings_dialog.png)

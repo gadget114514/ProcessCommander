@@ -350,12 +350,12 @@ static UiTheme ParseTheme(const std::string& code) {
 
 // Compact dashboard header / splitter layout constants
 constexpr int kHeaderKpiTop        = 6;
-constexpr int kHeaderKpiRow1Bottom = 52;
-constexpr int kHeaderKpiRow2Top    = 56;
-constexpr int kHeaderKpiBottom     = 102;
-constexpr int kToolbarTop          = 108;
+constexpr int kHeaderKpiRow1Bottom = 32;
+constexpr int kHeaderKpiRow2Top    = 36;
+constexpr int kHeaderKpiBottom     = 62;
+constexpr int kToolbarTop          = 68;
 constexpr int kToolbarH            = 24;
-constexpr int kListTop             = 138;
+constexpr int kListTop             = 98;
 constexpr int kSplitterH           = 6;
 constexpr int kRowSplitterH        = 6;
 constexpr int kMinRowListH         = 45;
@@ -391,6 +391,7 @@ enum ControlId {
     IDC_SET_THEME_PASTEL = 6014,
     IDC_SET_SHELL_CONFIG = 6022,
     IDC_SET_RESET_IDS = 6021,
+    IDC_SET_CLEAR_ENDED = 6023,
     IDC_SET_SOUND_ENABLED = 6030,
     IDC_SET_SOUND_PATH = 6031,
     IDC_SET_SOUND_BROWSE = 6032,
@@ -667,13 +668,13 @@ static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std
     HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
     HGDIOBJ oldBrush = SelectObject(hdc, bgBrush);
     HGDIOBJ oldPen = SelectObject(hdc, borderPen);
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 8, 8);
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);
     DeleteObject(bgBrush);
     DeleteObject(borderPen);
 
-    RECT rcStripe = {rc.left + 2, rc.top + 1, rc.right - 2, rc.top + 4};
+    RECT rcStripe = {rc.left + 3, rc.top + 1, rc.right - 3, rc.top + 3};
     HBRUSH stripeBrush = CreateSolidBrush(accentColor);
     FillRect(hdc, &rcStripe, stripeBrush);
     DeleteObject(stripeBrush);
@@ -682,7 +683,7 @@ static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std
         int stripeLeft = static_cast<int>(rcStripe.left);
         int stripeRight = static_cast<int>(rcStripe.right);
         int stripeW = stripeRight - stripeLeft;
-        int bandW = (std::max)(18, stripeW / 3);
+        int bandW = (std::max)(14, stripeW / 3);
         int travel = stripeW + bandW;
         int bandLeft = stripeLeft - bandW + static_cast<int>(marqueePhase * travel);
         RECT rcBand = {(std::max)(stripeLeft, bandLeft), rcStripe.top,
@@ -696,26 +697,48 @@ static void DrawKpiCard(HDC hdc, const RECT& rc, const wchar_t* title, const std
 
     SetBkMode(hdc, TRANSPARENT);
 
-    RECT rcTitle = {rc.left + 8, rc.top + 4, rc.right - 4, rc.top + 18};
-    SetTextColor(hdc, g_theme.muted);
-    HGDIOBJ oldFont = SelectObject(hdc, hFontUi);
-    DrawTextW(hdc, title, -1, &rcTitle, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+    // Measure value text width with hFontKpiVal
+    HGDIOBJ oldFont = SelectObject(hdc, hFontKpiVal);
+    SIZE szVal = {};
+    GetTextExtentPoint32W(hdc, value.c_str(), static_cast<int>(value.size()), &szVal);
 
-    RECT rcVal = {rc.left + 8, rc.top + 17, rc.right - 4, rc.bottom - 2};
-    SetTextColor(hdc, g_theme.text);
-    SelectObject(hdc, hFontKpiVal);
-    DrawTextW(hdc, value.c_str(), -1, &rcVal, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-
+    // Measure subText if provided
+    SIZE szSub = {};
+    bool showSub = false;
     if (!subText.empty()) {
-        SIZE sz = {};
-        GetTextExtentPoint32W(hdc, value.c_str(), static_cast<int>(value.size()), &sz);
-        RECT rcSub = {rcVal.left + sz.cx + 5, rcVal.top + 4, rcVal.right, rcVal.bottom};
-        if (rcSub.left < rcSub.right) {
-            SelectObject(hdc, hFontUi);
-            SetTextColor(hdc, g_theme.muted);
-            DrawTextW(hdc, subText.c_str(), -1, &rcSub, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SelectObject(hdc, hFontUi);
+        GetTextExtentPoint32W(hdc, subText.c_str(), static_cast<int>(subText.size()), &szSub);
+        int cardW = rc.right - rc.left;
+        if (cardW - 16 - szVal.cx - szSub.cx >= 45) {
+            showSub = true;
         }
     }
+
+    int padX = 7;
+    int rightEdge = rc.right - padX;
+
+    // Draw Value on the right (bold, g_theme.text)
+    RECT rcVal = {rightEdge - szVal.cx, rc.top + 2, rightEdge, rc.bottom - 1};
+    SetTextColor(hdc, g_theme.text);
+    SelectObject(hdc, hFontKpiVal);
+    DrawTextW(hdc, value.c_str(), -1, &rcVal, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+
+    int titleRight = rcVal.left - 4;
+
+    // Draw subText to the left of value if space permits
+    if (showSub) {
+        RECT rcSub = {rcVal.left - szSub.cx - 4, rc.top + 2, rcVal.left - 4, rc.bottom - 1};
+        SetTextColor(hdc, g_theme.muted);
+        SelectObject(hdc, hFontUi);
+        DrawTextW(hdc, subText.c_str(), -1, &rcSub, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        titleRight = rcSub.left - 4;
+    }
+
+    // Draw Title on the left (g_theme.muted, hFontUi, single line with ellipsis)
+    RECT rcTitle = {rc.left + padX, rc.top + 2, (std::max)(rc.left + padX + 10, static_cast<LONG>(titleRight)), rc.bottom - 1};
+    SetTextColor(hdc, g_theme.muted);
+    SelectObject(hdc, hFontUi);
+    DrawTextW(hdc, title, -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     SelectObject(hdc, oldFont);
 }
@@ -1025,7 +1048,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                 // Top Row: Processes
                 if (col == 0) {
                     std::wstring sub = (totalTreeProcs > static_cast<uint32_t>(totalCount))
-                        ? (std::to_wstring(totalTreeProcs) + Tr(L" 子proc", L" child", L" sub")) : L"";
+                        ? (std::to_wstring(totalTreeProcs) + Tr(L" 子", L" child", L" sub")) : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"プロセス総数", L"TOTAL PROCESSES", L"PROCESOS TOTALES"),
                                 std::to_wstring(totalCount), KpiAccent(0), st->hFontUi, st->hFontKpiVal,
                                 -1.0f, sub);
@@ -1035,8 +1058,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                                 (activeRunning > 0 ? g_kpiBarPhase : -1.0f));
                 } else if (col == 2) {
                     DrawKpiCard(hdc, rcCard, Tr(L"待機 / アイドル", L"WAITING / IDLE", L"ESPERANDO / INACTIVO"),
-                                std::to_wstring(idleWaiting), KpiAccent(2), st->hFontUi, st->hFontKpiVal,
-                                -1.0f, Tr(L"(無活動)", L"(idle)", L"(inactivo)"));
+                                std::to_wstring(idleWaiting), KpiAccent(2), st->hFontUi, st->hFontKpiVal);
                 } else if (col == 3) {
                     DrawKpiCard(hdc, rcCard, Tr(L"完了 (OK)", L"COMPLETED (OK)", L"COMPLETADO (OK)"),
                                 std::to_wstring(completedOk), KpiAccent(3), st->hFontUi, st->hFontKpiVal);
@@ -1045,14 +1067,12 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                                 std::to_wstring(failedOrKilled), KpiAccent(4), st->hFontUi, st->hFontKpiVal);
                 } else if (col == 5) {
                     std::wstring memStr = Utf8ToWide(FormatBytes(totalMemBytes));
-                    DrawKpiCard(hdc, rcCard, Tr(L"合計ジョブメモリ", L"TOTAL JOB MEMORY", L"MEMORIA TOTAL"),
+                    DrawKpiCard(hdc, rcCard, Tr(L"ジョブメモリ", L"JOB MEMORY", L"MEMORIA TOTAL"),
                                 memStr, KpiAccent(5), st->hFontUi, st->hFontKpiVal);
                 } else if (col == 6) {
                     std::wstring val = (minRemainingSec >= 0) ? FormatRemainingTimeShort(minRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
-                    std::wstring sub = (minRemainingSec >= 0) ? FormatRemainingTime(minRemainingSec) : Tr(L"無制限", L"No timeout", L"Sin límite");
-                    DrawKpiCard(hdc, rcCard, Tr(L"プロセス残り時間", L"PROC TIMEOUT LEFT", L"TIEMPO RESTANTE PROC"),
-                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal,
-                                -1.0f, sub);
+                    DrawKpiCard(hdc, rcCard, Tr(L"残り時間", L"PROC TIMEOUT", L"TIEMPO RESTANTE"),
+                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal);
                 }
             } else {
                 // Bottom Row: Tasks
@@ -1064,7 +1084,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                                 std::to_wstring(tqCounts.running), KpiAccent(1), st->hFontUi, st->hFontKpiVal,
                                 (tqCounts.running > 0 ? g_kpiBarPhase : -1.0f));
                 } else if (col == 2) {
-                    std::wstring sub = (tqCounts.pending > 0) ? (L"(+" + std::to_wstring(tqCounts.pending) + Tr(L" 保留)", L" pend)", L" pend)")) : L"";
+                    std::wstring sub = (tqCounts.pending > 0) ? (L"(+" + std::to_wstring(tqCounts.pending) + L")") : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"実行待ちタスク", L"WAITING TASKS", L"TAREAS EN ESPERA"),
                                 std::to_wstring(tqCounts.waiting), KpiAccent(2), st->hFontUi, st->hFontKpiVal,
                                 -1.0f, sub);
@@ -1072,21 +1092,19 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                     DrawKpiCard(hdc, rcCard, Tr(L"タスク成功 (OK)", L"SUCCEEDED TASKS", L"TAREAS EXITOSAS"),
                                 std::to_wstring(tqCounts.succeeded), KpiAccent(3), st->hFontUi, st->hFontKpiVal);
                 } else if (col == 4) {
-                    std::wstring sub = (tqCounts.cancelled > 0) ? (Tr(L"(中断: ", L"(Canc: ", L"(Canc: ") + std::to_wstring(tqCounts.cancelled) + L")") : L"";
+                    std::wstring sub = (tqCounts.cancelled > 0) ? (L"(" + std::to_wstring(tqCounts.cancelled) + L")") : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"タスク失敗/中断", L"FAILED / CANCELLED", L"FALLIDAS / CANCELADAS"),
                                 std::to_wstring(tqCounts.failed + tqCounts.cancelled), KpiAccent(4), st->hFontUi, st->hFontKpiVal,
                                 -1.0f, sub);
                 } else if (col == 5) {
-                    std::wstring sub = (tqCounts.blocked > 0) ? (Tr(L"(閉塞: ", L"(Blocked: ", L"(Bloq: ") + std::to_wstring(tqCounts.blocked) + L")") : L"";
-                    DrawKpiCard(hdc, rcCard, Tr(L"依存保留/ブロック", L"PENDING / BLOCKED", L"PENDIENTES / BLOQUEADAS"),
+                    std::wstring sub = (tqCounts.blocked > 0) ? (L"(" + std::to_wstring(tqCounts.blocked) + L")") : L"";
+                    DrawKpiCard(hdc, rcCard, Tr(L"保留 / ブロック", L"PENDING / BLOCKED", L"PENDIENTES / BLOQ"),
                                 std::to_wstring(tqCounts.pending + tqCounts.blocked), KpiAccent(5), st->hFontUi, st->hFontKpiVal,
                                 -1.0f, sub);
                 } else if (col == 6) {
                     std::wstring val = (tqCounts.minRemainingSec >= 0) ? FormatRemainingTimeShort(tqCounts.minRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
-                    std::wstring sub = (tqCounts.minRemainingSec >= 0) ? FormatRemainingTime(tqCounts.minRemainingSec) : Tr(L"無制限", L"No timeout", L"Sin límite");
-                    DrawKpiCard(hdc, rcCard, Tr(L"タスク残り時間", L"TASK TIMEOUT LEFT", L"TIEMPO RESTANTE TAREA"),
-                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal,
-                                -1.0f, sub);
+                    DrawKpiCard(hdc, rcCard, Tr(L"残り時間", L"TASK TIMEOUT", L"TIEMPO RESTANTE"),
+                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal);
                 }
             }
         }
@@ -1599,7 +1617,15 @@ static void ShowTaskQueueJobDetails(DashboardState* st, const std::string& jobId
 
 static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobId, POINT ptScreen) {
     if (!st || !st->tqm || jobId.empty()) return;
+    std::string err;
+    std::string resp = st->tqm->TaskQueueGet(jobId, false, 0, err);
+    std::string jobState = JsonGetString(resp, "state", "");
+
     HMENU hMenu = CreatePopupMenu();
+    if (jobState == "running") {
+        AppendMenuW(hMenu, MF_STRING, 3107, Tr(L"ツリー終了 (ジョブ中断)", L"Kill Tree (Cancel Job)", L"Terminar árbol (Cancelar)"));
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    }
     AppendMenuW(hMenu, MF_STRING, 3101, Tr(L"再実行 (Retry)", L"Retry", L"Reintentar"));
     AppendMenuW(hMenu, MF_STRING, 3102, Tr(L"キャンセル (Cancel)", L"Cancel", L"Cancelar"));
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -1612,17 +1638,25 @@ static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobI
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, ptScreen.x, ptScreen.y, 0, st->hwndMain, nullptr);
     DestroyMenu(hMenu);
 
-    std::string err;
-    if (cmd == 3101) {
+    if (cmd == 3107) {
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"このタスクのプロセスツリーを強制終了（ジョブ中断）しますか？",
+                   L"Are you sure you want to kill this task's process tree?",
+                   L"¿Seguro que desea terminar el árbol de procesos de esta tarea?"),
+                Tr(L"ツリー終了の確認", L"Confirm Kill Tree", L"Confirmar cierre"),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            st->tqm->TaskQueueCancel(jobId, err);
+        }
+    } else if (cmd == 3101) {
         st->tqm->TaskQueueRetry(jobId, true, true, err);
     } else if (cmd == 3102) {
         st->tqm->TaskQueueCancel(jobId, err);
     } else if (cmd == 3103 || cmd == 3104) {
-        std::string resp = st->tqm->TaskQueueGet(jobId, false, 0, err);
+        resp = st->tqm->TaskQueueGet(jobId, false, 0, err);
         std::string tqName = JsonGetString(resp, "taskqueue", "");
         if (!tqName.empty()) st->tqm->TaskQueuePause(tqName, cmd == 3103, err);
     } else if (cmd == 3105) {
-        std::string resp = st->tqm->TaskQueueList("", "", err);
+        resp = st->tqm->TaskQueueList("", "", err);
         auto jobs = SplitJsonObjectArray(resp, "jobs");
         std::vector<std::string> queuesDone;
         for (const auto& j : jobs) {
@@ -1976,9 +2010,7 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnViewTasks, 150},
         {st->hwndBtnStart, 160},
         {st->hwndBtnSettings, 90},
-        {st->hwndBtnKillSel, 82},
         {st->hwndBtnKillAll, 74},
-        {st->hwndBtnClear, 185},
         {st->hwndBtnHideEnded, 205},
         {st->hwndBtnGridView, 94},
         {st->hwndBtnToggleList, 90},
@@ -3044,7 +3076,7 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     if (snap.state == ProcState::Running) {
-        AppendMenuW(hMenu, MF_STRING, 3004, Tr(L"プロセスツリーを強制終了", L"Kill Process Tree", L"Terminar árbol de procesos"));
+        AppendMenuW(hMenu, MF_STRING, 3004, Tr(L"ツリー終了", L"Kill Tree", L"Terminar árbol"));
     } else {
         AppendMenuW(hMenu, MF_STRING, 3005, Tr(L"この履歴を削除", L"Remove This Entry", L"Eliminar esta entrada"));
         AppendMenuW(hMenu, MF_STRING, 3006, Tr(L"終了履歴をすべて消去", L"Clear All Ended History", L"Borrar todo el historial finalizado"));
@@ -3066,9 +3098,16 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
         std::wstring logW = Utf8ToWide(snap.logFilePath);
         ShellExecuteW(st->hwndMain, L"open", L"notepad.exe", logW.c_str(), nullptr, SW_SHOWNORMAL);
     } else if (cmd == 3004) {
-        std::string err;
-        st->pm->KillProcess(procId, err);
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"このプロセスツリーを強制終了しますか？",
+                   L"Are you sure you want to kill this process tree?",
+                   L"¿Seguro que desea terminar este árbol de procesos?"),
+                Tr(L"ツリー終了の確認", L"Confirm Kill Tree", L"Confirmar cierre"),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            std::string err;
+            st->pm->KillProcess(procId, err);
+            RefreshDashboardData(st);
+        }
     } else if (cmd == 3005) {
         st->pm->RemoveProcess(procId);
         RefreshDashboardData(st);
@@ -3198,12 +3237,8 @@ static void UpdateToolbarLabels(DashboardState* st) {
     UpdateLaunchButtonLabel(st);
     if (st->hwndBtnSettings)
         SetWindowTextW(st->hwndBtnSettings, Tr(L"設定", L"Settings", L"Ajustes"));
-    if (st->hwndBtnKillSel)
-        SetWindowTextW(st->hwndBtnKillSel, Tr(L"ツリー終了", L"Kill Tree", L"Terminar árbol"));
     if (st->hwndBtnKillAll)
         SetWindowTextW(st->hwndBtnKillAll, Tr(L"全終了", L"Kill All", L"Terminar todo"));
-    if (st->hwndBtnClear)
-        SetWindowTextW(st->hwndBtnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
     UpdateHideEndedButtonLabel(st);
     if (st->hwndBtnGridView)
         SetWindowTextW(st->hwndBtnGridView, Tr(L"グリッド表示", L"Grid View", L"Vista de cuadrícula"));
@@ -3640,6 +3675,7 @@ struct SettingsDlgState {
     HWND btnHc = nullptr;
     HWND btnShell = nullptr;
     HWND btnReset = nullptr;
+    HWND btnClear = nullptr;
     HWND btnClose = nullptr;
     HWND hwndSoundLabel = nullptr;
     HWND chkSound = nullptr;
@@ -3673,6 +3709,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnHc, Tr(L"ハイコントラスト", L"High Contrast", L"Alto contraste"));
     SetWindowTextW(ds->btnShell, Tr(L"シェル構成...", L"Shell Config...", L"Configurar shell..."));
     SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
+    SetWindowTextW(ds->btnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
@@ -3732,6 +3769,8 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 18, 200, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
             ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 210, 200, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
+            ds->btnClear = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                402, 200, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
             ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 560, 360, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
 
@@ -3757,7 +3796,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SetWindowTextW(ds->editSound, Utf8ToWide(ds->dash->completionSoundPath).c_str());
 
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
-                             ds->btnShell, ds->btnReset, ds->btnClose, ds->chkSound, ds->editSound,
+                             ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
                              ds->btnBrowseSound, ds->btnTestSound };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
@@ -3834,6 +3873,13 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
             if (id == IDC_SET_RESET_IDS) {
                 ResetProcessIdsWithConfirm(ds->dash);
+                return 0;
+            }
+            if (id == IDC_SET_CLEAR_ENDED) {
+                if (ds->dash && ds->dash->pm) {
+                    ds->dash->pm->ClearFinished();
+                    RefreshDashboardData(ds->dash);
+                }
                 return 0;
             }
             return 0;
@@ -3993,19 +4039,15 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             st->hFontUiBold = CreateFontW(-13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            st->hFontKpiVal = CreateFontW(-19, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            st->hFontKpiVal = CreateFontW(-14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 
             st->hwndBtnStart = CreateWindowExW(0, L"BUTTON", L"+ Launch (powershell)",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 160, 24, hwnd, (HMENU)IDC_BTN_START, nullptr, nullptr);
             st->hwndBtnSettings = CreateWindowExW(0, L"BUTTON", Tr(L"設定", L"Settings", L"Ajustes"),
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 90, 24, hwnd, (HMENU)IDC_BTN_SETTINGS, nullptr, nullptr);
-            st->hwndBtnKillSel = CreateWindowExW(0, L"BUTTON", L"Kill Tree",
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 82, 24, hwnd, (HMENU)IDC_BTN_KILL_SEL, nullptr, nullptr);
             st->hwndBtnKillAll = CreateWindowExW(0, L"BUTTON", L"Kill All",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 74, 24, hwnd, (HMENU)IDC_BTN_KILL_ALL, nullptr, nullptr);
-            st->hwndBtnClear = CreateWindowExW(0, L"BUTTON", Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 165, 24, hwnd, (HMENU)IDC_BTN_CLEAR, nullptr, nullptr);
             st->hwndBtnHideEnded = CreateWindowExW(0, L"BUTTON", Tr(L"終了履歴を非表示", L"Hide Ended", L"Ocultar finalizados"),
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 185, 24, hwnd, (HMENU)IDC_BTN_HIDE_ENDED, nullptr, nullptr);
             st->hwndBtnGridView = CreateWindowExW(0, L"BUTTON", L"Grid View",
@@ -4096,8 +4138,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             SetWindowSubclass(st->hwndTab, TabSubclassProc, 1, 0);
 
             HWND uiCtrls[] = {
-                st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillSel, st->hwndBtnKillAll,
-                st->hwndBtnClear, st->hwndBtnHideEnded, st->hwndBtnGridView,
+                st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillAll,
+                st->hwndBtnHideEnded, st->hwndBtnGridView,
                 st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnHideTray, st->hwndClock,
                 st->hwndBtnViewTasks, st->hwndList, st->hwndTaskList, st->hwndTab
             };
