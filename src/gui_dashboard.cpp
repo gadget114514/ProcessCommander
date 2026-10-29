@@ -2056,7 +2056,8 @@ static void RefreshDashboardData(DashboardState* st) {
     SendMessageW(st->hwndList, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(st->hwndList, nullptr, FALSE);
     RefreshTaskQueueData(st);
-    InvalidateRect(st->hwndMain, nullptr, FALSE);
+    InvalidateRect(st->hwndMain, &st->rcKpiArea, FALSE);
+    if (st->showUsagePanel) InvalidateRect(st->hwndUsagePanel, nullptr, FALSE);
 }
 
 static void UpdateTaskListColumnWidths(DashboardState* st) {
@@ -4576,7 +4577,9 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     struct KeyStat {
         std::string name;
         uint64_t total = 0;
+        uint64_t in = 0, out = 0, think = 0, cache = 0;
         COLORREF color = RGB(128, 128, 128);
+        int64_t firstEpochSec = 0;
         int64_t lastEpochSec = 0;
     };
     std::vector<KeyStat> keys;
@@ -4586,6 +4589,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     for (const auto& p : points) {
         std::string name = p.agentType.empty() ? "unknown" : p.agentType;
         if (!p.model.empty()) name += " / " + p.model;
+        else name += " / (default)";
         auto it = keyIndex.find(name);
         int idx;
         if (it == keyIndex.end()) {
@@ -4599,8 +4603,13 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             idx = it->second;
         }
         keys[idx].total += p.totalTokens;
+        keys[idx].in += p.inputTokens;
+        keys[idx].out += p.outputTokens;
+        keys[idx].think += p.thinkingTokens;
+        keys[idx].cache += p.cacheReadTokens + p.cacheWriteTokens;
         rangeTotal += p.totalTokens;
         rangeCost += p.costUsd;
+        if (keys[idx].firstEpochSec == 0 || p.epochSec < keys[idx].firstEpochSec) keys[idx].firstEpochSec = p.epochSec;
         if (p.epochSec > keys[idx].lastEpochSec) keys[idx].lastEpochSec = p.epochSec;
     }
 
@@ -4615,7 +4624,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     SetTextColor(hdc, g_theme.accent);
     DrawTextW(hdc, summary.c_str(), -1, &sumRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     int gx0 = 12;
-    int splitX = 12 + (w - 24) * 62 / 100;
+    int splitX = 12 + (w - 24) * 50 / 100;
     int gx1 = splitX - 6;
     int mx0 = splitX + 6;
     int mx1 = w - 12;
@@ -4641,8 +4650,15 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     if (points.empty() || keys.empty()) {
         SetTextColor(hdc, g_theme.muted);
         RECT emptyRc = {gx0, gy0, gx1, gy1};
-        DrawTextW(hdc, Tr(L"まだ使用量データがありません", L"No token usage recorded yet", L"Aún no hay datos de uso"),
-                  -1, &emptyRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        const auto& snaps = st->allSnapshots.empty() ? st->cachedSnapshots : st->allSnapshots;
+        bool fetching = false;
+        for (const auto& sp : snaps) {
+            if (sp.state == ProcState::Running || sp.streamEventCount > 0) { fetching = true; break; }
+        }
+        const wchar_t* msg = fetching
+            ? Tr(L"データを取得中です...", L"Fetching data...", L"Obteniendo datos...")
+            : Tr(L"まだ使用量データがありません", L"No token usage recorded yet", L"Aún no hay datos de uso");
+        DrawTextW(hdc, msg, -1, &emptyRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(hdc, oldFont);
         return;
     }
@@ -4667,6 +4683,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         if (bi < 0 || bi >= nBuckets) continue;
         std::string name = p.agentType.empty() ? "unknown" : p.agentType;
         if (!p.model.empty()) name += " / " + p.model;
+        else name += " / (default)";
         auto it = keyIndex.find(name);
         if (it == keyIndex.end()) continue;
         uint64_t pt = p.totalTokens;
@@ -4741,8 +4758,8 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         int n = static_cast<int>(keys.size());
         int availH = gy1 - gy0;
         int rowH = (n > 0) ? (availH / n) : availH;
-        if (rowH < 13) rowH = 13;
-        if (rowH > 20) rowH = 20;
+        if (rowH < 30) rowH = 30;
+        if (rowH > 44) rowH = 44;
         int labelW = (std::min)(150, mx1 - mx0 - 30);
         int barX0 = mx0 + labelW + 4;
         int y = gy0 + 2;
@@ -4761,33 +4778,45 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             FillRect(hdc, &barRc, mb);
             DeleteObject(mb);
 
-            std::wstring val = FormatCompactTokens(keys[i].total);
+            // Build overlay string: "total remaining [i.. o.. t.. c.. dur]"
             int64_t nowEpoch = static_cast<int64_t>(time(nullptr));
             int64_t elapsed = (keys[i].lastEpochSec > 0) ? (nowEpoch - keys[i].lastEpochSec) : 0;
-            if (keys[i].lastEpochSec > 0) {
-                int64_t e = elapsed;
-                if (e < 0) e = 0;
-                int hh = (int)(e / 3600);
-                int mm = (int)((e % 3600) / 60);
-                int ss = (int)(e % 60);
-                wchar_t buf[16] = {};
-                swprintf_s(buf, L"%02d:%02d:%02d", hh, mm, ss);
-                val += L"  " + std::wstring(buf);
+            int64_t e2 = elapsed;
+            if (e2 < 0) e2 = 0;
+            int rh = (int)(e2 / 3600), rm = (int)((e2 % 3600) / 60), rs = (int)(e2 % 60);
+            wchar_t rbuf[16] = {};
+            swprintf_s(rbuf, L"%d:%02d:%02d", rh, rm, rs);
+            std::wstring val = FormatCompactTokens(keys[i].total) + L" " + std::wstring(rbuf);
+
+            int64_t dur = 0;
+            if (keys[i].firstEpochSec > 0 && keys[i].lastEpochSec >= keys[i].firstEpochSec) {
+                dur = keys[i].lastEpochSec - keys[i].firstEpochSec;
             }
-            // Overlay text on the bar.
-            RECT valRc = barRc;
-            InflateRect(&valRc, -2, 0);
-            if (barW < 60) {
-                valRc.left = barRc.right + 2;
-                valRc.right = mx1;
-            }
-            if (keys[i].lastEpochSec > 0 && elapsed >= 5 * 3600) {
-                SetTextColor(hdc, RGB(0xFF, 0xC0, 0xC0));
-            } else {
-                SetTextColor(hdc, RGB(0xFF, 0xFF, 0xFF));
-            }
-            DrawTextW(hdc, val.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-            y += rowH + 1;
+            int dh = (int)(dur / 3600), dm = (int)((dur % 3600) / 60), ds2 = (int)(dur % 60);
+            wchar_t dbuf[16] = {};
+            swprintf_s(dbuf, L"%d:%02d:%02d", dh, dm, ds2);
+            std::wstring b2 = L"[i" + FormatCompactTokens(keys[i].in) +
+                              L" o" + FormatCompactTokens(keys[i].out) +
+                              L" t" + FormatCompactTokens(keys[i].think) +
+                              L" c" + FormatCompactTokens(keys[i].cache) +
+                              L" " + std::wstring(dbuf) + L"]";
+            std::wstring full = val + L" " + b2;
+
+            // bar height = font height
+            RECT barRc2 = {barX0, y, barX0 + barW, y + 14};
+            // redraw bar with thinner height
+            // (bar already drawn full rowH; cover lower part with panel bg)
+            HBRUSH bgb = CreateSolidBrush(g_theme.panel);
+            RECT lower = {barX0, y + 14, barX0 + barW, y + rowH};
+            FillRect(hdc, &lower, bgb);
+            DeleteObject(bgb);
+
+            RECT valRc = {barX0 + 2, y, (barW < 80) ? mx1 : barX0 + barW - 2, y + 14};
+            if (barW < 80) valRc.left = barX0 + 2;
+            SetTextColor(hdc, (keys[i].lastEpochSec > 0 && elapsed >= 5 * 3600) ? RGB(0xFF, 0xC0, 0xC0) : RGB(0xFF, 0xFF, 0xFF));
+            SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT));
+            DrawTextW(hdc, full.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            y += 16;
         }
     }
 
