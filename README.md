@@ -404,6 +404,20 @@ You can also run the server directly with `ProcessCommander.exe mcp`. It connect
 
 ---
 
+## Optional: `tools/ww` (independent task-card runner)
+
+`tools/ww` holds a separate set of PowerShell scripts (`ww-run`, `ww-watch`, `ww-status`) that run
+task cards with an LLM agent (`agy`, `opencode`, `claude` or `codex`) and watch them for stalls.
+It is a **template that an LLM agent copies into a project, adapts, and uses there internally**;
+the copy here is not meant to be run unchanged.
+It is **not part of ProcessCommander**: neither depends on the other, and you can use
+ProcessCommander without it. If you do use it, ProcessCommander can launch it like any other
+command. See [tools/ww/README-ww.md](tools/ww/README-ww.md):
+[using it from ProcessCommander](tools/ww/README-ww.md#using-it-from-processcommander) and
+[pros and cons](tools/ww/README-ww.md#pros-and-cons).
+
+---
+
 ## Appendix: `ProcessCommander.exe --help`
 
 ```text
