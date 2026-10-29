@@ -91,7 +91,8 @@ public:
     LlmStreamTracker() = default;
 
     void Init(int processId, const std::string& agentType, const std::string& streamFilePath,
-              const std::string& supervisorNotes = "", const std::string& supervisorGoal = "");
+              const std::string& supervisorNotes = "", const std::string& supervisorGoal = "",
+              const std::string& defaultModel = "");
 
     // Ingests raw chunks from process stdout (pipe or ConPTY)
     void IngestChunk(const char* data, size_t len);
@@ -115,6 +116,7 @@ private:
     mutable std::mutex mutex_;
     int processId_ = 0;
     std::string agentType_;
+    std::string conversationId_;
     std::string streamFilePath_;
     std::wstring streamFilePathWide_;
     std::string lineBuffer_;

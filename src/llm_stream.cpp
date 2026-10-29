@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <regex>
 #include <ctime>
 #include <sstream>
 
@@ -72,6 +75,37 @@ std::vector<LlmUsagePoint> GetLlmUsageHistory(int64_t sinceEpochSec) {
         if (p.epochSec >= sinceEpochSec) out.push_back(p);
     }
     return out;
+}
+
+static std::string ReadAgyModelFromTranscript(const std::string& conversationId) {
+    if (conversationId.empty()) return "";
+    const char* home = std::getenv("USERPROFILE");
+    if (!home) home = std::getenv("HOME");
+    if (!home) return "";
+    std::string path = std::string(home) + "/.gemini/antigravity-cli/brain/" + conversationId +
+                      "/.system_generated/logs/chunks/transcript/00000000.jsonl";
+    std::ifstream f(path);
+    if (!f) return "";
+    std::string line;
+    while (std::getline(f, line)) {
+        size_t pos = line.find("Model Selection");
+        if (pos == std::string::npos) continue;
+        size_t fromPos = line.find("from ", pos);
+        if (fromPos == std::string::npos) continue;
+        size_t toPos = line.find(" to ", fromPos);
+        if (toPos == std::string::npos) continue;
+        size_t start = toPos + 4;
+        // find ". " after start
+        size_t end = line.find(". ", start);
+        if (end == std::string::npos) end = line.size();
+        std::string model = line.substr(start, end - start);
+        // trim
+        while (!model.empty() && model.back() == ' ') model.pop_back();
+        if (!model.empty()) {
+            return model;
+        }
+    }
+    return "";
 }
 
 std::string DetectAgentType(const std::string& commandLine, const std::string& name) {
@@ -651,7 +685,8 @@ std::string LlmEventsToSummary(const std::vector<LlmStreamEvent>& events, const 
 }
 
 void LlmStreamTracker::Init(int processId, const std::string& agentType, const std::string& streamFilePath,
-                            const std::string& supervisorNotes, const std::string& supervisorGoal) {
+                            const std::string& supervisorNotes, const std::string& supervisorGoal,
+                            const std::string& defaultModel) {
     std::lock_guard<std::mutex> lock(mutex_);
     processId_ = processId;
     agentType_ = agentType;
@@ -659,6 +694,7 @@ void LlmStreamTracker::Init(int processId, const std::string& agentType, const s
     streamFilePathWide_ = Utf8ToWide(streamFilePath);
 
     state_.agentType = agentType;
+    state_.model = defaultModel;
     state_.streamFilePath = streamFilePath;
     state_.supervisorNotes = supervisorNotes;
     state_.supervisorGoal = supervisorGoal;
@@ -723,6 +759,23 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
     if (!ev.model.empty()) {
         state_.model = ev.model;
     }
+    // agy does not report model in stream-json; recover it from the agy transcript file.
+    if (ev.agentType == "agy" && state_.model.empty()) {
+        nlohmann::json j2 = nlohmann::json::parse(line, nullptr, false);
+        if (!j2.is_discarded()) {
+            if (j2.contains("conversation_id") && j2["conversation_id"].is_string()) {
+                conversationId_ = j2["conversation_id"].get<std::string>();
+            } else if (j2.contains("step_update") && j2["step_update"].is_object() &&
+                       j2["step_update"].contains("conversation_id") && j2["step_update"]["conversation_id"].is_string()) {
+                conversationId_ = j2["step_update"]["conversation_id"].get<std::string>();
+            }
+        }
+        if (!conversationId_.empty()) {
+            std::string m = ReadAgyModelFromTranscript(conversationId_);
+            if (!m.empty()) state_.model = m;
+        }
+    }
+
     // Usage values in streams are usually cumulative; keep the high-water mark so
     // totals do not double-count per-response deltas.
     if (ev.totalTokens > state_.totalTokens) state_.totalTokens = ev.totalTokens;

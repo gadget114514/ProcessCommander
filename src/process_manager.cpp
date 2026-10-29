@@ -421,7 +421,19 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
         if (proc->jsonStream) {
             std::wstring streamPathW = logsDirW + L"\\proc_" + std::to_wstring(proc->id) + L"_" + Utf8ToWide(safeName) + L"_stream.jsonl";
             proc->streamTracker = std::make_unique<LlmStreamTracker>();
-            proc->streamTracker->Init(proc->id, proc->agentType, WideToUtf8(streamPathW), proc->supervisorNotes, proc->supervisorGoal);
+            std::string defaultModel;
+            {
+                const std::string& cl = proc->commandLine;
+                size_t pos = cl.find("--model");
+                if (pos != std::string::npos) {
+                    size_t after = pos + 7;
+                    while (after < cl.size() && (cl[after] == ' ' || cl[after] == '=' || cl[after] == '"')) after++;
+                    size_t end = after;
+                    while (end < cl.size() && cl[end] != ' ' && cl[end] != '"') end++;
+                    if (end > after) defaultModel = cl.substr(after, end - after);
+                }
+            }
+            proc->streamTracker->Init(proc->id, proc->agentType, WideToUtf8(streamPathW), proc->supervisorNotes, proc->supervisorGoal, defaultModel);
         }
 
         {
