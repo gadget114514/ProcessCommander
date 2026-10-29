@@ -105,6 +105,7 @@ struct TaskQueueJob {
     std::string blockedBy;
     std::string createdAt;
     std::string updatedAt;
+    std::string notes;
     int64_t retryAtMs = 0;
 };
 

@@ -489,6 +489,7 @@ static TaskQueueJob ParseJob(const std::string& j) {
     job.blockedBy = JsonFieldStr(j, "blocked_by", "");
     job.createdAt = JsonFieldStr(j, "created_at", "");
     job.updatedAt = JsonFieldStr(j, "updated_at", "");
+    job.notes = JsonFieldStr(j, "notes", "");
     job.retryAtMs = JsonFieldInt(j, "retry_at_ms", 0);
     return job;
 }
@@ -785,7 +786,8 @@ std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeIns
     if (job.blockedBy.empty()) oss << "null";
     else oss << "\"" << JsonEscape(job.blockedBy) << "\"";
     oss << ",\"created_at\":\"" << JsonEscape(job.createdAt) << "\""
-        << ",\"updated_at\":\"" << JsonEscape(job.updatedAt) << "\"}";
+        << ",\"updated_at\":\"" << JsonEscape(job.updatedAt) << "\""
+        << ",\"notes\":\"" << JsonEscape(job.notes) << "\"}";
     return oss.str();
 }
 
@@ -1330,8 +1332,17 @@ std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::
         outError = "job not found: " + id;
         return BuildError(outError);
     }
-    if (job->state == "running" || job->state == "succeeded" || job->state == "cancelled") {
-        outError = "job '" + id + "' can only be updated when pending, failed or blocked";
+    bool onlyNotes = HasJsonKey(patchJson, "notes");
+    // Only "notes" may be updated after a job has finished or is running.
+    if (onlyNotes) {
+        for (const char* k : {"summary","command","cwd","timeout_sec","idle","max_attempts",
+                              "retry_delay_sec","priority","kill_exclude","env","success",
+                              "instructions_text","instructions_file","depends_on"}) {
+            if (HasJsonKey(patchJson, k)) { onlyNotes = false; break; }
+        }
+    }
+    if ((job->state == "running" || job->state == "succeeded" || job->state == "cancelled") && !onlyNotes) {
+        outError = "job '" + id + "' can only be updated when pending, failed or blocked (except notes)";
         return BuildError(outError);
     }
 
@@ -1390,6 +1401,9 @@ std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::
         job->success.exitCode = static_cast<int>(JsonFieldInt(successObj, "exit_code", job->success.exitCode));
         job->success.filesNewer = JsonFieldStrArray(successObj, "files_newer");
         job->success.outputRegex = JsonFieldStr(successObj, "output_regex", "");
+    }
+    if (HasJsonKey(patchJson, "notes")) {
+        job->notes = JsonFieldStr(patchJson, "notes", "");
     }
 
     std::string newText;
