@@ -168,6 +168,25 @@ int main() {
     pm.SetProcessFinishedCallback(nullptr);
     tqm.ShutdownTaskQueueManager();
 
+    // Restart while a max_attempts=1 job is running: the interrupted attempt must not
+    // fail the job, and its dependent must stay pending instead of becoming blocked.
+    {
+        std::string restartState =
+            "{\"name\":\"restartq\",\"concurrency\":1,\"paused\":false,\"version\":3,"
+            "\"notify_file\":\"\",\"max_timeout_sec\":7200,\"default_max_attempts\":2,\"jobs\":["
+            "{\"id\":\"R1\",\"taskqueue\":\"restartq\",\"command\":\"cmd /c exit 0\",\"timeout_sec\":30,"
+            "\"max_attempts\":1,\"state\":\"running\",\"attempts\":[{\"n\":1,\"process_id\":999,"
+            "\"start\":\"2026-01-01 00:00:00\",\"end\":\"\",\"reason\":\"\",\"exit_code\":-1}]},"
+            "{\"id\":\"R2\",\"taskqueue\":\"restartq\",\"command\":\"cmd /c exit 0\",\"timeout_sec\":30,"
+            "\"max_attempts\":1,\"state\":\"pending\",\"depends_on\":[{\"id\":\"R1\",\"on\":\"success\"}]}"
+            "]}";
+        WriteFileAtomicWide(TaskQueueManager::GetTaskQueueFileWide("restartq"), restartState);
+        TaskQueueManager restarted;
+        Check(GetState(restarted, "R1") == "pending", "interrupted running job returns to pending after restart");
+        Check(GetState(restarted, "R2") == "pending", "dependent of interrupted job stays pending after restart");
+        restarted.ShutdownTaskQueueManager();
+    }
+
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASSED" : "FAILURES", g_failures);
     return g_failures == 0 ? 0 : 1;
 }

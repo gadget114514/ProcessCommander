@@ -1897,7 +1897,13 @@ void TaskQueueManager::ApplyAttemptOutcome(TaskQueue& tq, TaskQueueJob& job, boo
     }
 
     EmitEventLocked(tq, "jobAttemptFailed", job.id, a.n);
-    if (static_cast<int>(job.attempts.size()) < job.maxAttempts) {
+    // An attempt cut short by a ProcessCommander restart is not the job's fault,
+    // so it does not use up max_attempts (spec: interrupted jobs are re-run).
+    int countedAttempts = 0;
+    for (const auto& att : job.attempts) {
+        if (att.reason != "interrupted") countedAttempts++;
+    }
+    if (countedAttempts < job.maxAttempts) {
         job.state = "pending";
         job.retryAtMs = static_cast<int64_t>(GetNowTickMs()) + static_cast<int64_t>(job.retryDelaySec) * 1000;
     } else {
