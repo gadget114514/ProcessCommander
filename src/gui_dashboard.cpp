@@ -2119,8 +2119,8 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         if (st->usagePanelHeight < 60) st->usagePanelHeight = 60;
         int usageTop = kHeaderKpiBottom + 2;
         st->rcUsagePanel = {margin, usageTop, width - margin, usageTop + st->usagePanelHeight};
-        st->rcUsageSplitter = {margin, usageTop + st->usagePanelHeight + 2, width - margin, usageTop + st->usagePanelHeight + 8};
-        usageOffset = st->usagePanelHeight + 8;
+        st->rcUsageSplitter = {margin, usageTop + st->usagePanelHeight, width - margin, usageTop + st->usagePanelHeight + 12};
+        usageOffset = st->usagePanelHeight + 12;
         if (st->hwndUsagePanel) {
             MoveWindow(st->hwndUsagePanel, margin, usageTop, (std::max)(200, width - margin * 2), st->usagePanelHeight, TRUE);
             ShowWindow(st->hwndUsagePanel, SW_SHOW);
@@ -5197,7 +5197,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 GetCursorPos(&pt);
                 ScreenToClient(hwnd, &pt);
                 if ((st->rcRowsSplitter.bottom > st->rcRowsSplitter.top && PtInRect(&st->rcRowsSplitter, pt)) ||
-                    (st->rcSplitter.bottom > st->rcSplitter.top && PtInRect(&st->rcSplitter, pt))) {
+                    (st->rcSplitter.bottom > st->rcSplitter.top && PtInRect(&st->rcSplitter, pt)) ||
+                    (st->showUsagePanel && st->rcUsageSplitter.bottom > st->rcUsageSplitter.top && PtInRect(&st->rcUsageSplitter, pt))) {
                     SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
                     return TRUE;
                 }
