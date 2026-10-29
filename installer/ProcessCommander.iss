@@ -2,7 +2,7 @@
 ;
 ; Prerequisites:
 ;   1. Build the Release binaries and assemble the payload into
-;      dist\ProcessCommander-v1.2.1-win64\ :
+;      dist\ProcessCommander-v1.2.2-win64\ :
 ;        ProcessCommander.exe, pcder.exe, conpty.dll, OpenConsole.exe,
 ;        LICENSE, README.md, README-ja.md, docs\images\*
 ;      tools\ (the ww task-card runner template) is taken from the repository directly.
@@ -13,11 +13,11 @@
 ; logs/state/task queues next to the executable without administrator rights.
 
 #define MyAppName "ProcessCommander"
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.2.2"
 #define MyAppPublisher "gadget114514"
 #define MyAppURL "https://github.com/gadget114514/ProcessCommander"
 #define MyAppExeName "ProcessCommander.exe"
-#define PayloadDir "..\dist\ProcessCommander-v1.2.1-win64"
+#define PayloadDir "..\dist\ProcessCommander-v1.2.2-win64"
 
 [Setup]
 AppId={{fb224954-9950-4106-a925-41423c19c7cc}
@@ -28,7 +28,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-VersionInfoVersion=1.2.1.0
+VersionInfoVersion=1.2.2.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=ProcessCommander Setup
 VersionInfoProductName={#MyAppName}
