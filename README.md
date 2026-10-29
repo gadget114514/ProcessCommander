@@ -4,9 +4,10 @@
 
 **ProcessCommander** is a native Win32 C++ Multi-Terminal ConPTY Process Manager and Dashboard designed for orchestrating, monitoring, and interacting with multiple parallel CLI agents (`claude`, `opencode`, build scripts, and interactive shells) via both **Model Context Protocol (MCP)** and **CLI commands**.
 
+![ProcessCommander Dashboard](docs/images/dashboardgraph.jpg)
 ![ProcessCommander Dashboard](docs/images/dashboard.jpg)
 
-![Architecture](archimage.jpg)
+![Architecture](docs/images/archimage.jpg)
 
 ---
 
