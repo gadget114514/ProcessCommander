@@ -4774,13 +4774,19 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
                 swprintf_s(buf, L"%02d:%02d:%02d", hh, mm, ss);
                 val += L"  " + std::wstring(buf);
             }
-            RECT valRc = {barX0 + barW + 4, y, mx1, y + rowH};
-            if (keys[i].lastEpochSec > 0 && elapsed >= 5 * 3600) {
-                SetTextColor(hdc, RGB(0xFF, 0x6B, 0x6B));
-            } else {
-                SetTextColor(hdc, g_theme.muted);
+            // Overlay text on the bar.
+            RECT valRc = barRc;
+            InflateRect(&valRc, -2, 0);
+            if (barW < 60) {
+                valRc.left = barRc.right + 2;
+                valRc.right = mx1;
             }
-            DrawTextW(hdc, val.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            if (keys[i].lastEpochSec > 0 && elapsed >= 5 * 3600) {
+                SetTextColor(hdc, RGB(0xFF, 0xC0, 0xC0));
+            } else {
+                SetTextColor(hdc, RGB(0xFF, 0xFF, 0xFF));
+            }
+            DrawTextW(hdc, val.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             y += rowH + 1;
         }
     }
