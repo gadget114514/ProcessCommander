@@ -1856,6 +1856,8 @@ static void RefreshTaskQueueData(DashboardState* st) {
 
         std::wstring idStr = Utf8ToWide(jobId);
         std::wstring summaryStr = Utf8ToWide(JsonGetString(j, "summary", ""));
+        std::string notes = JsonGetString(j, "notes", "");
+        if (!notes.empty()) summaryStr += L"  [notes: " + Utf8ToWide(notes) + L"]";
         std::wstring stateStr = TaskQueueStateLabel(state, j, stateById);
         std::wstring attemptsStr = std::to_wstring(JsonGetInt(j, "max_attempts", 0));
         std::wstring timeoutStr = std::to_wstring(JsonGetInt(j, "timeout_sec", 0)) + L"s";

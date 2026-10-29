@@ -1016,6 +1016,8 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
                           << " queue=" << JsonGetString(j, "taskqueue", "")
                           << " max_attempts=" << JsonGetInt(j, "max_attempts", 0)
                           << " :: " << JsonGetString(j, "summary", "");
+                std::string notes = JsonGetString(j, "notes", "");
+                if (!notes.empty()) std::cout << "  notes=" << notes;
                 std::string blockedBy = JsonGetString(j, "blocked_by", "");
                 if (!blockedBy.empty()) std::cout << " (blocked by " << blockedBy << ")";
                 std::cout << "\n";
