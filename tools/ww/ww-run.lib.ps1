@@ -44,17 +44,24 @@ function Resolve-WwPaths {
 # Engines: agy, opencode, claude (Claude Code), codex (Codex CLI).
 # claude.exe / codex.exe are also what interactive sessions run as, so for those two only a
 # command line that carries a ww prompt ("Execute ...tasks/<id>-...") counts as a worker run.
-# Claude Code installed through npm runs as node.exe .../claude-code/cli.js.
+# Claude Code installed through npm runs as node.exe .../claude-code/cli.js, and may also appear
+# under the npm or claude.cmd shims.
 function Test-WorkerProcess([object]$Proc) {
     if (-not $Proc) { return $false }
     $name = [string]$Proc.Name
     $cmd = [string]$Proc.CommandLine
     $wwPrompt = $cmd -match 'Execute\s+\S*tasks[\\/]'
+    $claudePrint = [bool]($wwPrompt -and $cmd -match '\s(-p|--print)\s')
     switch ($name) {
         'agy.exe'      { return $true }
         'opencode.exe' { return [bool]($cmd -match '\srun\s') }
-        'claude.exe'   { return [bool]($wwPrompt -and $cmd -match '\s(-p|--print)\s') }
+        'claude.exe'   { return $claudePrint }
+        'claude.cmd'   { return $claudePrint }
         'node.exe'     { return [bool]($wwPrompt -and $cmd -match 'claude-code[\\/]cli' -and $cmd -match '\s(-p|--print)\s') }
+        'npm'          { return $claudePrint }
+        'npm.cmd'      { return $claudePrint }
+        'npm.exe'      { return $claudePrint }
+        'cmd.exe'      { return [bool]($claudePrint -and $cmd -match 'claude') }
         'codex.exe'    { return [bool]($wwPrompt -and $cmd -match '\sexec\s') }
     }
     return $false
