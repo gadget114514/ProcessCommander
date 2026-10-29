@@ -589,6 +589,7 @@ TaskQueueCounts TaskQueueManager::GetJobCounts() const {
     TaskQueueCounts counts;
     counts.minRemainingSec = -1;
     counts.sumRemainingSec = 0;
+    bool anyRemain = false;
     for (const auto& [name, tq] : queues_) {
         (void)name;
         for (const auto& job : tq.jobs) {
@@ -618,11 +619,17 @@ TaskQueueCounts TaskQueueManager::GetJobCounts() const {
                                     counts.minRemainingSec = rem;
                                 }
                                 counts.sumRemainingSec += rem;
+                                anyRemain = true;
                             }
                         }
                     }
                 } else if (job.timeoutSec > 0) {
-                    counts.sumRemainingSec += static_cast<int64_t>(job.timeoutSec);
+                    int64_t rem = static_cast<int64_t>(job.timeoutSec);
+                    if (counts.minRemainingSec < 0 || rem < counts.minRemainingSec) {
+                        counts.minRemainingSec = rem;
+                    }
+                    counts.sumRemainingSec += rem;
+                    anyRemain = true;
                 }
             } else if (job.state == "pending") {
                 bool allSat = true;
@@ -643,8 +650,16 @@ TaskQueueCounts TaskQueueManager::GetJobCounts() const {
                 } else {
                     counts.pending++;
                 }
+                if (job.timeoutSec > 0) {
+                    counts.sumRemainingSec += static_cast<int64_t>(job.timeoutSec);
+                    anyRemain = true;
+                }
             } else if (job.state == "blocked") {
                 counts.blocked++;
+                if (job.timeoutSec > 0) {
+                    counts.sumRemainingSec += static_cast<int64_t>(job.timeoutSec);
+                    anyRemain = true;
+                }
             } else if (job.state == "succeeded") {
                 counts.succeeded++;
             } else if (job.state == "failed") {
@@ -654,6 +669,7 @@ TaskQueueCounts TaskQueueManager::GetJobCounts() const {
             }
         }
     }
+    if (!anyRemain) counts.sumRemainingSec = -1;
     return counts;
 }
 

@@ -854,11 +854,14 @@ static void UpdateKpiTooltips(DashboardState* st, uint32_t totalTreeProcs,
         L"Tareas en espera de dependencias o bloqueadas por fallo aguas arriba.");
 
     st->kpiTipText[13] = Tr(
-        L"稼働中タスクの中で最も近いタイムアウトまでの残り時間。",
-        L"Shortest remaining time before timeout among running tasks.",
-        L"Tiempo restante más corto antes del tiempo límite entre tareas activas.");
+        L"未完了タスク（実行中・待機・ブロック）の残り時間の合計。実行中は残りタイムアウト、未起動はタイムアウト値で見積もります。",
+        L"Total remaining time across unfinished tasks (running, waiting, blocked). Running tasks use the remaining timeout; not-yet-started tasks use their timeout.",
+        L"Tiempo restante total de las tareas sin terminar (en ejecución, en espera, bloqueadas). Las tareas activas usan el tiempo límite restante; las no iniciadas usan su tiempo límite.");
+    if (tqCounts.sumRemainingSec >= 0) {
+        st->kpiTipText[13] += std::wstring(L"\n") + Tr(L"合計残り時間: ", L"Total remaining: ", L"Restante total: ") + FormatRemainingTime(tqCounts.sumRemainingSec);
+    }
     if (taskMinRemainSec >= 0) {
-        st->kpiTipText[13] += std::wstring(L"\n") + Tr(L"残り時間: ", L"Remaining: ", L"Restante: ") + FormatRemainingTime(taskMinRemainSec);
+        st->kpiTipText[13] += std::wstring(L"\n") + Tr(L"最短: ", L"Shortest: ", L"Más corto: ") + FormatRemainingTime(taskMinRemainSec);
     }
 
     for (int i = 0; i < kNumKpiCards; ++i) {
@@ -1128,8 +1131,8 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                                 std::to_wstring(tqCounts.pending + tqCounts.blocked), KpiAccent(5), st->hFontUi, st->hFontKpiVal,
                                 -1.0f, sub);
                 } else if (col == 6) {
-                    std::wstring val = (tqCounts.minRemainingSec >= 0) ? FormatRemainingTimeShort(tqCounts.minRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
-                    DrawKpiCard(hdc, rcCard, Tr(L"残り時間", L"TASK TIMEOUT", L"TIEMPO RESTANTE"),
+                    std::wstring val = (tqCounts.sumRemainingSec >= 0) ? FormatRemainingTimeShort(tqCounts.sumRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
+                    DrawKpiCard(hdc, rcCard, Tr(L"残り時間", L"TASK REMAINING", L"RESTANTE TOTAL"),
                                 val, KpiAccent(6), st->hFontUi, st->hFontKpiVal);
                 }
             }
@@ -1844,6 +1847,11 @@ static void RefreshTaskQueueData(DashboardState* st) {
                         endStr = L"~" + Utf8ToWide(TimeOfDayText(est));
                     }
                 }
+            }
+        } else if (state == "pending") {
+            int timeoutSec = static_cast<int>(JsonGetInt(j, "timeout_sec", 0));
+            if (timeoutSec > 0) {
+                endStr = FormatRemainingTime(timeoutSec);
             }
         }
         std::wstring depsStr = TaskQueueDepsDisplay(j);
