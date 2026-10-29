@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "llm_stream.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
