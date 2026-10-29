@@ -2,6 +2,8 @@
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <ctime>
 #include <sstream>
 
 namespace pc {
@@ -32,7 +34,41 @@ static std::string TrimStr(const std::string& s) {
     return s.substr(first, last - first + 1);
 }
 
+constexpr int64_t kUsageRetentionSec = 24 * 60 * 60;
+constexpr size_t kMaxUsagePoints = 200000;
+static std::mutex g_usageHistoryMutex;
+static std::deque<LlmUsagePoint> g_usageHistory;
+
 } // namespace
+
+void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
+    if (point.totalTokens == 0 && point.inputTokens == 0 && point.outputTokens == 0 &&
+        point.thinkingTokens == 0 && point.cacheReadTokens == 0 && point.cacheWriteTokens == 0 &&
+        point.costUsd <= 0.0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
+    LlmUsagePoint p = point;
+    p.epochSec = epochSec;
+    g_usageHistory.push_back(std::move(p));
+    int64_t cutoff = epochSec - kUsageRetentionSec;
+    while (!g_usageHistory.empty() && g_usageHistory.front().epochSec < cutoff) {
+        g_usageHistory.pop_front();
+    }
+    while (g_usageHistory.size() > kMaxUsagePoints) {
+        g_usageHistory.pop_front();
+    }
+}
+
+std::vector<LlmUsagePoint> GetLlmUsageHistory(int64_t sinceEpochSec) {
+    std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
+    std::vector<LlmUsagePoint> out;
+    out.reserve(g_usageHistory.size());
+    for (const auto& p : g_usageHistory) {
+        if (p.epochSec >= sinceEpochSec) out.push_back(p);
+    }
+    return out;
+}
 
 std::string DetectAgentType(const std::string& commandLine, const std::string& name) {
     std::string lcmd = ToLowerStr(commandLine);
@@ -75,6 +111,134 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         return "";
     };
 
+    // Some agents wrap the interesting payload in "part" / "properties.part".
+    const nlohmann::json* partObj = nullptr;
+    if (j.contains("part") && j["part"].is_object()) {
+        partObj = &j["part"];
+    } else if (j.contains("properties") && j["properties"].is_object() &&
+               j["properties"].contains("part") && j["properties"]["part"].is_object()) {
+        partObj = &j["properties"]["part"];
+    } else if (j.contains("content_block") && j["content_block"].is_object()) {
+        partObj = &j["content_block"];
+    }
+    const nlohmann::json* partState = nullptr;
+    if (partObj && partObj->contains("state") && (*partObj)["state"].is_object()) {
+        partState = &(*partObj)["state"];
+    }
+
+    auto getU64 = [](const nlohmann::json& obj, const char* key) -> uint64_t {
+        if (obj.contains(key) && obj[key].is_number()) return obj[key].get<uint64_t>();
+        return 0;
+    };
+    auto applyUsage = [&](const nlohmann::json& u) {
+        if (!u.is_object()) return;
+        uint64_t in = getU64(u, "input_tokens");
+        if (!in) in = getU64(u, "prompt_tokens");
+        if (!in) in = getU64(u, "input");
+        uint64_t out = getU64(u, "output_tokens");
+        if (!out) out = getU64(u, "completion_tokens");
+        if (!out) out = getU64(u, "output");
+        uint64_t total = getU64(u, "total_tokens");
+        if (!total) total = getU64(u, "total");
+        uint64_t cacheRead = getU64(u, "cache_read_input_tokens");
+        uint64_t cacheWrite = getU64(u, "cache_creation_input_tokens");
+        if (u.contains("cache") && u["cache"].is_object()) {
+            if (!cacheRead) cacheRead = getU64(u["cache"], "read");
+            if (!cacheWrite) cacheWrite = getU64(u["cache"], "write");
+        }
+        uint64_t thinking = getU64(u, "reasoning_tokens");
+        if (!thinking) thinking = getU64(u, "thinking_tokens");
+        if (!thinking) thinking = getU64(u, "reasoning");
+        if (u.contains("completion_tokens_details") && u["completion_tokens_details"].is_object()) {
+            if (!thinking) thinking = getU64(u["completion_tokens_details"], "reasoning_tokens");
+        }
+        if (u.contains("output_tokens_details") && u["output_tokens_details"].is_object()) {
+            if (!thinking) thinking = getU64(u["output_tokens_details"], "reasoning_tokens");
+        }
+        if (u.contains("details") && u["details"].is_object()) {
+            if (!thinking) thinking = getU64(u["details"], "reasoning_tokens");
+        }
+        if (in) outEvent.inputTokens = in;
+        if (out) outEvent.outputTokens = out;
+        if (thinking) outEvent.thinkingTokens = thinking;
+        if (cacheRead) outEvent.cacheReadTokens = cacheRead;
+        if (cacheWrite) outEvent.cacheWriteTokens = cacheWrite;
+        if (total) outEvent.totalTokens = total;
+        else if (in || out) outEvent.totalTokens = in + out + cacheRead + cacheWrite;
+        if (u.contains("cost_usd") && u["cost_usd"].is_number()) outEvent.costUsd = u["cost_usd"].get<double>();
+        else if (u.contains("cost") && u["cost"].is_number()) outEvent.costUsd = u["cost"].get<double>();
+        else if (u.contains("total_cost") && u["total_cost"].is_number()) outEvent.costUsd = u["total_cost"].get<double>();
+    };
+
+    // Usage can be top-level, nested in message/part/tokens, or under properties.
+    if (j.contains("usage")) applyUsage(j["usage"]);
+    if (j.contains("tokens") && j["tokens"].is_object()) applyUsage(j["tokens"]);
+    if (j.contains("message") && j["message"].is_object() && j["message"].contains("usage")) {
+        applyUsage(j["message"]["usage"]);
+    }
+    if (j.contains("properties") && j["properties"].is_object()) {
+        const auto& props = j["properties"];
+        if (props.contains("usage")) applyUsage(props["usage"]);
+        if (props.contains("part") && props["part"].is_object()) {
+            if (props["part"].contains("tokens")) applyUsage(props["part"]["tokens"]);
+            if (props["part"].contains("cost") && props["part"]["cost"].is_number()) {
+                outEvent.costUsd = props["part"]["cost"].get<double>();
+            }
+        }
+    }
+    if (partObj) {
+        if (partObj->contains("tokens")) applyUsage((*partObj)["tokens"]);
+        if (partObj->contains("cost") && (*partObj)["cost"].is_number()) {
+            outEvent.costUsd = (*partObj)["cost"].get<double>();
+        }
+    }
+
+    // Shared post-processing so Tool / Action / Content are populated for every event.
+    auto finish = [&]() -> bool {
+        if (outEvent.type == "tool_call" || outEvent.type == "tool_result") {
+            if (outEvent.toolName.empty()) {
+                std::string n = getStr(j, "tool");
+                if (n.empty()) n = getStr(j, "name");
+                if (n.empty()) n = getStr(j, "tool_name");
+                if (n.empty()) n = getStr(j, "toolName");
+                if (n.empty() && partObj) {
+                    n = getStr(*partObj, "tool");
+                    if (n.empty()) n = getStr(*partObj, "name");
+                    if (n.empty()) n = getStr(*partObj, "toolName");
+                }
+                if (!n.empty()) outEvent.toolName = n;
+            }
+            if (outEvent.toolInput.empty() && partState) {
+                if (partState->contains("input")) {
+                    outEvent.toolInput = (*partState)["input"].is_string()
+                        ? (*partState)["input"].get<std::string>() : (*partState)["input"].dump();
+                } else if (partState->contains("output")) {
+                    outEvent.toolInput = (*partState)["output"].is_string()
+                        ? (*partState)["output"].get<std::string>() : (*partState)["output"].dump();
+                }
+            }
+        }
+        if (outEvent.toolAction.empty()) {
+            if (outEvent.type == "tool_call" && !outEvent.toolName.empty()) {
+                outEvent.toolAction = "Calling " + outEvent.toolName;
+            } else if (outEvent.type == "tool_result") {
+                outEvent.toolAction = outEvent.toolName.empty() ? "Result" : ("Result: " + outEvent.toolName);
+            } else if (outEvent.type == "thinking") {
+                outEvent.toolAction = "Thinking";
+            } else if (outEvent.type == "message") {
+                outEvent.toolAction = "Message";
+            }
+        }
+        if (outEvent.content.empty()) {
+            if (!outEvent.toolInput.empty()) outEvent.content = outEvent.toolInput;
+            else if (!outEvent.toolAction.empty()) outEvent.content = outEvent.toolAction;
+        }
+        if (outEvent.type == "usage" && outEvent.content.empty()) {
+            outEvent.content = LlmEventUsageText(outEvent);
+        }
+        return true;
+    };
+
     if (j.contains("agent") && j["agent"].is_string()) {
         outEvent.agentType = j["agent"].get<std::string>();
     }
@@ -110,7 +274,12 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
     std::string lType = ToLowerStr(rawType);
 
     // 1. Tool Call / Tool Use (Claude, agy, OpenCode, Codex)
-    if (rawType == "PLANNER_RESPONSE" || j.contains("tool_calls")) {
+    std::string partType = partObj ? ToLowerStr(getStr(*partObj, "type")) : "";
+    std::string partStatus = partState ? ToLowerStr(getStr(*partState, "status")) : "";
+    bool partIsTool = (partType == "tool_use" || partType == "tool" || partType == "function_call");
+    bool partToolFinished = (partStatus == "completed" || partStatus == "error" || partStatus == "failed");
+    bool partIsToolUse = partIsTool && !partToolFinished;
+    if (rawType == "PLANNER_RESPONSE" || j.contains("tool_calls") || partIsToolUse) {
         outEvent.type = "tool_call";
         outEvent.status = "calling_tool";
         if (j.contains("thinking") && j["thinking"].is_string()) {
@@ -133,7 +302,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
             }
         }
         if (outEvent.toolAction.empty()) outEvent.toolAction = outEvent.toolName;
-        return true;
+        return finish();
     }
 
     if (lType == "tool_use" || lType == "tool_call" || lType == "call" ||
@@ -168,11 +337,12 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         if (outEvent.toolAction.empty() && !outEvent.toolName.empty()) {
             outEvent.toolAction = "Calling " + outEvent.toolName;
         }
-        return true;
+        return finish();
     }
 
     // 2. Tool Result
-    if (lType == "tool_result" || lType == "function_result" || lType == "tool_response") {
+    if (lType == "tool_result" || lType == "function_result" || lType == "tool_response" ||
+        partType == "tool_result" || (partIsTool && partToolFinished)) {
         outEvent.type = "tool_result";
         outEvent.status = "tool_result";
         outEvent.toolName = getStr(j, "name");
@@ -183,8 +353,11 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
             outEvent.content = j["output"].is_string() ? j["output"].get<std::string>() : j["output"].dump();
         } else if (j.contains("result")) {
             outEvent.content = j["result"].is_string() ? j["result"].get<std::string>() : j["result"].dump();
+        } else if (partState && partState->contains("output")) {
+            outEvent.content = (*partState)["output"].is_string()
+                ? (*partState)["output"].get<std::string>() : (*partState)["output"].dump();
         }
-        return true;
+        return finish();
     }
 
     // 3. Thinking / Chain-of-Thought (Claude, agy, OpenAI o1/o3/codex reasoning)
@@ -196,7 +369,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         if (outEvent.content.empty()) outEvent.content = getStr(j, "reasoning");
         if (outEvent.content.empty()) outEvent.content = getStr(j, "message");
         if (outEvent.content.empty()) outEvent.content = getStr(j, "content");
-        return true;
+        return finish();
     }
 
     // 4. Message / Assistant response / Delta
@@ -212,7 +385,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
             if (outEvent.content.empty()) outEvent.content = getStr(j, "message");
             if (outEvent.content.empty()) outEvent.content = getStr(j, "text");
         }
-        return true;
+        return finish();
     }
 
     // 5. Status / Progress
@@ -226,7 +399,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         if (summary.empty()) summary = getStr(j, "message");
         if (summary.empty()) summary = getStr(j, "description");
         outEvent.content = summary;
-        return true;
+        return finish();
     }
 
     // 6. Cost / Usage
@@ -242,7 +415,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         if (u->contains("cost_usd") && (*u)["cost_usd"].is_number()) {
             outEvent.costUsd = (*u)["cost_usd"].get<double>();
         }
-        return true;
+        return finish();
     }
 
     // 7. Error
@@ -255,7 +428,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
             outEvent.content = getStr(j["error"], "message");
             if (outEvent.content.empty()) outEvent.content = j["error"].dump();
         }
-        return true;
+        return finish();
     }
 
     // 8. Result / Done
@@ -265,7 +438,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         outEvent.content = getStr(j, "summary");
         if (outEvent.content.empty()) outEvent.content = getStr(j, "result");
         if (outEvent.model.empty() && j.contains("model") && j["model"].is_string()) outEvent.model = j["model"].get<std::string>();
-        return true;
+        return finish();
     }
 
     // Generic fallback for any valid JSON object
@@ -274,7 +447,30 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
     if (outEvent.content.empty()) outEvent.content = getStr(j, "summary");
     if (outEvent.content.empty()) outEvent.content = getStr(j, "text");
     outEvent.status = "running";
-    return true;
+    return finish();
+}
+
+std::string LlmEventUsageText(const LlmStreamEvent& ev) {
+    std::ostringstream o;
+    auto sep = [&]() { if (!o.str().empty()) o << " / "; };
+    auto addCount = [&](const char* label, uint64_t v) {
+        if (v == 0) return;
+        sep();
+        o << label << " " << v;
+    };
+    addCount("in", ev.inputTokens);
+    addCount("out", ev.outputTokens);
+    addCount("think", ev.thinkingTokens);
+    if (ev.inputTokens == 0 && ev.outputTokens == 0 && ev.thinkingTokens == 0) addCount("tok", ev.totalTokens);
+    addCount("cacheR", ev.cacheReadTokens);
+    addCount("cacheW", ev.cacheWriteTokens);
+    if (ev.costUsd > 0.0) {
+        sep();
+        char buf[32];
+        snprintf(buf, sizeof(buf), "$%.4f", ev.costUsd);
+        o << buf;
+    }
+    return o.str();
 }
 
 std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state) {
@@ -311,7 +507,14 @@ std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const Llm
         item["status"] = ev.status;
         item["step"] = ev.stepIndex;
         if (ev.totalTokens > 0) item["total_tokens"] = ev.totalTokens;
+        if (ev.inputTokens > 0) item["input_tokens"] = ev.inputTokens;
+        if (ev.outputTokens > 0) item["output_tokens"] = ev.outputTokens;
+        if (ev.thinkingTokens > 0) item["thinking_tokens"] = ev.thinkingTokens;
+        if (ev.cacheReadTokens > 0) item["cache_read_tokens"] = ev.cacheReadTokens;
+        if (ev.cacheWriteTokens > 0) item["cache_write_tokens"] = ev.cacheWriteTokens;
         if (ev.costUsd > 0.0) item["cost_usd"] = ev.costUsd;
+        std::string usageText = LlmEventUsageText(ev);
+        if (!usageText.empty()) item["usage_text"] = usageText;
         evArr.push_back(item);
     }
     root["events"] = evArr;
@@ -437,6 +640,42 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
     }
     if (!ev.model.empty()) {
         state_.model = ev.model;
+    }
+    // Usage values in streams are usually cumulative; keep the high-water mark so
+    // totals do not double-count per-response deltas.
+    if (ev.totalTokens > state_.totalTokens) state_.totalTokens = ev.totalTokens;
+    if (ev.costUsd > state_.costUsd) state_.costUsd = ev.costUsd;
+    uint64_t eventTokens = ev.totalTokens;
+    if (eventTokens == 0) eventTokens = ev.inputTokens + ev.outputTokens + ev.thinkingTokens + ev.cacheReadTokens + ev.cacheWriteTokens;
+    if (eventTokens > 0 || ev.costUsd > 0.0) {
+        uint64_t deltaInput = (ev.inputTokens >= lastInput_) ? (ev.inputTokens - lastInput_) : ev.inputTokens;
+        uint64_t deltaOutput = (ev.outputTokens >= lastOutput_) ? (ev.outputTokens - lastOutput_) : ev.outputTokens;
+        uint64_t deltaThinking = (ev.thinkingTokens >= lastThinking_) ? (ev.thinkingTokens - lastThinking_) : ev.thinkingTokens;
+        uint64_t deltaCacheRead = (ev.cacheReadTokens >= lastCacheRead_) ? (ev.cacheReadTokens - lastCacheRead_) : ev.cacheReadTokens;
+        uint64_t deltaCacheWrite = (ev.cacheWriteTokens >= lastCacheWrite_) ? (ev.cacheWriteTokens - lastCacheWrite_) : ev.cacheWriteTokens;
+        uint64_t deltaTotal = deltaInput + deltaOutput + deltaThinking + deltaCacheRead + deltaCacheWrite;
+        if (deltaTotal == 0 && eventTokens >= lastUsageTotal_) deltaTotal = eventTokens - lastUsageTotal_;
+        double deltaCost = (ev.costUsd >= lastUsageCost_) ? (ev.costUsd - lastUsageCost_) : ev.costUsd;
+        lastUsageTotal_ = eventTokens;
+        lastInput_ = ev.inputTokens;
+        lastOutput_ = ev.outputTokens;
+        lastThinking_ = ev.thinkingTokens;
+        lastCacheRead_ = ev.cacheReadTokens;
+        lastCacheWrite_ = ev.cacheWriteTokens;
+        lastUsageCost_ = ev.costUsd;
+        if (deltaTotal > 0 || deltaCost > 0.0) {
+            LlmUsagePoint pt;
+            pt.inputTokens = deltaInput;
+            pt.outputTokens = deltaOutput;
+            pt.thinkingTokens = deltaThinking;
+            pt.cacheReadTokens = deltaCacheRead;
+            pt.cacheWriteTokens = deltaCacheWrite;
+            pt.totalTokens = deltaTotal;
+            pt.costUsd = deltaCost;
+            pt.agentType = ev.agentType.empty() ? agentType_ : ev.agentType;
+            pt.model = ev.model.empty() ? state_.model : ev.model;
+            RecordLlmUsagePoint(static_cast<int64_t>(time(nullptr)), pt);
+        }
     }
 
     if (ev.type == "tool_call") {

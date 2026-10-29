@@ -24,6 +24,11 @@ struct LlmStreamEvent {
     std::string status;        // "thinking", "calling_tool", "generating", "idle", "completed", "error"
     int stepIndex = 0;
     uint64_t totalTokens = 0;
+    uint64_t inputTokens = 0;
+    uint64_t outputTokens = 0;
+    uint64_t thinkingTokens = 0;
+    uint64_t cacheReadTokens = 0;
+    uint64_t cacheWriteTokens = 0;
     double costUsd = 0.0;
 };
 
@@ -57,6 +62,26 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
 // Format events as JSON array or human-readable summary
 std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state);
 std::string LlmEventsToSummary(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state);
+
+// Human-readable usage summary (tokens / cache / cost) for one event. Empty if no usage data.
+std::string LlmEventUsageText(const LlmStreamEvent& ev);
+
+// Process-wide token usage history used for dashboard graphs.
+struct LlmUsagePoint {
+    int64_t epochSec = 0;
+    uint64_t inputTokens = 0;
+    uint64_t outputTokens = 0;
+    uint64_t thinkingTokens = 0;
+    uint64_t cacheReadTokens = 0;
+    uint64_t cacheWriteTokens = 0;
+    uint64_t totalTokens = 0;
+    double costUsd = 0.0;
+    std::string agentType;
+    std::string model;
+};
+
+void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point);
+std::vector<LlmUsagePoint> GetLlmUsageHistory(int64_t sinceEpochSec);
 
 // Thread-safe tracker that ingests raw output chunks, extracts JSONL lines,
 // persists them to logs/proc_<id>_<name>_stream.jsonl, and maintains the current state.
@@ -95,6 +120,13 @@ private:
     std::deque<LlmStreamEvent> events_;
     LlmAgentState state_;
     uint64_t nextSeq_ = 1;
+    uint64_t lastUsageTotal_ = 0;
+    uint64_t lastInput_ = 0;
+    uint64_t lastOutput_ = 0;
+    uint64_t lastThinking_ = 0;
+    uint64_t lastCacheRead_ = 0;
+    uint64_t lastCacheWrite_ = 0;
+    double lastUsageCost_ = 0.0;
     static constexpr size_t kMaxEvents = 500;
 };
 

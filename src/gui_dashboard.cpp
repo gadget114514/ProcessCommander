@@ -389,6 +389,7 @@ constexpr int kStatusBarH          = 26;
 constexpr int kMinListH            = 60;
 constexpr int kMinTerminalH        = 200;
 constexpr int kNumKpiCards         = 14;
+constexpr int kUsagePanelH         = 110;
 
 enum ControlId {
     IDC_BTN_START = 1005,
@@ -406,6 +407,7 @@ enum ControlId {
     IDC_CLOCK = 1024,
     IDC_BTN_VIEW_TASKS = 1025,
     IDC_LIST_TASKS = 1026,
+    IDC_BTN_USAGE = 1027,
     IDC_SET_LANG_JA = 6001,
     IDC_SET_LANG_EN = 6002,
     IDC_SET_LANG_ES = 6003,
@@ -425,7 +427,8 @@ enum ControlId {
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
-    IDM_TRAY_EXIT = 4004
+    IDM_TRAY_EXIT = 4004,
+    IDM_TRAY_USAGE = 4005
 };
 
 enum class ShellType {
@@ -470,6 +473,11 @@ struct DashboardState {
     HWND hwndBtnHideTray = nullptr;
     HWND hwndBtnToggleList = nullptr;
     HWND hwndBtnToggleTerm = nullptr;
+    HWND hwndBtnUsage = nullptr;
+    HWND hwndUsagePanel = nullptr;
+    bool showUsagePanel = true;
+    int usageRangeIndex = 1;
+    RECT rcUsagePanel = {};
     HWND hwndList = nullptr;
     HWND hwndTaskList = nullptr;
     HWND hwndBtnViewTasks = nullptr;
@@ -2087,6 +2095,20 @@ static void LayoutControls(DashboardState* st, int width, int height) {
 
     st->rcKpiArea = {margin, kHeaderKpiTop, width - margin, kHeaderKpiBottom};
 
+    int usageOffset = 0;
+    if (st->showUsagePanel) {
+        int usageTop = kHeaderKpiBottom + 2;
+        st->rcUsagePanel = {margin, usageTop, width - margin, usageTop + kUsagePanelH};
+        usageOffset = kUsagePanelH + 8;
+        if (st->hwndUsagePanel) {
+            MoveWindow(st->hwndUsagePanel, margin, usageTop, (std::max)(200, width - margin * 2), kUsagePanelH, TRUE);
+            ShowWindow(st->hwndUsagePanel, SW_SHOW);
+        }
+    } else {
+        st->rcUsagePanel = {};
+        if (st->hwndUsagePanel) ShowWindow(st->hwndUsagePanel, SW_HIDE);
+    }
+
     // Toolbar buttons flow into multiple rows when the window is too narrow.
     struct ToolbarButton { HWND hwnd; int w; };
     const ToolbarButton buttons[] = {
@@ -2097,12 +2119,13 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnGridView, 28},
         {st->hwndBtnToggleList, 28},
         {st->hwndBtnToggleTerm, 30},
+        {st->hwndBtnUsage, 28},
         {st->hwndBtnHideTray, 28},
         {st->hwndClock, 80}
     };
     const int gap = 7;
     int xCur = margin;
-    int yBar = kToolbarTop;
+    int yBar = kToolbarTop + usageOffset;
     for (const auto& b : buttons) {
         if (!b.hwnd) continue;
         if (xCur > margin && xCur + b.w > width - margin) {
@@ -2823,7 +2846,160 @@ struct LlmStreamDlgState {
     HWND hwndTooltip = nullptr;
     UINT_PTR timerId = 0;
     size_t lastEventCount = 0;
+    RECT rcUsageGraph = {};
 };
+
+struct UsageBar {
+    RECT rc = {};
+    int eventIndex = -1;
+    uint64_t inputTokens = 0;
+    uint64_t outputTokens = 0;
+    uint64_t thinkingTokens = 0;
+    uint64_t cacheTokens = 0;
+};
+
+static std::vector<UsageBar> BuildUsageBars(const RECT& rc, const std::vector<LlmStreamEvent>& events) {
+    std::vector<UsageBar> bars;
+    if (rc.right <= rc.left || rc.bottom <= rc.top) return bars;
+
+    struct Value {
+        int index;
+        uint64_t in;
+        uint64_t out;
+        uint64_t think;
+        uint64_t cache;
+    };
+    std::vector<Value> vals;
+    uint64_t maxVal = 0;
+    for (int i = 0; i < static_cast<int>(events.size()); ++i) {
+        const auto& ev = events[i];
+        uint64_t in = ev.inputTokens;
+        uint64_t out = ev.outputTokens;
+        uint64_t think = ev.thinkingTokens;
+        uint64_t cache = ev.cacheReadTokens + ev.cacheWriteTokens;
+        if (in == 0 && out == 0 && think == 0 && cache == 0 && ev.totalTokens > 0) in = ev.totalTokens;
+        uint64_t sum = in + out + think + cache;
+        if (sum == 0) continue;
+        vals.push_back({i, in, out, think, cache});
+        if (sum > maxVal) maxVal = sum;
+    }
+    if (vals.empty() || maxVal == 0) return bars;
+
+    int left = rc.left + 4;
+    int right = rc.right - 4;
+    int top = rc.top + 18;
+    int bottom = rc.bottom - 4;
+    int plotW = right - left;
+    int plotH = bottom - top;
+    if (plotW <= 0 || plotH <= 0) return bars;
+
+    int n = static_cast<int>(vals.size());
+    int slot = plotW / n;
+    if (slot < 1) slot = 1;
+    for (int k = 0; k < n; ++k) {
+        int x0 = left + k * slot;
+        int x1 = (k == n - 1) ? right : left + (k + 1) * slot;
+        if (x1 <= x0) x1 = x0 + 1;
+        UsageBar b;
+        b.rc = {x0, top, x1, bottom};
+        b.eventIndex = vals[k].index;
+        b.inputTokens = vals[k].in;
+        b.outputTokens = vals[k].out;
+        b.thinkingTokens = vals[k].think;
+        b.cacheTokens = vals[k].cache;
+        bars.push_back(b);
+    }
+    return bars;
+}
+
+static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamEvent>& events,
+                           const LlmStreamEvent* selected, int selectedIndex) {
+    if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+
+    HBRUSH bg = CreateSolidBrush(g_theme.panel);
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+    HPEN border = CreatePen(PS_SOLID, 1, g_theme.border);
+    HGDIOBJ oldPen = SelectObject(hdc, border);
+    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(border);
+
+    auto bars = BuildUsageBars(rc, events);
+    SetBkMode(hdc, TRANSPARENT);
+    RECT titleRc = {rc.left + 6, rc.top + 2, rc.right - 6, rc.top + 16};
+    SetTextColor(hdc, g_theme.muted);
+    HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT)));
+    DrawTextW(hdc, L"Usage", -1, &titleRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    if (bars.empty()) {
+        RECT emptyRc = rc;
+        InflateRect(&emptyRc, -6, -4);
+        SetTextColor(hdc, g_theme.muted);
+        DrawTextW(hdc, L"No usage data", -1, &emptyRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, oldFont);
+        return;
+    }
+
+    if (selected && !LlmEventUsageText(*selected).empty()) {
+        std::wstring usage = Utf8ToWide(LlmEventUsageText(*selected));
+        RECT valRc = {rc.left + 50, rc.top + 2, rc.right - 6, rc.top + 16};
+        SetTextColor(hdc, g_theme.text);
+        DrawTextW(hdc, usage.c_str(), -1, &valRc, DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    int plotTop = rc.top + 18;
+    int plotBottom = rc.bottom - 4;
+    int plotH = plotBottom - plotTop;
+    uint64_t maxVal = 1;
+    for (const auto& b : bars) {
+        uint64_t s = b.inputTokens + b.outputTokens + b.thinkingTokens + b.cacheTokens;
+        if (s > maxVal) maxVal = s;
+    }
+
+    HPEN grid = CreatePen(PS_SOLID, 1, g_theme.border);
+    HGDIOBJ prevPen = SelectObject(hdc, grid);
+    MoveToEx(hdc, rc.left + 4, plotBottom, nullptr);
+    LineTo(hdc, rc.right - 4, plotBottom);
+    SelectObject(hdc, prevPen);
+    DeleteObject(grid);
+
+    for (const auto& b : bars) {
+        int h = static_cast<int>((static_cast<double>(b.inputTokens + b.outputTokens + b.thinkingTokens + b.cacheTokens) / maxVal) * plotH);
+        if (h < 1) h = 1;
+        int totalH = h;
+        auto drawSeg = [&](uint64_t v, COLORREF color) {
+            if (v == 0 || totalH <= 0) return;
+            int sh = static_cast<int>((static_cast<double>(v) / (b.inputTokens + b.outputTokens + b.thinkingTokens + b.cacheTokens)) * h);
+            if (sh < 1) sh = 1;
+            if (sh > totalH) sh = totalH;
+            RECT seg = {b.rc.left, plotBottom - totalH, b.rc.right, plotBottom - totalH + sh};
+            if (seg.right <= seg.left) seg.right = seg.left + 1;
+            HBRUSH br = CreateSolidBrush(color);
+            FillRect(hdc, &seg, br);
+            DeleteObject(br);
+            totalH -= sh;
+        };
+        drawSeg(b.cacheTokens, RGB(0x5C, 0x6C, 0x8C));
+        drawSeg(b.thinkingTokens, RGB(0xB4, 0x7A, 0xFF));
+        drawSeg(b.outputTokens, RGB(0x3D, 0xD5, 0x98));
+        drawSeg(b.inputTokens, RGB(0x4F, 0x8C, 0xFF));
+
+        if (b.eventIndex == selectedIndex) {
+            HPEN selPen = CreatePen(PS_SOLID, 1, g_theme.accent);
+            HGDIOBJ p = SelectObject(hdc, selPen);
+            HGDIOBJ br = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            Rectangle(hdc, b.rc.left, plotTop, b.rc.right, plotBottom);
+            SelectObject(hdc, br);
+            SelectObject(hdc, p);
+            DeleteObject(selPen);
+        }
+    }
+    SelectObject(hdc, oldFont);
+}
+
 
 static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
     if (!ds || !ds->dash || !ds->dash->pm) return;
@@ -2889,8 +3065,10 @@ static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
             std::wstring actionStr = Utf8ToWide(ev.toolAction);
             std::string content = ev.content;
             if (content.empty() && !ev.toolInput.empty()) content = ev.toolInput;
+            if (content.empty() && !ev.rawJson.empty()) content = ev.rawJson;
             std::wstring contentStr = Utf8ToWide(content);
             if (contentStr.size() > 100) contentStr = contentStr.substr(0, 97) + L"...";
+            std::wstring usageStr = Utf8ToWide(LlmEventUsageText(ev));
 
             LVITEMW lvi = {};
             lvi.mask = LVIF_TEXT | LVIF_PARAM;
@@ -2904,6 +3082,7 @@ static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
             ListView_SetItemText(ds->hwndList, i, 3, toolStr.data());
             ListView_SetItemText(ds->hwndList, i, 4, actionStr.data());
             ListView_SetItemText(ds->hwndList, i, 5, contentStr.data());
+            ListView_SetItemText(ds->hwndList, i, 6, usageStr.data());
         }
         SendMessageW(ds->hwndList, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(ds->hwndList, nullptr, FALSE);
@@ -2911,6 +3090,9 @@ static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
             int lastIdx = static_cast<int>(ds->events.size()) - 1;
             ListView_EnsureVisible(ds->hwndList, lastIdx, FALSE);
         }
+    }
+    if (ds->rcUsageGraph.right > ds->rcUsageGraph.left) {
+        InvalidateRect(hwnd, &ds->rcUsageGraph, FALSE);
     }
 }
 
@@ -2947,10 +3129,11 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 Tr(L"種別", L"Type", L"Tipo"),
                 Tr(L"ツール", L"Tool", L"Herramienta"),
                 Tr(L"アクション", L"Action", L"Acción"),
-                Tr(L"内容 / サマリ", L"Content / Summary", L"Contenido")
+                Tr(L"内容 / サマリ", L"Content / Summary", L"Contenido"),
+                Tr(L"Usage", L"Usage", L"Uso")
             };
-            const int colWidths[] = {55, 90, 85, 120, 160, 320};
-            for (int i = 0; i < 6; ++i) {
+            const int colWidths[] = {50, 80, 80, 110, 140, 235, 150};
+            for (int i = 0; i < 7; ++i) {
                 LVCOLUMNW lvc = {};
                 lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
                 lvc.pszText = const_cast<wchar_t*>(colTitles[i]);
@@ -3062,6 +3245,10 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         if (ev.totalTokens > 0) {
                             detail << L"Tokens    : " << ev.totalTokens << L"\r\n";
                         }
+                        std::string usageText = LlmEventUsageText(ev);
+                        if (!usageText.empty()) {
+                            detail << L"Usage     : " << Utf8ToWide(usageText) << L"\r\n";
+                        }
                         detail << L"\r\n=== Raw JSON ===\r\n"
                                << Utf8ToWide(ev.rawJson) << L"\r\n";
                         SetWindowTextW(ds->hwndEditPreview, detail.str().c_str());
@@ -3077,7 +3264,12 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             int pad = 12;
             int availW = (std::max)(200, w - pad * 2);
             int hdrH = 75;
-            MoveWindow(ds->hwndHeader, pad + 28, pad, availW - 28, hdrH, TRUE);
+            int contentX = pad + 28;
+            int contentW = availW - 28;
+            int graphW = (std::max)(180, contentW * 45 / 100);
+            int textW = (std::max)(160, contentW - graphW - 8);
+            MoveWindow(ds->hwndHeader, contentX, pad, textW, hdrH, TRUE);
+            ds->rcUsageGraph = { contentX + textW + 8, pad, contentX + contentW, pad + hdrH };
             if (ds->hwndAgentIcon) MoveWindow(ds->hwndAgentIcon, pad, pad, 24, 24, TRUE);
             int btnY = (std::max)(250, h - 38);
             int middleH = btnY - (pad + hdrH + pad) - pad;
@@ -3088,7 +3280,42 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             MoveWindow(ds->hwndBtnRefresh, pad, btnY, 130, 30, TRUE);
             MoveWindow(ds->hwndBtnOpenStream, pad + 140, btnY, 260, 30, TRUE);
             MoveWindow(ds->hwndBtnClose, (std::max)(pad + 410, w - pad - 110), btnY, 110, 30, TRUE);
+            InvalidateRect(hwnd, &ds->rcUsageGraph, FALSE);
             return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps = {};
+            HDC hdc = BeginPaint(hwnd, &ps);
+            if (ds) {
+                int selIdx = ds->hwndList ? ListView_GetNextItem(ds->hwndList, -1, LVNI_SELECTED) : -1;
+                const LlmStreamEvent* sel = (selIdx >= 0 && selIdx < static_cast<int>(ds->events.size()))
+                    ? &ds->events[selIdx] : nullptr;
+                DrawUsageGraph(hdc, ds->rcUsageGraph, ds->events, sel, selIdx);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            if (!ds) break;
+            POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (PtInRect(&ds->rcUsageGraph, pt)) {
+                auto bars = BuildUsageBars(ds->rcUsageGraph, ds->events);
+                for (const auto& b : bars) {
+                    if (!PtInRect(&b.rc, pt)) continue;
+                    int idx = b.eventIndex;
+                    if (idx >= 0 && idx < static_cast<int>(ds->events.size())) {
+                        ListView_SetItemState(ds->hwndList, idx,
+                                              LVIS_SELECTED | LVIS_FOCUSED,
+                                              LVIS_SELECTED | LVIS_FOCUSED);
+                        ListView_EnsureVisible(ds->hwndList, idx, FALSE);
+                        SetFocus(ds->hwndList);
+                        InvalidateRect(hwnd, &ds->rcUsageGraph, FALSE);
+                    }
+                    break;
+                }
+                return 0;
+            }
+            break;
         }
         case WM_COMMAND: {
             int id = LOWORD(wParam);
@@ -3784,6 +4011,7 @@ static void ShowTrayContextMenu(DashboardState* st) {
     HMENU hMenu = CreatePopupMenu();
     AppendMenuW(hMenu, MF_STRING | MF_DEFAULT, IDM_TRAY_RESTORE, Tr(L"ダッシュボードを復元", L"Restore Dashboard", L"Restaurar panel"));
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_GRID_VIEW, Tr(L"グリッド表示を開く", L"Open Grid View", L"Abrir vista de cuadrícula"));
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_USAGE, Tr(L"トークン使用量グラフ", L"Token Usage Graph", L"Gráfico de uso de tokens"));
     if (IsWindowVisible(st->hwndMain)) {
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_HIDE, Tr(L"タスクトレイに格納", L"Hide to Tray", L"Ocultar en bandeja"));
     }
@@ -3803,6 +4031,13 @@ static void ShowTrayContextMenu(DashboardState* st) {
             LayoutTerminalViews(st);
             st->gridView->Show();
         }
+    } else if (cmd == IDM_TRAY_USAGE) {
+        RestoreFromTray(st);
+        st->showUsagePanel = true;
+        RECT rcClient = {};
+        GetClientRect(st->hwndMain, &rcClient);
+        LayoutControls(st, rcClient.right, rcClient.bottom);
+        InvalidateRect(st->hwndMain, nullptr, FALSE);
     } else if (cmd == IDM_TRAY_HIDE) {
         HideToTray(st);
     } else if (cmd == IDM_TRAY_EXIT) {
@@ -4212,6 +4447,333 @@ static void ShowSettingsDialog(DashboardState* st) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Token usage panel (docked below the KPI cards)
+// ---------------------------------------------------------------------------
+static const int kUsageRangeCount = 5;
+static const int kUsageRangeSec[kUsageRangeCount] = {1800, 3600, 14400, 43200, 86400};
+static const wchar_t* const kUsageRangeLabels[kUsageRangeCount] = {L"30m", L"1h", L"4h", L"12h", L"24h"};
+static const COLORREF kUsagePalette[] = {
+    RGB(0x4F, 0x8C, 0xFF), RGB(0x3D, 0xD5, 0x98), RGB(0xFF, 0xB4, 0x54),
+    RGB(0xFF, 0x6B, 0x6B), RGB(0xB4, 0x7A, 0xFF), RGB(0x2E, 0xC4, 0xE0),
+    RGB(0xF7, 0x8F, 0xB4), RGB(0x9C, 0xD6, 0x5B)
+};
+static const int kUsagePaletteCount = static_cast<int>(sizeof(kUsagePalette) / sizeof(kUsagePalette[0]));
+
+static std::wstring FormatCompactTokens(uint64_t v) {
+    wchar_t buf[32] = {};
+    if (v >= 1000000ULL) swprintf_s(buf, L"%.1fM", v / 1000000.0);
+    else if (v >= 1000ULL) swprintf_s(buf, L"%.1fk", v / 1000.0);
+    else swprintf_s(buf, L"%llu", static_cast<unsigned long long>(v));
+    return buf;
+}
+
+static void GetUsagePillRects(int width, RECT out[kUsageRangeCount], RECT& closeRc) {
+    int x = 136;
+    for (int i = 0; i < kUsageRangeCount; ++i) {
+        out[i] = {x, 7, x + 40, 24};
+        x += 44;
+    }
+    closeRc = {width - 28, 5, width - 8, 25};
+}
+
+static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
+    RECT rc = {};
+    GetClientRect(hwnd, &rc);
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+
+    HBRUSH bg = CreateSolidBrush(g_theme.panel);
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+    HPEN border = CreatePen(PS_SOLID, 1, g_theme.border);
+    HGDIOBJ oldPen = SelectObject(hdc, border);
+    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, 0, 0, w, h);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(border);
+
+    SetBkMode(hdc, TRANSPARENT);
+    HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, st->hFontUiBold ? st->hFontUiBold : GetStockObject(DEFAULT_GUI_FONT)));
+    HBRUSH accent = CreateSolidBrush(g_theme.accent);
+    RECT accentRc = {10, 8, 13, 22};
+    FillRect(hdc, &accentRc, accent);
+    DeleteObject(accent);
+    SetTextColor(hdc, g_theme.text);
+    RECT titleRc = {18, 6, 130, 24};
+    DrawTextW(hdc, Tr(L"トークン使用量", L"TOKEN USAGE", L"USO DE TOKENS"), -1, &titleRc,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT));
+    int rangeIdx = st->usageRangeIndex;
+    if (rangeIdx < 0) rangeIdx = 0;
+    if (rangeIdx >= kUsageRangeCount) rangeIdx = kUsageRangeCount - 1;
+
+    RECT pills[kUsageRangeCount] = {};
+    RECT closeRc = {};
+    GetUsagePillRects(w, pills, closeRc);
+    for (int i = 0; i < kUsageRangeCount; ++i) {
+        bool active = (i == rangeIdx);
+        HBRUSH pb = CreateSolidBrush(active ? g_theme.accent : g_theme.panel);
+        HPEN pp = CreatePen(PS_SOLID, 1, active ? g_theme.accent : g_theme.border);
+        HGDIOBJ ob = SelectObject(hdc, pb);
+        HGDIOBJ op = SelectObject(hdc, pp);
+        RoundRect(hdc, pills[i].left, pills[i].top, pills[i].right, pills[i].bottom, 10, 10);
+        SelectObject(hdc, op);
+        SelectObject(hdc, ob);
+        DeleteObject(pp);
+        DeleteObject(pb);
+        SetTextColor(hdc, active ? g_theme.windowBg : g_theme.muted);
+        DrawTextW(hdc, kUsageRangeLabels[i], -1, &pills[i],
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    SetTextColor(hdc, g_theme.muted);
+    DrawTextW(hdc, L"\x2715", -1, &closeRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    int64_t now = static_cast<int64_t>(time(nullptr));
+    int64_t since = now - kUsageRangeSec[rangeIdx];
+    std::vector<LlmUsagePoint> points = GetLlmUsageHistory(since);
+
+    struct KeyStat {
+        std::string name;
+        uint64_t total = 0;
+        COLORREF color = RGB(128, 128, 128);
+    };
+    std::vector<KeyStat> keys;
+    std::unordered_map<std::string, int> keyIndex;
+    uint64_t rangeTotal = 0;
+    double rangeCost = 0.0;
+    for (const auto& p : points) {
+        std::string name = p.agentType.empty() ? "unknown" : p.agentType;
+        if (!p.model.empty()) name += " / " + p.model;
+        auto it = keyIndex.find(name);
+        int idx;
+        if (it == keyIndex.end()) {
+            idx = static_cast<int>(keys.size());
+            keyIndex[name] = idx;
+            KeyStat ks;
+            ks.name = name;
+            ks.color = kUsagePalette[idx % kUsagePaletteCount];
+            keys.push_back(ks);
+        } else {
+            idx = it->second;
+        }
+        keys[idx].total += p.totalTokens;
+        rangeTotal += p.totalTokens;
+        rangeCost += p.costUsd;
+    }
+
+    SelectObject(hdc, st->hFontUiBold ? st->hFontUiBold : GetStockObject(DEFAULT_GUI_FONT));
+    std::wstring summary = FormatCompactTokens(rangeTotal) + L" tok";
+    if (rangeCost > 0.0) {
+        wchar_t cbuf[32] = {};
+        swprintf_s(cbuf, L"  \x00B7  $%.4f", rangeCost);
+        summary += cbuf;
+    }
+    RECT sumRc = {closeRc.left - 270, 6, closeRc.left - 6, 24};
+    SetTextColor(hdc, g_theme.accent);
+    DrawTextW(hdc, summary.c_str(), -1, &sumRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    int gx0 = 12;
+    int gx1 = w - 12;
+    int gy0 = 30;
+    int gy1 = h - 26;
+    int graphW = gx1 - gx0;
+    int graphH = gy1 - gy0;
+    if (graphW < 40 || graphH < 20) {
+        SelectObject(hdc, oldFont);
+        return;
+    }
+
+    HPEN grid = CreatePen(PS_DOT, 1, g_theme.border);
+    for (int g = 1; g <= 3; ++g) {
+        int y = gy1 - graphH * g / 4;
+        HGDIOBJ op = SelectObject(hdc, grid);
+        MoveToEx(hdc, gx0, y, nullptr);
+        LineTo(hdc, gx1, y);
+        SelectObject(hdc, op);
+    }
+    DeleteObject(grid);
+
+    if (points.empty() || keys.empty()) {
+        SetTextColor(hdc, g_theme.muted);
+        RECT emptyRc = {gx0, gy0, gx1, gy1};
+        DrawTextW(hdc, Tr(L"まだ使用量データがありません", L"No token usage recorded yet", L"Aún no hay datos de uso"),
+                  -1, &emptyRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, oldFont);
+        return;
+    }
+
+    int nBuckets = graphW / 7;
+    if (nBuckets < 12) nBuckets = 12;
+    if (nBuckets > 96) nBuckets = 96;
+    double bucketSec = static_cast<double>(kUsageRangeSec[rangeIdx]) / nBuckets;
+    std::vector<std::vector<uint64_t>> vals(nBuckets, std::vector<uint64_t>(keys.size(), 0));
+    std::vector<std::vector<uint64_t>> valIn(nBuckets, std::vector<uint64_t>(keys.size(), 0));
+    std::vector<std::vector<uint64_t>> valOut(nBuckets, std::vector<uint64_t>(keys.size(), 0));
+    std::vector<std::vector<uint64_t>> valThink(nBuckets, std::vector<uint64_t>(keys.size(), 0));
+    std::vector<std::vector<uint64_t>> valCache(nBuckets, std::vector<uint64_t>(keys.size(), 0));
+    std::vector<uint64_t> bucketTotal(nBuckets, 0);
+    for (const auto& p : points) {
+        int bi = static_cast<int>((p.epochSec - since) / bucketSec);
+        if (bi < 0) bi = 0;
+        if (bi >= nBuckets) bi = nBuckets - 1;
+        std::string name = p.agentType.empty() ? "unknown" : p.agentType;
+        if (!p.model.empty()) name += " / " + p.model;
+        auto it = keyIndex.find(name);
+        if (it == keyIndex.end()) continue;
+        uint64_t pt = p.totalTokens;
+        if (pt == 0) pt = p.inputTokens + p.outputTokens + p.thinkingTokens + p.cacheReadTokens + p.cacheWriteTokens;
+        vals[bi][it->second] += pt;
+        valIn[bi][it->second] += p.inputTokens;
+        valOut[bi][it->second] += p.outputTokens;
+        valThink[bi][it->second] += p.thinkingTokens;
+        valCache[bi][it->second] += p.cacheReadTokens + p.cacheWriteTokens;
+        bucketTotal[bi] += pt;
+    }
+    uint64_t maxBucket = 1;
+    for (uint64_t v : bucketTotal) if (v > maxBucket) maxBucket = v;
+
+    int slot = graphW / nBuckets;
+    if (slot < 1) slot = 1;
+    for (int bi = 0; bi < nBuckets; ++bi) {
+        if (bucketTotal[bi] == 0) continue;
+        int x0 = gx0 + bi * slot;
+        int x1 = x0 + slot - 1;
+        if (x1 <= x0) x1 = x0 + 1;
+        int barH = static_cast<int>((static_cast<double>(bucketTotal[bi]) / maxBucket) * graphH);
+        if (barH < 1) barH = 1;
+        int used = 0;
+        for (size_t k = 0; k < keys.size(); ++k) {
+            uint64_t v = vals[bi][k];
+            if (v == 0) continue;
+            int sh = static_cast<int>((static_cast<double>(v) / bucketTotal[bi]) * barH);
+            if (sh < 1) sh = 1;
+            int remain = barH - used;
+            if (sh > remain) sh = remain;
+            if (sh <= 0) break;
+            // Draw sub-segments by token kind (input / output / thinking / cache).
+            struct Seg { uint64_t v; COLORREF c; };
+            Seg segs[4] = {
+                {valIn[bi][k], RGB(0x4F, 0x8C, 0xFF)},
+                {valOut[bi][k], RGB(0x3D, 0xD5, 0x98)},
+                {valThink[bi][k], RGB(0xB4, 0x7A, 0xFF)},
+                {valCache[bi][k], RGB(0x5C, 0x6C, 0x8C)}
+            };
+            uint64_t segSum = valIn[bi][k] + valOut[bi][k] + valThink[bi][k] + valCache[bi][k];
+            if (segSum == 0) segSum = v;
+            int subUsed = 0;
+            for (int s = 0; s < 4; ++s) {
+                if (segs[s].v == 0) continue;
+                int ssh = static_cast<int>((static_cast<double>(segs[s].v) / segSum) * sh);
+                if (ssh < 1) ssh = 1;
+                int subRemain = sh - subUsed;
+                if (ssh > subRemain) ssh = subRemain;
+                if (ssh <= 0) break;
+                RECT segRc = {x0, gy1 - used - subUsed - ssh, x1, gy1 - used - subUsed};
+                HBRUSH sb = CreateSolidBrush(segs[s].c);
+                FillRect(hdc, &segRc, sb);
+                DeleteObject(sb);
+                subUsed += ssh;
+                if (subUsed >= sh) break;
+            }
+            used += sh;
+            if (used >= barH) break;
+        }
+    }
+    SetTextColor(hdc, g_theme.muted);
+    RECT axisL = {gx0, gy1 + 2, gx0 + 80, gy1 + 16};
+    RECT axisR = {gx1 - 80, gy1 + 2, gx1, gy1 + 16};
+    wchar_t tbuf[32] = {};
+    struct tm tmv = {};
+    time_t stv = static_cast<time_t>(since);
+    localtime_s(&tmv, &stv);
+    swprintf_s(tbuf, L"%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    DrawTextW(hdc, tbuf, -1, &axisL, DT_LEFT | DT_SINGLELINE);
+    DrawTextW(hdc, Tr(L"現在", L"now", L"ahora"), -1, &axisR, DT_RIGHT | DT_SINGLELINE);
+
+    int lx = gx0;
+    int ly = gy1 + 2;
+    HFONT oldLegendFont = static_cast<HFONT>(SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT)));
+    for (size_t k = 0; k < keys.size(); ++k) {
+        std::wstring label = Utf8ToWide(keys[k].name) + L" " + FormatCompactTokens(keys[k].total);
+        SIZE sz = {};
+        GetTextExtentPoint32W(hdc, label.c_str(), static_cast<int>(label.size()), &sz);
+        if (lx + sz.cx + 16 > gx1) {
+            if (k + 1 < keys.size()) {
+                std::wstring more = L"+" + std::to_wstring(keys.size() - k);
+                DrawTextW(hdc, more.c_str(), -1, &axisL, DT_LEFT | DT_SINGLELINE);
+            }
+            break;
+        }
+        HBRUSH dot = CreateSolidBrush(keys[k].color);
+        RECT dotRc = {lx, ly + 5, lx + 7, ly + 12};
+        FillRect(hdc, &dotRc, dot);
+        DeleteObject(dot);
+        RECT labRc = {lx + 10, ly, gx1, ly + 16};
+        SetTextColor(hdc, g_theme.muted);
+        DrawTextW(hdc, label.c_str(), -1, &labRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        lx += sz.cx + 18;
+    }
+    SelectObject(hdc, oldLegendFont);
+    SelectObject(hdc, oldFont);
+}
+
+static LRESULT CALLBACK UsagePanelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* st = reinterpret_cast<DashboardState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+            SetTimer(hwnd, 1, 2000, nullptr);
+            return 0;
+        }
+        case WM_TIMER:
+            if (wParam == 1) InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps = {};
+            HDC hdc = BeginPaint(hwnd, &ps);
+            if (st) DrawUsagePanel(hwnd, hdc, st);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            if (!st) break;
+            POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT rc = {};
+            GetClientRect(hwnd, &rc);
+            RECT pills[kUsageRangeCount] = {};
+            RECT closeRc = {};
+            GetUsagePillRects(rc.right, pills, closeRc);
+            if (PtInRect(&closeRc, pt)) {
+                st->showUsagePanel = false;
+                RECT mainRc = {};
+                GetClientRect(st->hwndMain, &mainRc);
+                LayoutControls(st, mainRc.right - mainRc.left, mainRc.bottom - mainRc.top);
+                InvalidateRect(st->hwndMain, nullptr, TRUE);
+                return 0;
+            }
+            for (int i = 0; i < kUsageRangeCount; ++i) {
+                if (PtInRect(&pills[i], pt)) {
+                    st->usageRangeIndex = i;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            return 0;
+        }
+        case WM_NCDESTROY:
+            KillTimer(hwnd, 1);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     DashboardState* st = GetState(hwnd);
 
@@ -4248,6 +4810,23 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_VIEW_TASKS, nullptr, nullptr);
             st->hwndClock = CreateWindowExW(0, L"BUTTON", L"",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDC_CLOCK, nullptr, nullptr);
+            st->hwndBtnUsage = CreateWindowExW(0, L"BUTTON", L"📊",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_USAGE, nullptr, nullptr);
+
+            static bool usageClassRegistered = false;
+            if (!usageClassRegistered) {
+                WNDCLASSEXW wcUsage = {};
+                wcUsage.cbSize = sizeof(wcUsage);
+                wcUsage.style = CS_HREDRAW | CS_VREDRAW;
+                wcUsage.lpfnWndProc = UsagePanelWndProc;
+                wcUsage.hInstance = GetModuleHandleW(nullptr);
+                wcUsage.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+                wcUsage.lpszClassName = L"ProcessCommanderUsagePanelWnd";
+                RegisterClassExW(&wcUsage);
+                usageClassRegistered = true;
+            }
+            st->hwndUsagePanel = CreateWindowExW(0, L"ProcessCommanderUsagePanelWnd", L"",
+                WS_CHILD, 0, 0, 10, 10, hwnd, nullptr, GetModuleHandleW(nullptr), st);
 
             st->hwndToolbarTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
                 WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
@@ -4745,6 +5324,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 st->hideTerminalGrid = !st->hideTerminalGrid;
                 UpdatePanelToggleLabels(st);
                 SaveShellConfig(st);
+                RECT rcClient = {};
+                GetClientRect(hwnd, &rcClient);
+                LayoutControls(st, rcClient.right, rcClient.bottom);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            } else if (id == IDC_BTN_USAGE) {
+                st->showUsagePanel = !st->showUsagePanel;
                 RECT rcClient = {};
                 GetClientRect(hwnd, &rcClient);
                 LayoutControls(st, rcClient.right, rcClient.bottom);
