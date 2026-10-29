@@ -135,6 +135,48 @@ The environment variable `PROCESS_COMMANDER_LOG_DIR` is an equivalent fallback.
 
 ---
 
+## Sub-Agent vs. ProcessCommander Execution
+
+A short Pros/Cons analysis for choosing how to run work: **LLM-native sub-agents** vs. **ProcessCommander-managed CLI processes**.
+
+### Sub-Agent Execution (LLM-native)
+
+**Pros**
+- Deep integration with the supervising LLM: shares context, reasons adaptively, uses tools, and can change plans mid-flight.
+- No extra binary or setup; works wherever the LLM client runs.
+- Ideal for short, reasoning-heavy, code-editing and exploratory tasks.
+- Natural error diagnosis and retry with human-like judgment.
+
+**Cons**
+- Token- and cost-heavy for large/repetitive jobs; bounded by the context window.
+- Poor fit for long-running, interactive, or process-tree-heavy workloads (builds, dev servers, TUI agents).
+- Limited observability: no live terminal grid, idle detection, or job-object tree control.
+- Concurrency and dependency orchestration are client-dependent and often implicit.
+- Hard to persist or recover state across LLM session restarts.
+
+### ProcessCommander Execution (external CLI processes)
+
+**Pros**
+- Runs real CLI agents/tools (`claude`, `opencode`, `codex`, build scripts) as managed OS processes with Win32 Job Object tree control.
+- Live dashboard: up to 16 terminals, idle detection, per-job timeouts, retries, dependencies, and persisted task queues.
+- `.done` markers and per-process logs enable simple, robust completion detection by LLMs/automation.
+- Lower token cost for heavy work; the LLM acts as supervisor only.
+- MCP + CLI integration and project-local data directories.
+- State recovery across restarts.
+
+**Cons**
+- Windows-only; requires installation and setup.
+- Processes are comparatively opaque: the LLM sees captured output, not internal reasoning.
+- Task specs must be explicit (command, timeout, success checks).
+- Adds operational complexity and resource overhead.
+- Interactive debugging requires attaching via the dashboard.
+
+### Recommendation
+
+Use **sub-agents** for reasoning and code changes; use **ProcessCommander** for parallel, long-running, interactive, or build-heavy CLI workloads. Best of both: let the LLM supervisor delegate heavy jobs to ProcessCommander while sub-agents handle analysis and edits.
+
+---
+
 ## Build Instructions
 
 Requires Windows 10/11 (x64), Visual Studio 2022 (C++17), and CMake 3.20+:
