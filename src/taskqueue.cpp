@@ -1205,18 +1205,27 @@ std::string TaskQueueManager::TaskQueueAdd(const std::string& taskqueue, const s
 std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const std::string& state, std::string& outError) {
     outError.clear();
     std::lock_guard<std::mutex> lock(mutex_);
-    std::ostringstream oss;
-    oss << "{\"ok\":true,\"jobs\":[";
-    bool first = true;
+    struct ListedJob { std::string queue; TaskQueueJob job; };
+    std::vector<ListedJob> listed;
     for (const auto& [name, tq] : queues_) {
         (void)name;
         if (!taskqueue.empty() && name != taskqueue) continue;
         for (const auto& job : tq.jobs) {
             if (!state.empty() && job.state != state) continue;
-            if (!first) oss << ",";
-            first = false;
-            oss << JobToJson(job, false);
+            listed.push_back({name, job});
         }
+    }
+    std::stable_sort(listed.begin(), listed.end(), [](const ListedJob& a, const ListedJob& b) {
+        if (a.job.createdAt != b.job.createdAt) return a.job.createdAt > b.job.createdAt;
+        return false;
+    });
+    std::ostringstream oss;
+    oss << "{\"ok\":true,\"jobs\":[";
+    bool first = true;
+    for (const auto& item : listed) {
+        if (!first) oss << ",";
+        first = false;
+        oss << JobToJson(item.job, false);
     }
     oss << "]}";
     return oss.str();

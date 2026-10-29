@@ -1821,7 +1821,15 @@ static void RefreshTaskQueueData(DashboardState* st) {
         return 3;
     };
     std::stable_sort(jobs.begin(), jobs.end(), [&](const std::string& a, const std::string& b) {
-        return jobRank(a) < jobRank(b);
+        int ra = jobRank(a);
+        int rb = jobRank(b);
+        if (ra != rb) return ra < rb;
+        std::string ca = JsonGetString(a, "created_at", "");
+        std::string cb = JsonGetString(b, "created_at", "");
+        if (!ca.empty() || !cb.empty()) {
+            if (ca != cb) return ca > cb;
+        }
+        return false;
     });
 
     st->taskJobIds.clear();
