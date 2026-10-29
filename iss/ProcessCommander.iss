@@ -61,6 +61,8 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README-ja.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\images\*"; DestDir: "{app}\docs\images"; Flags: ignoreversion recursesubdirs createallsubdirs
+; tools\ww: optional task-card runner template (copied into projects by an LLM agent; see tools\ww\README-ww.md)
+Source: "..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 Name: "{app}\logs"; Permissions: users-modify
