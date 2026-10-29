@@ -424,12 +424,34 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
             std::string defaultModel;
             {
                 const std::string& cl = proc->commandLine;
-                size_t pos = cl.find("--model");
+                size_t pos = std::string::npos;
+                size_t optLen = 0;
+                pos = cl.find("--model");
                 if (pos != std::string::npos) {
-                    size_t after = pos + 7;
-                    while (after < cl.size() && (cl[after] == ' ' || cl[after] == '=' || cl[after] == '"')) after++;
+                    optLen = 7;
+                } else {
+                    size_t p = 0;
+                    while (true) {
+                        size_t found = cl.find("-m", p);
+                        if (found == std::string::npos) break;
+                        bool boundaryBefore = (found == 0) || std::isspace(static_cast<unsigned char>(cl[found - 1])) ||
+                                             cl[found - 1] == '"' || cl[found - 1] == '\'';
+                        size_t afterOpt = found + 2;
+                        bool boundaryAfter = (afterOpt >= cl.size()) || std::isspace(static_cast<unsigned char>(cl[afterOpt])) ||
+                                            cl[afterOpt] == '=' || cl[afterOpt] == '"' || cl[afterOpt] == '\'';
+                        if (boundaryBefore && boundaryAfter) {
+                            pos = found;
+                            optLen = 2;
+                            break;
+                        }
+                        p = found + 2;
+                    }
+                }
+                if (pos != std::string::npos) {
+                    size_t after = pos + optLen;
+                    while (after < cl.size() && (cl[after] == ' ' || cl[after] == '=' || cl[after] == '"' || cl[after] == '\'')) after++;
                     size_t end = after;
-                    while (end < cl.size() && cl[end] != ' ' && cl[end] != '"') end++;
+                    while (end < cl.size() && cl[end] != ' ' && cl[end] != '"' && cl[end] != '\'') end++;
                     if (end > after) defaultModel = cl.substr(after, end - after);
                 }
             }

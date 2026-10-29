@@ -729,6 +729,24 @@ void LlmStreamTracker::IngestChunk(const char* data, size_t len) {
 }
 
 void LlmStreamTracker::ProcessLine(const std::string& line) {
+    // OpenCode does not emit the model in its JSON stream; recover it from
+    // the opencode log lines that are merged into the process output.
+    if (agentType_ == "opencode" && state_.model.empty()) {
+        auto extractAfter = [&](const std::string& key) -> std::string {
+            size_t pos = line.find(key);
+            if (pos == std::string::npos) return "";
+            size_t after = pos + key.size();
+            while (after < line.size() && (line[after] == ' ' || line[after] == '=' || line[after] == '"')) after++;
+            size_t end = after;
+            while (end < line.size() && line[end] != ' ' && line[end] != '"' && line[end] != '\r' && line[end] != '\n') end++;
+            std::string v = line.substr(after, end - after);
+            while (!v.empty() && (v.back() == ' ' || v.back() == '"')) v.pop_back();
+            return v;
+        };
+        std::string m = extractAfter("llm.model=");
+        if (m.empty()) m = extractAfter("modelID=");
+        if (!m.empty()) state_.model = m;
+    }
     LlmStreamEvent ev;
     if (!ParseLlmStreamLine(line, agentType_, ev)) {
         return;

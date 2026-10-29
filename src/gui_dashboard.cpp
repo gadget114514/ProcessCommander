@@ -427,6 +427,7 @@ enum ControlId {
     IDC_SET_SOUND_BROWSE = 6032,
     IDC_SET_SOUND_TEST = 6033,
     IDC_SET_KPI_SAT = 6034,
+    IDC_SET_USAGE_GRAPH_MODE = 6035,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -481,6 +482,7 @@ struct DashboardState {
     bool showUsagePanel = true;
     int usagePanelHeight = 110;
     int usageRangeIndex = 1;
+    int usageGraphMode = 0; // 0: token kinds (default), 1: by provider/model
     RECT rcUsagePanel = {};
     RECT rcUsageSplitter = {};
     bool usageSplitterDragging = false;
@@ -3589,6 +3591,9 @@ static void LoadShellConfig(DashboardState* st) {
     if (satPct < 10) satPct = 10;
     if (satPct > 100) satPct = 100;
     g_kpiSaturation = satPct / 100.0f;
+    int graphMode = static_cast<int>(JsonGetInt(content, "usage_graph_mode", 0));
+    if (graphMode < 0 || graphMode > 1) graphMode = 0;
+    st->usageGraphMode = graphMode;
     ApplyTheme();
 }
 
@@ -3613,9 +3618,10 @@ static void SaveShellConfig(const DashboardState* st) {
        << "  \"list_display_mode\": " << static_cast<int>(st->listDisplayMode) << ",\n"
        << "  \"proc_row_ratio\": " << static_cast<int>(st->procRowRatio * 100.0f + 0.5f) << ",\n"
        << "  \"language\": \"" << LanguageCode(g_uiLanguage) << "\",\n"
-       << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\"," << std::endl
-       << "  ,\"kpi_saturation\": " << static_cast<int>(g_kpiSaturation * 100 + 0.5f) << std::endl
-       << "}\n";
+        << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\",\n"
+        << "  \"kpi_saturation\": " << static_cast<int>(g_kpiSaturation * 100 + 0.5f) << ",\n"
+        << "  \"usage_graph_mode\": " << st->usageGraphMode << "\n"
+        << "}\n";
 
     WriteFileAtomicWide(GetConfigFilePathWide(), ss.str());
 }
@@ -4130,7 +4136,8 @@ struct SettingsDlgState {
     HWND hwndSoundHint = nullptr;
     HWND hwndSatLabel = nullptr;
     HWND hwndSatCombo = nullptr;
-    HWND chkHideEnded = nullptr;
+     HWND chkHideEnded = nullptr;
+     HWND chkUsageGraph = nullptr;
 };
 
 static void CommitSoundSettings(SettingsDlgState* ds) {
@@ -4159,6 +4166,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
     SetWindowTextW(ds->btnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
     SetWindowTextW(ds->chkHideEnded, Tr(L"終了履歴を非表示", L"Hide ended processes", L"Ocultar finalizados"));
+    SetWindowTextW(ds->chkUsageGraph, Tr(L"Usageグラフを provider/model 積み上げ表示", L"Usage graph: stack by provider/model", L"Gráfico de uso: apilar por proveedor/modelo"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
@@ -4273,9 +4281,14 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SendMessageW(ds->chkHideEnded, BM_SETCHECK,
                 ds->dash->hideEndedProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
 
+            ds->chkUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                18, 388, 380, 24, hwnd, (HMENU)IDC_SET_USAGE_GRAPH_MODE, hInst, nullptr);
+            SendMessageW(ds->chkUsageGraph, BM_SETCHECK,
+                ds->dash->usageGraphMode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
-                             ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded };
+                             ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
@@ -4295,6 +4308,13 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     (SendMessageW(ds->chkHideEnded, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 SaveShellConfig(ds->dash);
                 RefreshDashboardData(ds->dash);
+                return 0;
+            }
+            if (id == IDC_SET_USAGE_GRAPH_MODE) {
+                ds->dash->usageGraphMode =
+                    (SendMessageW(ds->chkUsageGraph, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+                SaveShellConfig(ds->dash);
+                InvalidateRect(ds->dash->hwndUsagePanel, nullptr, FALSE);
                 return 0;
             }
             if (id == IDC_SET_SOUND_ENABLED) {
@@ -4644,7 +4664,24 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     SetTextColor(hdc, g_theme.muted);
-    DrawTextW(hdc, L"\x2715", -1, &closeRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+     DrawTextW(hdc, L"\x2715", -1, &closeRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    // View toggle button: token kinds (T) vs by provider/model (M).
+    {
+        RECT viewRc = {360, 7, 392, 24};
+        HBRUSH vb = CreateSolidBrush(g_theme.panel);
+        HPEN vp = CreatePen(PS_SOLID, 1, g_theme.border);
+        HGDIOBJ ob = SelectObject(hdc, vb);
+        HGDIOBJ op = SelectObject(hdc, vp);
+        RoundRect(hdc, viewRc.left, viewRc.top, viewRc.right, viewRc.bottom, 8, 8);
+        SelectObject(hdc, op);
+        SelectObject(hdc, ob);
+        DeleteObject(vp);
+        DeleteObject(vb);
+        SetTextColor(hdc, g_theme.text);
+        const wchar_t* lbl = (st->usageGraphMode == 0) ? L"M" : L"T";
+        DrawTextW(hdc, lbl, -1, &viewRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
 
     int64_t now = static_cast<int64_t>(time(nullptr));
     int64_t since = now - kUsageRangeSec[rangeIdx];
@@ -4696,11 +4733,11 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         swprintf_s(cbuf, L"  \x00B7  $%.4f", rangeCost);
         summary += cbuf;
     }
-    RECT sumRc = {closeRc.left - 270, 6, closeRc.left - 6, 24};
+     RECT sumRc = {closeRc.left - 270, 6, closeRc.left - 116, 24};
     SetTextColor(hdc, g_theme.accent);
     DrawTextW(hdc, summary.c_str(), -1, &sumRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    int gx0 = 12;
-    int splitX = 12 + (w - 24) * 33 / 100;
+    int gx0 = 58;
+    int splitX = gx0 + (w - gx0 - 12) * 33 / 100;
     int gx1 = splitX - 6;
     int mx0 = splitX + 6;
     int mx1 = w - 12;
@@ -4804,30 +4841,37 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             int remain = barH - used;
             if (sh > remain) sh = remain;
             if (sh <= 0) break;
-            // Draw sub-segments by token kind (input / output / thinking / cache).
-            struct Seg { uint64_t v; COLORREF c; };
-            Seg segs[4] = {
-                {valIn[bi][k], RGB(0x4F, 0x8C, 0xFF)},
-                {valOut[bi][k], RGB(0x3D, 0xD5, 0x98)},
-                {valThink[bi][k], RGB(0xB4, 0x7A, 0xFF)},
-                {valCache[bi][k], RGB(0x5C, 0x6C, 0x8C)}
-            };
-            uint64_t segSum = valIn[bi][k] + valOut[bi][k] + valThink[bi][k] + valCache[bi][k];
-            if (segSum == 0) segSum = v;
-            int subUsed = 0;
-            for (int s = 0; s < 4; ++s) {
-                if (segs[s].v == 0) continue;
-                int ssh = static_cast<int>((static_cast<double>(segs[s].v) / segSum) * sh);
-                if (ssh < 1) ssh = 1;
-                int subRemain = sh - subUsed;
-                if (ssh > subRemain) ssh = subRemain;
-                if (ssh <= 0) break;
-                RECT segRc = {x0, gy1 - used - subUsed - ssh, x1, gy1 - used - subUsed};
-                HBRUSH sb = CreateSolidBrush(segs[s].c);
+            if (st->usageGraphMode == 1) {
+                RECT segRc = {x0, gy1 - used - sh, x1, gy1 - used};
+                HBRUSH sb = CreateSolidBrush(keys[k].color);
                 FillRect(hdc, &segRc, sb);
                 DeleteObject(sb);
-                subUsed += ssh;
-                if (subUsed >= sh) break;
+            } else {
+                // Draw sub-segments by token kind (input / output / thinking / cache).
+                struct Seg { uint64_t v; COLORREF c; };
+                Seg segs[4] = {
+                    {valIn[bi][k], RGB(0x4F, 0x8C, 0xFF)},
+                    {valOut[bi][k], RGB(0x3D, 0xD5, 0x98)},
+                    {valThink[bi][k], RGB(0xB4, 0x7A, 0xFF)},
+                    {valCache[bi][k], RGB(0x5C, 0x6C, 0x8C)}
+                };
+                uint64_t segSum = valIn[bi][k] + valOut[bi][k] + valThink[bi][k] + valCache[bi][k];
+                if (segSum == 0) segSum = v;
+                int subUsed = 0;
+                for (int s = 0; s < 4; ++s) {
+                    if (segs[s].v == 0) continue;
+                    int ssh = static_cast<int>((static_cast<double>(segs[s].v) / segSum) * sh);
+                    if (ssh < 1) ssh = 1;
+                    int subRemain = sh - subUsed;
+                    if (ssh > subRemain) ssh = subRemain;
+                    if (ssh <= 0) break;
+                    RECT segRc = {x0, gy1 - used - subUsed - ssh, x1, gy1 - used - subUsed};
+                    HBRUSH sb = CreateSolidBrush(segs[s].c);
+                    FillRect(hdc, &segRc, sb);
+                    DeleteObject(sb);
+                    subUsed += ssh;
+                    if (subUsed >= sh) break;
+                }
             }
             used += sh;
             if (used >= barH) break;
@@ -4865,9 +4909,35 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             int barTop = y + (rowH - barH) / 2;
             if (barTop < y) barTop = y;
             RECT barRc = {barX0, barTop, barX0 + barW, barTop + barH};
-            HBRUSH mb = CreateSolidBrush(keys[i].color);
-            FillRect(hdc, &barRc, mb);
-            DeleteObject(mb);
+            uint64_t segSumR = keys[i].in + keys[i].out + keys[i].think + keys[i].cache;
+            if (segSumR == 0) segSumR = keys[i].total;
+            COLORREF baseR = keys[i].color;
+            struct RSeg { uint64_t v; COLORREF c; };
+            RSeg rsegs[4] = {
+                {keys[i].in, baseR},
+                {keys[i].out, DesaturateColor(baseR, 0.75f)},
+                {keys[i].think, DesaturateColor(baseR, 0.25f)},
+                {keys[i].cache, DesaturateColor(baseR, 0.85f)}
+            };
+            int rx = barX0;
+            for (int s = 0; s < 4; ++s) {
+                if (rsegs[s].v == 0) continue;
+                int sw = static_cast<int>((static_cast<double>(rsegs[s].v) / segSumR) * barW);
+                if (sw < 1) sw = 1;
+                if (rx + sw > barX0 + barW) sw = barX0 + barW - rx;
+                if (sw <= 0) break;
+                RECT segRc = {rx, barTop, rx + sw, barTop + barH};
+                HBRUSH sb = CreateSolidBrush(rsegs[s].c);
+                FillRect(hdc, &segRc, sb);
+                DeleteObject(sb);
+                rx += sw;
+            }
+            if (rx < barX0 + barW) {
+                RECT rem = {rx, barTop, barX0 + barW, barTop + barH};
+                HBRUSH rb = CreateSolidBrush(keys[i].color);
+                FillRect(hdc, &rem, rb);
+                DeleteObject(rb);
+            }
 
             // Build overlay string: "total remaining [i.. o.. t.. c.. dur]"
             int64_t nowEpoch = static_cast<int64_t>(time(nullptr));
@@ -4958,6 +5028,12 @@ static LRESULT CALLBACK UsagePanelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
             RECT pills[kUsageRangeCount] = {};
             RECT closeRc = {};
             GetUsagePillRects(rc.right, pills, closeRc);
+            RECT viewRc = {360, 7, 392, 24};
+            if (PtInRect(&viewRc, pt)) {
+                st->usageGraphMode = (st->usageGraphMode == 0) ? 1 : 0;
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (PtInRect(&closeRc, pt)) {
                 st->showUsagePanel = false;
                 RECT mainRc = {};
