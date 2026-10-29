@@ -4712,15 +4712,6 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         return;
     }
 
-    HPEN grid = CreatePen(PS_DOT, 1, g_theme.border);
-    for (int g = 1; g <= 3; ++g) {
-        int y = gy1 - graphH * g / 4;
-        HGDIOBJ op = SelectObject(hdc, grid);
-        MoveToEx(hdc, gx0, y, nullptr);
-        LineTo(hdc, gx1, y);
-        SelectObject(hdc, op);
-    }
-    DeleteObject(grid);
 
     if (points.empty() || keys.empty()) {
         SetTextColor(hdc, g_theme.muted);
@@ -4772,6 +4763,27 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     }
     uint64_t maxBucket = 1;
     for (uint64_t v : bucketTotal) if (v > maxBucket) maxBucket = v;
+
+    // Grid + Y-axis labels
+    {
+        HPEN grid = CreatePen(PS_DOT, 1, g_theme.border);
+        HGDIOBJ op = SelectObject(hdc, grid);
+        SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT));
+        SetTextColor(hdc, g_theme.muted);
+        for (int g = 1; g <= 4; ++g) {
+            int y = gy1 - graphH * g / 4;
+            if (g < 4) {
+                MoveToEx(hdc, gx0, y, nullptr);
+                LineTo(hdc, gx1, y);
+            }
+            uint64_t val = (uint64_t)((double)maxBucket * g / 4.0);
+            std::wstring lbl = FormatCompactTokens(val);
+            RECT lr = {gx0 - 46, y - 8, gx0 - 2, y + 8};
+            DrawTextW(hdc, lbl.c_str(), -1, &lr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
+        SelectObject(hdc, op);
+        DeleteObject(grid);
+    }
 
     int slot = graphW / nBuckets;
     if (slot < 1) slot = 1;
