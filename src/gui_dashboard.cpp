@@ -4756,7 +4756,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             int barW = (int)((double)keys[i].total / maxModel * (mx1 - barX0));
             if (barW < 2) barW = 2;
             if (barX0 + barW > mx1) barW = mx1 - barX0;
-            RECT barRc = {barX0, y + 2, barX0 + barW, y + rowH - 2};
+            RECT barRc = {barX0, y, barX0 + barW, y + rowH};
             HBRUSH mb = CreateSolidBrush(keys[i].color);
             FillRect(hdc, &barRc, mb);
             DeleteObject(mb);
