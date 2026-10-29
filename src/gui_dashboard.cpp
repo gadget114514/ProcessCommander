@@ -1509,6 +1509,11 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
                 st->hideTerminalGrid ? Tr(L"ターミナルを表示", L"Show Terminal", L"Mostrar terminal")
                                      : Tr(L"ターミナルを非表示", L"Hide Terminal", L"Ocultar terminal"));
         }
+        if (st->hwndBtnUsage) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                st->showUsagePanel ? Tr(L"使用状況を非表示", L"Hide Usage", L"Ocultar uso")
+                                   : Tr(L"使用状況を表示", L"Show Usage", L"Mostrar uso"));
+        }
     }
 }
 
@@ -5207,6 +5212,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnGridView);
                 addTool(st->hwndBtnToggleList);
                 addTool(st->hwndBtnToggleTerm);
+                addTool(st->hwndBtnUsage);
                 addTool(st->hwndBtnHideTray);
             }
 
