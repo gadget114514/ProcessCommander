@@ -40,8 +40,8 @@ scripts are plain PowerShell with self tests, so an agent can read, change and c
 Steps for the agent (or a person) setting up a project:
 
 1. **Copy** `ProcessCommander/tools/ww` (from the repository, or from
-   `<install dir>\tools\ww`, e.g. `C:\Program Files\ProcessCommander\tools\ww`, after running
-   the installer) into the project as `tools/ww` and commit it there. The
+   `<install dir>\tools\ww` after running the installer, e.g.
+   `%LOCALAPPDATA%\Programs\ProcessCommander\tools\ww`) into the project as `tools/ww` and commit it there. The
    project's copy is what gets run; later changes in this repository do not reach it.
 2. **Create the data folder** `<project>\ww-data\` with `tasks\` for the cards, and optionally
    `ww-data\config.json`, e.g. `{ "watch": ["src", "tests"] }` (see

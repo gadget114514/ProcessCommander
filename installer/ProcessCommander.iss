@@ -5,6 +5,7 @@
 ;      dist\ProcessCommander-v1.2.1-win64\ :
 ;        ProcessCommander.exe, pcder.exe, conpty.dll, OpenConsole.exe,
 ;        LICENSE, README.md, README-ja.md, docs\images\*
+;      tools\ (the ww task-card runner template) is taken from the repository directly.
 ;   2. Compile with:  ISCC.exe installer\ProcessCommander.iss
 ;      or run installer\build_installer.cmd
 ;
@@ -71,6 +72,8 @@ Source: "{#PayloadDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\README-ja.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
+; tools\ww: optional task-card runner template (copied into projects by an LLM agent; see tools\ww\README-ww.md)
+Source: "..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
