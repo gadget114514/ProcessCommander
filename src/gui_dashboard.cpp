@@ -4644,7 +4644,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     SetTextColor(hdc, g_theme.accent);
     DrawTextW(hdc, summary.c_str(), -1, &sumRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     int gx0 = 12;
-    int splitX = 12 + (w - 24) * 50 / 100;
+    int splitX = 12 + (w - 24) * 33 / 100;
     int gx1 = splitX - 6;
     int mx0 = splitX + 6;
     int mx1 = w - 12;
@@ -4780,7 +4780,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         int rowH = (n > 0) ? (availH / n) : availH;
         if (rowH < 30) rowH = 30;
         if (rowH > 44) rowH = 44;
-        int labelW = (std::min)(150, mx1 - mx0 - 30);
+        int labelW = (std::min)(300, mx1 - mx0 - 30);
         int barX0 = mx0 + labelW + 4;
         int y = gy0 + 2;
         SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT));
