@@ -87,6 +87,7 @@ struct ThemeColors {
 
 static UiLanguage g_uiLanguage = UiLanguage::English;
 static UiTheme g_uiTheme = UiTheme::System;
+static float g_kpiSaturation = 1.0f;
 static ThemeColors g_theme = {};
 static HBRUSH g_dialogBgBrush = nullptr;
 
@@ -692,9 +693,19 @@ static COLORREF KpiAccent(int index) {
         RGB(255, 128, 0)
     };
     int idx = (index >= 0) ? (index % 7) : ((index % 7 + 7) % 7);
-    if (g_uiTheme == UiTheme::HighContrast) return hcAccents[idx];
-    if (g_uiTheme == UiTheme::Pastel) return pastelAccents[idx];
-    return IsDarkThemeActive() ? darkAccents[idx] : lightAccents[idx];
+    COLORREF base;
+    if (g_uiTheme == UiTheme::HighContrast) base = hcAccents[idx];
+    else if (g_uiTheme == UiTheme::Pastel) base = pastelAccents[idx];
+    else base = IsDarkThemeActive() ? darkAccents[idx] : lightAccents[idx];
+    int r = GetRValue(base), g = GetGValue(base), b = GetBValue(base);
+    int gray = (r * 299 + g * 587 + b * 114) / 1000;
+    r = (int)(gray + (r - gray) * g_kpiSaturation);
+    g = (int)(gray + (g - gray) * g_kpiSaturation);
+    b = (int)(gray + (b - gray) * g_kpiSaturation);
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    return RGB(r, g, b);
 }
 
 static float g_kpiBarPhase = 0.0f;
@@ -3573,6 +3584,10 @@ static void LoadShellConfig(DashboardState* st) {
     if (!langCode.empty()) g_uiLanguage = ParseLanguage(langCode);
     std::string themeCode = JsonGetString(content, "theme", "");
     if (!themeCode.empty()) g_uiTheme = ParseTheme(themeCode);
+    int satPct = static_cast<int>(JsonGetInt(content, "kpi_saturation", 100));
+    if (satPct < 10) satPct = 10;
+    if (satPct > 100) satPct = 100;
+    g_kpiSaturation = satPct / 100.0f;
     ApplyTheme();
 }
 
@@ -3597,7 +3612,8 @@ static void SaveShellConfig(const DashboardState* st) {
        << "  \"list_display_mode\": " << static_cast<int>(st->listDisplayMode) << ",\n"
        << "  \"proc_row_ratio\": " << static_cast<int>(st->procRowRatio * 100.0f + 0.5f) << ",\n"
        << "  \"language\": \"" << LanguageCode(g_uiLanguage) << "\",\n"
-       << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\"\n"
+       << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\"," << std::endl
+       << "  ,\"kpi_saturation\": " << static_cast<int>(g_kpiSaturation * 100 + 0.5f) << std::endl
        << "}\n";
 
     WriteFileAtomicWide(GetConfigFilePathWide(), ss.str());
@@ -4111,6 +4127,8 @@ struct SettingsDlgState {
     HWND btnBrowseSound = nullptr;
     HWND btnTestSound = nullptr;
     HWND hwndSoundHint = nullptr;
+    HWND hwndSatLabel = nullptr;
+    HWND hwndSatCombo = nullptr;
     HWND chkHideEnded = nullptr;
 };
 
@@ -4146,6 +4164,18 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnBrowseSound, Tr(L"参照...", L"Browse...", L"Examinar..."));
     SetWindowTextW(ds->btnTestSound, Tr(L"試聴", L"Test", L"Probar"));
     SetWindowTextW(ds->hwndSoundHint, Tr(L"(空欄 = Windows の既定の通知音)", L"(Empty = Windows default notification sound)", L"(Vacío = sonido de notificación predeterminado de Windows)"));
+    if (ds->hwndSatLabel) {
+        SetWindowTextW(ds->hwndSatLabel, Tr(L"KPIバーの彩度", L"KPI bar saturation", L"Saturación de barras KPI"));
+    }
+    if (ds->hwndSatCombo) {
+        int sel = 3;
+        float sat = g_kpiSaturation;
+        if (sat <= 0.35f) sel = 0;
+        else if (sat <= 0.55f) sel = 1;
+        else if (sat <= 0.75f) sel = 2;
+        else sel = 3;
+        SendMessageW(ds->hwndSatCombo, CB_SETCURSEL, sel, 0);
+    }
     CheckRadioButton(hwnd, IDC_SET_LANG_JA, IDC_SET_LANG_ES,
         g_uiLanguage == UiLanguage::Japanese ? IDC_SET_LANG_JA :
         g_uiLanguage == UiLanguage::Spanish ? IDC_SET_LANG_ES : IDC_SET_LANG_EN);
@@ -4195,12 +4225,24 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             ds->btnHc = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 460, 142, 168, 30, hwnd, (HMENU)IDC_SET_THEME_HC, hInst, nullptr);
 
+            ds->hwndSatLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 180, 220, 20, hwnd, nullptr, hInst, nullptr);
+            SendMessageW(ds->hwndSatLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
+
+            ds->hwndSatCombo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+                18, 202, 220, 200, hwnd, (HMENU)IDC_SET_KPI_SAT, hInst, nullptr);
+            SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"30%");
+            SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"50%");
+            SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"70%");
+            SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"100%");
+
             ds->btnShell = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                18, 200, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
+                18, 240, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
             ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                210, 200, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
+                210, 240, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
             ds->btnClear = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                402, 200, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
+                402, 240, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
             ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 560, 360, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
 
@@ -4321,6 +4363,19 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 if (ds->dash && ds->dash->pm) {
                     ds->dash->pm->ClearFinished();
                     RefreshDashboardData(ds->dash);
+                }
+                return 0;
+            } else if (id == IDC_SET_KPI_SAT && HIWORD(wParam) == CBN_SELCHANGE) {
+                if (ds && ds->dash) {
+                    int sel = (int)SendMessageW(ds->hwndSatCombo, CB_GETCURSEL, 0, 0);
+                    float sat = 1.0f;
+                    if (sel == 0) sat = 0.3f;
+                    else if (sel == 1) sat = 0.5f;
+                    else if (sel == 2) sat = 0.7f;
+                    else sat = 1.0f;
+                    g_kpiSaturation = sat;
+                    SaveShellConfig(ds->dash);
+                    InvalidateRect(ds->dash->hwndMain, &ds->dash->rcKpiArea, FALSE);
                 }
                 return 0;
             }
@@ -4865,7 +4920,20 @@ static LRESULT CALLBACK UsagePanelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
         case WM_PAINT: {
             PAINTSTRUCT ps = {};
             HDC hdc = BeginPaint(hwnd, &ps);
-            if (st) DrawUsagePanel(hwnd, hdc, st);
+            RECT rc = {};
+            GetClientRect(hwnd, &rc);
+            int w = rc.right - rc.left;
+            int h = rc.bottom - rc.top;
+            if (w > 0 && h > 0 && st) {
+                HDC memDc = CreateCompatibleDC(hdc);
+                HBITMAP memBm = CreateCompatibleBitmap(hdc, w, h);
+                HGDIOBJ oldBm = SelectObject(memDc, memBm);
+                DrawUsagePanel(hwnd, memDc, st);
+                BitBlt(hdc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+                SelectObject(memDc, oldBm);
+                DeleteObject(memBm);
+                DeleteDC(memDc);
+            }
             EndPaint(hwnd, &ps);
             return 0;
         }
