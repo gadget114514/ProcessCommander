@@ -44,6 +44,7 @@ constexpr size_t kMaxUsagePoints = 200000;
 static std::mutex g_usageHistoryMutex;
 static std::deque<LlmUsagePoint> g_usageHistory;
 static bool g_usageHistoryLoaded = false;
+static bool g_usageHistoryPersist = false;
 static uint64_t g_recordCalls = 0;
 static std::string g_lastSkipReason;
 
@@ -54,6 +55,7 @@ static std::wstring UsageHistoryPathWide() {
 static void LoadUsageHistoryLocked() {
     if (g_usageHistoryLoaded) return;
     g_usageHistoryLoaded = true;
+    if (!g_usageHistoryPersist) return;
     std::ifstream f(UsageHistoryPathWide());
     if (!f) return;
     std::string line;
@@ -102,8 +104,9 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
     while (g_usageHistory.size() > kMaxUsagePoints) {
         g_usageHistory.pop_front();
     }
-    std::ofstream out(UsageHistoryPathWide(), std::ios::app);
-    if (out) {
+    if (g_usageHistoryPersist) {
+        std::ofstream out(UsageHistoryPathWide(), std::ios::app);
+        if (out) {
         nlohmann::json j;
         j["epochSec"] = p.epochSec;
         j["inputTokens"] = p.inputTokens;
@@ -116,7 +119,22 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
         j["agentType"] = p.agentType;
         j["model"] = p.model;
         out << j.dump() << "\\n";
+        }
     }
+}
+
+void SetUsageHistoryPersistence(bool enabled) {
+    std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
+    g_usageHistoryPersist = enabled;
+    if (enabled) {
+        g_usageHistoryLoaded = false;
+        LoadUsageHistoryLocked();
+    }
+}
+
+bool IsUsageHistoryPersistence() {
+    std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
+    return g_usageHistoryPersist;
 }
 
 uint64_t GetLlmUsageRecordCalls() { return g_recordCalls; }

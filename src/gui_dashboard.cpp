@@ -1,5 +1,6 @@
 #include "gui_dashboard.h"
 #include "common.h"
+#include "llm_stream.h"
 #include "TerminalView.h"
 #include "TerminalGridView.h"
 #include "nlohmann/json.hpp"
@@ -428,6 +429,7 @@ enum ControlId {
     IDC_SET_SOUND_TEST = 6033,
     IDC_SET_KPI_SAT = 6034,
     IDC_SET_USAGE_GRAPH_MODE = 6035,
+    IDC_SET_RESTORE_USAGE_GRAPH = 6036,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -483,6 +485,7 @@ struct DashboardState {
     int usagePanelHeight = 110;
     int usageRangeIndex = 1;
     int usageGraphMode = 0; // 0: token kinds (default), 1: by provider/model
+    bool restoreUsageGraph = false;
     RECT rcUsagePanel = {};
     RECT rcUsageSplitter = {};
     bool usageSplitterDragging = false;
@@ -3602,6 +3605,8 @@ static void LoadShellConfig(DashboardState* st) {
     int graphMode = static_cast<int>(JsonGetInt(content, "usage_graph_mode", 0));
     if (graphMode < 0 || graphMode > 1) graphMode = 0;
     st->usageGraphMode = graphMode;
+    st->restoreUsageGraph = JsonGetBool(content, "restore_usage_graph", false);
+    SetUsageHistoryPersistence(st->restoreUsageGraph);
     ApplyTheme();
 }
 
@@ -3628,7 +3633,8 @@ static void SaveShellConfig(const DashboardState* st) {
        << "  \"language\": \"" << LanguageCode(g_uiLanguage) << "\",\n"
         << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\",\n"
         << "  \"kpi_saturation\": " << static_cast<int>(g_kpiSaturation * 100 + 0.5f) << ",\n"
-        << "  \"usage_graph_mode\": " << st->usageGraphMode << "\n"
+        << "  \"usage_graph_mode\": " << st->usageGraphMode << ",\n"
+        << "  \"restore_usage_graph\": " << (st->restoreUsageGraph ? "true" : "false") << "\n"
         << "}\n";
 
     WriteFileAtomicWide(GetConfigFilePathWide(), ss.str());
@@ -4146,6 +4152,7 @@ struct SettingsDlgState {
     HWND hwndSatCombo = nullptr;
      HWND chkHideEnded = nullptr;
      HWND chkUsageGraph = nullptr;
+     HWND chkRestoreUsageGraph = nullptr;
 };
 
 static void CommitSoundSettings(SettingsDlgState* ds) {
@@ -4175,6 +4182,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
     SetWindowTextW(ds->chkHideEnded, Tr(L"終了履歴を非表示", L"Hide ended processes", L"Ocultar finalizados"));
     SetWindowTextW(ds->chkUsageGraph, Tr(L"Usageグラフを provider/model 積み上げ表示", L"Usage graph: stack by provider/model", L"Gráfico de uso: apilar por proveedor/modelo"));
+    SetWindowTextW(ds->chkRestoreUsageGraph, Tr(L"終了後もUsageグラフを復元する", L"Restore usage graph after exit", L"Restaurar gráfico de uso tras salir"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
@@ -4294,9 +4302,14 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SendMessageW(ds->chkUsageGraph, BM_SETCHECK,
                 ds->dash->usageGraphMode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
 
+            ds->chkRestoreUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                18, 412, 380, 24, hwnd, (HMENU)IDC_SET_RESTORE_USAGE_GRAPH, hInst, nullptr);
+            SendMessageW(ds->chkRestoreUsageGraph, BM_SETCHECK,
+                ds->dash->restoreUsageGraph ? BST_CHECKED : BST_UNCHECKED, 0);
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
-                             ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph };
+                             ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
@@ -4323,6 +4336,13 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     (SendMessageW(ds->chkUsageGraph, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
                 SaveShellConfig(ds->dash);
                 InvalidateRect(ds->dash->hwndUsagePanel, nullptr, FALSE);
+                return 0;
+            }
+            if (id == IDC_SET_RESTORE_USAGE_GRAPH) {
+                ds->dash->restoreUsageGraph =
+                    (SendMessageW(ds->chkRestoreUsageGraph, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                SetUsageHistoryPersistence(ds->dash->restoreUsageGraph);
+                SaveShellConfig(ds->dash);
                 return 0;
             }
             if (id == IDC_SET_SOUND_ENABLED) {
