@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "llm_stream.h"
+#include "common.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <cctype>
@@ -42,8 +43,43 @@ constexpr int64_t kUsageRetentionSec = 24 * 60 * 60;
 constexpr size_t kMaxUsagePoints = 200000;
 static std::mutex g_usageHistoryMutex;
 static std::deque<LlmUsagePoint> g_usageHistory;
+static bool g_usageHistoryLoaded = false;
 static uint64_t g_recordCalls = 0;
 static std::string g_lastSkipReason;
+
+static std::wstring UsageHistoryPathWide() {
+    return GetLogsDirectoryWide() + L"\usage_history.jsonl";
+}
+
+static void LoadUsageHistoryLocked() {
+    if (g_usageHistoryLoaded) return;
+    g_usageHistoryLoaded = true;
+    std::ifstream f(UsageHistoryPathWide());
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty()) continue;
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (!j.is_object()) continue;
+        LlmUsagePoint p;
+        p.epochSec = j.value("epochSec", (int64_t)0);
+        p.inputTokens = j.value("inputTokens", (uint64_t)0);
+        p.outputTokens = j.value("outputTokens", (uint64_t)0);
+        p.thinkingTokens = j.value("thinkingTokens", (uint64_t)0);
+        p.cacheReadTokens = j.value("cacheReadTokens", (uint64_t)0);
+        p.cacheWriteTokens = j.value("cacheWriteTokens", (uint64_t)0);
+        p.totalTokens = j.value("totalTokens", (uint64_t)0);
+        p.costUsd = j.value("costUsd", 0.0);
+        p.agentType = j.value("agentType", std::string());
+        p.model = j.value("model", std::string());
+        if (p.epochSec <= 0) continue;
+        g_usageHistory.push_back(std::move(p));
+    }
+    int64_t now = static_cast<int64_t>(time(nullptr));
+    int64_t cutoff = now - kUsageRetentionSec;
+    while (!g_usageHistory.empty() && g_usageHistory.front().epochSec < cutoff) g_usageHistory.pop_front();
+    while (g_usageHistory.size() > kMaxUsagePoints) g_usageHistory.pop_front();
+}
 
 } // namespace
 
@@ -55,6 +91,7 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
+    LoadUsageHistoryLocked();
     LlmUsagePoint p = point;
     p.epochSec = epochSec;
     g_usageHistory.push_back(std::move(p));
@@ -65,11 +102,27 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
     while (g_usageHistory.size() > kMaxUsagePoints) {
         g_usageHistory.pop_front();
     }
+    std::ofstream out(UsageHistoryPathWide(), std::ios::app);
+    if (out) {
+        nlohmann::json j;
+        j["epochSec"] = p.epochSec;
+        j["inputTokens"] = p.inputTokens;
+        j["outputTokens"] = p.outputTokens;
+        j["thinkingTokens"] = p.thinkingTokens;
+        j["cacheReadTokens"] = p.cacheReadTokens;
+        j["cacheWriteTokens"] = p.cacheWriteTokens;
+        j["totalTokens"] = p.totalTokens;
+        j["costUsd"] = p.costUsd;
+        j["agentType"] = p.agentType;
+        j["model"] = p.model;
+        out << j.dump() << "\\n";
+    }
 }
 
 uint64_t GetLlmUsageRecordCalls() { return g_recordCalls; }
 std::vector<LlmUsagePoint> GetLlmUsageHistory(int64_t sinceEpochSec) {
     std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
+    LoadUsageHistoryLocked();
     std::vector<LlmUsagePoint> out;
     out.reserve(g_usageHistory.size());
     for (const auto& p : g_usageHistory) {
