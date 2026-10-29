@@ -4741,8 +4741,8 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         int n = static_cast<int>(keys.size());
         int availH = gy1 - gy0;
         int rowH = (n > 0) ? (availH / n) : availH;
-        if (rowH < 11) rowH = 11;
-        if (rowH > 18) rowH = 18;
+        if (rowH < 13) rowH = 13;
+        if (rowH > 20) rowH = 20;
         int labelW = (std::min)(150, mx1 - mx0 - 30);
         int barX0 = mx0 + labelW + 4;
         int y = gy0 + 2;
