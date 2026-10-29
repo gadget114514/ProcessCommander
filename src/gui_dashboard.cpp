@@ -4773,7 +4773,10 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             int barW = (int)((double)keys[i].total / maxModel * (mx1 - barX0));
             if (barW < 2) barW = 2;
             if (barX0 + barW > mx1) barW = mx1 - barX0;
-            RECT barRc = {barX0, y, barX0 + barW, y + rowH};
+            int barH = 14;
+            int barTop = y + (rowH - barH) / 2;
+            if (barTop < y) barTop = y;
+            RECT barRc = {barX0, barTop, barX0 + barW, barTop + barH};
             HBRUSH mb = CreateSolidBrush(keys[i].color);
             FillRect(hdc, &barRc, mb);
             DeleteObject(mb);
@@ -4802,16 +4805,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
                               L" " + std::wstring(dbuf) + L"]";
             std::wstring full = val + L" " + b2;
 
-            // bar height = font height
-            RECT barRc2 = {barX0, y, barX0 + barW, y + 14};
-            // redraw bar with thinner height
-            // (bar already drawn full rowH; cover lower part with panel bg)
-            HBRUSH bgb = CreateSolidBrush(g_theme.panel);
-            RECT lower = {barX0, y + 14, barX0 + barW, y + rowH};
-            FillRect(hdc, &lower, bgb);
-            DeleteObject(bgb);
-
-            RECT valRc = {barX0 + 2, y, (barW < 80) ? mx1 : barX0 + barW - 2, y + 14};
+            RECT valRc = {barX0 + 2, barTop, (barW < 80) ? mx1 : barX0 + barW - 2, barTop + barH};
             if (barW < 80) valRc.left = barX0 + 2;
             SetTextColor(hdc, (keys[i].lastEpochSec > 0 && elapsed >= 5 * 3600) ? RGB(0xFF, 0xC0, 0xC0) : RGB(0xFF, 0xFF, 0xFF));
             SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT));
