@@ -11,6 +11,14 @@
 
 ---
 
+## Express
+
+- Install processcommander*setup.exe
+- In your llm, "find processcommander in PATH, then read help to use it" 
+- In your llm, "create task and use processcommander to execute the task"
+- That's all
+
+
 ## Quick Start for LLM Agents
 
 ```powershell
