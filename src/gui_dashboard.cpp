@@ -477,8 +477,11 @@ struct DashboardState {
     HWND hwndBtnUsage = nullptr;
     HWND hwndUsagePanel = nullptr;
     bool showUsagePanel = true;
+    int usagePanelHeight = 110;
     int usageRangeIndex = 1;
     RECT rcUsagePanel = {};
+    RECT rcUsageSplitter = {};
+    bool usageSplitterDragging = false;
     HWND hwndList = nullptr;
     HWND hwndTaskList = nullptr;
     HWND hwndBtnViewTasks = nullptr;
@@ -1354,6 +1357,20 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
     SetTextColor(hdc, g_theme.text);
     DrawTextW(hdc, sbLeft.str().c_str(), -1, &rcSbLeft, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+    if (st->showUsagePanel && st->rcUsageSplitter.bottom > st->rcUsageSplitter.top) {
+        RECT rc = st->rcUsageSplitter;
+        HBRUSH spBrush = CreateSolidBrush(st->usageSplitterDragging ? g_theme.border : g_theme.panel);
+        FillRect(hdc, &rc, spBrush);
+        DeleteObject(spBrush);
+        HPEN gripPen = CreatePen(PS_SOLID, 1, st->usageSplitterDragging ? g_theme.accent : g_theme.muted);
+        HGDIOBJ oldPen = SelectObject(hdc, gripPen);
+        int midY = (rc.top + rc.bottom) / 2;
+        MoveToEx(hdc, rc.left + 40, midY, nullptr);
+        LineTo(hdc, rc.right - 40, midY);
+        SelectObject(hdc, oldPen);
+        DeleteObject(gripPen);
+    }
+
     SelectObject(hdc, oldFont);
     BitBlt(hdcWindow, 0, 0, width, height, hdc, 0, 0, SRCCOPY);
     SelectObject(hdc, oldBm);
@@ -2099,15 +2116,18 @@ static void LayoutControls(DashboardState* st, int width, int height) {
 
     int usageOffset = 0;
     if (st->showUsagePanel) {
+        if (st->usagePanelHeight < 60) st->usagePanelHeight = 60;
         int usageTop = kHeaderKpiBottom + 2;
-        st->rcUsagePanel = {margin, usageTop, width - margin, usageTop + kUsagePanelH};
-        usageOffset = kUsagePanelH + 8;
+        st->rcUsagePanel = {margin, usageTop, width - margin, usageTop + st->usagePanelHeight};
+        st->rcUsageSplitter = {margin, usageTop + st->usagePanelHeight + 2, width - margin, usageTop + st->usagePanelHeight + 8};
+        usageOffset = st->usagePanelHeight + 8;
         if (st->hwndUsagePanel) {
-            MoveWindow(st->hwndUsagePanel, margin, usageTop, (std::max)(200, width - margin * 2), kUsagePanelH, TRUE);
+            MoveWindow(st->hwndUsagePanel, margin, usageTop, (std::max)(200, width - margin * 2), st->usagePanelHeight, TRUE);
             ShowWindow(st->hwndUsagePanel, SW_SHOW);
         }
     } else {
         st->rcUsagePanel = {};
+        st->rcUsageSplitter = {};
         if (st->hwndUsagePanel) ShowWindow(st->hwndUsagePanel, SW_HIDE);
     }
 
@@ -5200,6 +5220,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     InvalidateRect(hwnd, &st->rcSplitter, FALSE);
                     return 0;
                 }
+                if (st->showUsagePanel && st->rcUsageSplitter.bottom > st->rcUsageSplitter.top && PtInRect(&st->rcUsageSplitter, pt)) {
+                    st->usageSplitterDragging = true;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, &st->rcUsageSplitter, FALSE);
+                    return 0;
+                }
                 for (const auto& tb : st->termBanners) {
                     if (PtInRect(&tb.rcBorder, pt)) {
                         st->selectedProcId = tb.procId;
@@ -5241,6 +5267,19 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
+            if (st && st->usageSplitterDragging) {
+                POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                int usageTop = kHeaderKpiBottom + 2;
+                int newH = pt.y - usageTop;
+                if (newH < 60) newH = 60;
+                if (newH > 400) newH = 400;
+                st->usagePanelHeight = newH;
+                RECT rcClient = {};
+                GetClientRect(hwnd, &rcClient);
+                LayoutControls(st, rcClient.right, rcClient.bottom);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             break;
         }
 
@@ -5259,6 +5298,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 InvalidateRect(hwnd, &st->rcSplitter, FALSE);
                 return 0;
             }
+            if (st && st->usageSplitterDragging) {
+                st->usageSplitterDragging = false;
+                if (GetCapture() == hwnd) ReleaseCapture();
+                InvalidateRect(hwnd, &st->rcUsageSplitter, FALSE);
+                return 0;
+            }
             break;
         }
 
@@ -5266,6 +5311,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (st) {
                 st->splitterDragging = false;
                 st->rowsSplitterDragging = false;
+                st->usageSplitterDragging = false;
             }
             break;
         }
