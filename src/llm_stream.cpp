@@ -145,6 +145,8 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         uint64_t total = getU64(u, "total_tokens");
         if (!total) total = getU64(u, "total");
         uint64_t cacheRead = getU64(u, "cache_read_input_tokens");
+        if (!cacheRead) cacheRead = getU64(u, "cache_read_tokens");
+        if (!cacheRead) cacheRead = getU64(u, "cache_read");
         uint64_t cacheWrite = getU64(u, "cache_creation_input_tokens");
         if (u.contains("cache") && u["cache"].is_object()) {
             if (!cacheRead) cacheRead = getU64(u["cache"], "read");
@@ -205,6 +207,12 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
                 if (n.empty()) n = getStr(j, "name");
                 if (n.empty()) n = getStr(j, "tool_name");
                 if (n.empty()) n = getStr(j, "toolName");
+                if (n.empty() && j.contains("step_update") && j["step_update"].is_object()) {
+                    n = getStr(j["step_update"], "tool_name");
+                    if (n.empty() && j["step_update"].contains("tool_info") && j["step_update"]["tool_info"].is_object()) {
+                        n = getStr(j["step_update"]["tool_info"], "name");
+                    }
+                }
                 if (n.empty() && partObj) {
                     n = getStr(*partObj, "tool");
                     if (n.empty()) n = getStr(*partObj, "name");
@@ -276,6 +284,76 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
     if (rawType.empty()) rawType = getStr(j, "event");
     if (rawType.empty()) rawType = getStr(j, "role");
     std::string lType = ToLowerStr(rawType);
+
+    // agy (Antigravity) stream-json format: top-level "event" + nested "step_update"/"init".
+    if (j.contains("init") || j.contains("step_update")) {
+        const nlohmann::json* su = nullptr;
+        if (j.contains("step_update") && j["step_update"].is_object()) su = &j["step_update"];
+
+        if (su && su->contains("usage") && (*su)["usage"].is_object()) {
+            applyUsage((*su)["usage"]);
+        } else if (j.contains("usage") && j["usage"].is_object()) {
+            applyUsage(j["usage"]);
+        }
+
+        if (j.contains("init")) {
+            outEvent.type = "status";
+            outEvent.status = "running";
+            outEvent.content = "init";
+            return finish();
+        }
+
+        std::string stepType = su ? getStr(*su, "step_type") : "";
+        std::string stateStr = su ? getStr(*su, "state") : "";
+
+        if (stepType == "user_input") {
+            outEvent.type = "user_input";
+            outEvent.status = "generating";
+            return finish();
+        }
+        if (stepType == "agent_response") {
+            outEvent.type = "message";
+            outEvent.status = "generating";
+            return finish();
+        }
+        if (stepType == "tool") {
+            std::string tname = su ? getStr(*su, "tool_name") : "";
+            if (tname.empty() && su && su->contains("tool_info") && (*su)["tool_info"].is_object()) {
+                tname = getStr((*su)["tool_info"], "name");
+                if (tname.empty()) tname = getStr((*su)["tool_info"], "tool_name");
+            }
+            outEvent.toolName = tname;
+            if (su && su->contains("tool_info") && (*su)["tool_info"].is_object()) {
+                const auto& ti = (*su)["tool_info"];
+                if (ti.contains("parameters")) {
+                    outEvent.toolInput = ti["parameters"].is_string() ? ti["parameters"].get<std::string>() : ti["parameters"].dump();
+                }
+                std::string to;
+                if (ti.contains("output")) {
+                    to = ti["output"].is_string() ? ti["output"].get<std::string>() : ti["output"].dump();
+                }
+                if (stateStr == "DONE" || !to.empty()) {
+                    outEvent.type = "tool_result";
+                    outEvent.status = "tool_result";
+                    outEvent.content = to;
+                    if (outEvent.toolAction.empty()) outEvent.toolAction = outEvent.toolName.empty() ? "Result" : ("Result: " + outEvent.toolName);
+                } else {
+                    outEvent.type = "tool_call";
+                    outEvent.status = "calling_tool";
+                    if (outEvent.toolAction.empty() && !outEvent.toolName.empty()) outEvent.toolAction = "Calling " + outEvent.toolName;
+                }
+            } else {
+                outEvent.type = "tool_call";
+                outEvent.status = "calling_tool";
+                if (outEvent.toolAction.empty() && !outEvent.toolName.empty()) outEvent.toolAction = "Calling " + outEvent.toolName;
+            }
+            return finish();
+        }
+
+        outEvent.type = "status";
+        outEvent.status = stateStr.empty() ? "running" : ToLowerStr(stateStr);
+        return finish();
+    }
 
     // 1. Tool Call / Tool Use (Claude, agy, OpenCode, Codex)
     std::string partType = partObj ? ToLowerStr(getStr(*partObj, "type")) : "";
