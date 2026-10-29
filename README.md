@@ -15,8 +15,11 @@
 
 - Install processcommander*setup.exe
 - In your llm, "find processcommander in PATH, then read help to use it" 
-- In your llm, "create task and use processcommander to execute the task"
+- In your llm, "create task and use opencode to execute the task via processcommander" 
 - That's all
+
+LLM will execute "processcommander help --json", then the llm will know how to use it.
+You use the LLM as frontend supervisor llm, and you can specify other llm as worker.
 
 
 ## Quick Start for LLM Agents
