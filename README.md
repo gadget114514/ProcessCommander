@@ -507,6 +507,9 @@ WORKING MODEL (LLM orchestration):
     3. Workers are ordinary processes and may themselves be LLM CLIs. Pass
        detailed instructions via instructionsFile/instructionsText; workers read
        {instructions} / PC_JOB_INSTRUCTIONS and write artifacts.
+       Role clarity: when supervisor and worker share the same engine
+       (Claude/Claude, opencode/opencode), roles can blur; prefer a different
+       worker engine or a clearly distinct worker role/prompt.
     4. The supervisor observes with taskqueue_wait / taskqueue_list /
        taskqueue_graph and reads logs; it never polls .done files.
     5. On failure, fix the cause and call taskqueue_retry. Blocked dependents
@@ -777,6 +780,11 @@ SETUP FOR LLM AGENTS:
         instructions via instructionsFile/instructionsText; the worker reads
         {instructions} / PC_JOB_INSTRUCTIONS and writes artifacts.
       - Workers may be LLM CLIs (opencode run, claude -p, ...) or build scripts.
+      - Role clarity: when the supervisor and worker use the same engine
+        (e.g. Claude supervising `claude -p`, or opencode supervising
+        `opencode run`), roles can blur and cause confusion; prefer a
+        different worker engine for workers, or give workers a clearly
+        distinct role/prompt and avoid nested supervision.
       - Verify success with exit code + filesNewer/outputRegex; observe with
         taskqueue_wait / taskqueue_list / taskqueue_graph and logs; retry with
         taskqueue_retry. Blocked dependents resume automatically.
