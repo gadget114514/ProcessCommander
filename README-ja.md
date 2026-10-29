@@ -563,8 +563,11 @@ COMMANDS:
         --eta <time>             Estimated end time shown in gray while running
                                  (e.g. "18:30" or "2026-10-22 18:30:00").
                                  If omitted, --timeout shows "remaining N seconds".
-        --estimate-end <time>    Alias for --eta
-        --wait                   Block until process exits (unlimited unless --wait-ms is set)
+         --estimate-end <time>    Alias for --eta
+         --agent-type <claude|agy|antigravity|opencode|codex|aider|ollama>
+                                  Hint agent type for JSON stream parsing (auto-detected if omitted).
+         --json-stream            Enable JSONL stream parsing and write <log>.stream.jsonl for LLM agent output.
+         --wait                   Block until process exits (unlimited unless --wait-ms is set)
         --wait-ms <ms>           Max wait when --wait is set; initial output wait otherwise
                                  (default: 500; 0 = unlimited with --wait)
 
