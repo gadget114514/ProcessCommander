@@ -4576,7 +4576,10 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     SetTextColor(hdc, g_theme.accent);
     DrawTextW(hdc, summary.c_str(), -1, &sumRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     int gx0 = 12;
-    int gx1 = w - 12;
+    int splitX = 12 + (w - 24) * 62 / 100;
+    int gx1 = splitX - 6;
+    int mx0 = splitX + 6;
+    int mx1 = w - 12;
     int gy0 = 30;
     int gy1 = h - 26;
     int graphW = gx1 - gx0;
@@ -4682,6 +4685,47 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             if (used >= barH) break;
         }
     }
+    // Per-provider/model horizontal bar chart on the right.
+    {
+        RECT mtitle = {mx0, gy0 - 14, mx1, gy0};
+        SetTextColor(hdc, g_theme.muted);
+        SelectObject(hdc, st->hFontUiBold ? st->hFontUiBold : GetStockObject(DEFAULT_GUI_FONT));
+        DrawTextW(hdc, Tr(L"モデル別使用量", L"USAGE BY MODEL", L"USO POR MODELO"), -1, &mtitle,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        uint64_t maxModel = 1;
+        for (const auto& k : keys) if (k.total > maxModel) maxModel = k.total;
+        int n = static_cast<int>(keys.size());
+        int availH = gy1 - gy0;
+        int rowH = (n > 0) ? (availH / n) : availH;
+        if (rowH < 11) rowH = 11;
+        if (rowH > 18) rowH = 18;
+        int labelW = (std::min)(150, mx1 - mx0 - 30);
+        int barX0 = mx0 + labelW + 4;
+        int y = gy0 + 2;
+        SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT));
+        for (int i = 0; i < n && y + rowH <= gy1 + 4; ++i) {
+            std::wstring lbl = Utf8ToWide(keys[i].name);
+            RECT labRc = {mx0, y, mx0 + labelW, y + rowH};
+            SetTextColor(hdc, g_theme.text);
+            DrawTextW(hdc, lbl.c_str(), -1, &labRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+            int barW = (int)((double)keys[i].total / maxModel * (mx1 - barX0));
+            if (barW < 2) barW = 2;
+            if (barX0 + barW > mx1) barW = mx1 - barX0;
+            RECT barRc = {barX0, y + 2, barX0 + barW, y + rowH - 2};
+            HBRUSH mb = CreateSolidBrush(keys[i].color);
+            FillRect(hdc, &barRc, mb);
+            DeleteObject(mb);
+
+            std::wstring val = FormatCompactTokens(keys[i].total);
+            RECT valRc = {barX0 + barW + 4, y, mx1, y + rowH};
+            SetTextColor(hdc, g_theme.muted);
+            DrawTextW(hdc, val.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            y += rowH + 1;
+        }
+    }
+
     SetTextColor(hdc, g_theme.muted);
     RECT axisL = {gx0, gy1 + 2, gx0 + 80, gy1 + 16};
     RECT axisR = {gx1 - 80, gy1 + 2, gx1, gy1 + 16};
