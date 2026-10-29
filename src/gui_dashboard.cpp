@@ -4618,6 +4618,24 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     int h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) return;
 
+    int64_t selStart = 0, selEnd = 0;
+    const auto& snaps = st->allSnapshots.empty() ? st->cachedSnapshots : st->allSnapshots;
+    if (st->selectedProcId > 0) {
+        for (const auto& s : snaps) {
+            if (s.id == st->selectedProcId) { selStart = s.startEpochSec; selEnd = s.endEpochSec; break; }
+        }
+    } else if (st->hwndTaskList) {
+        int idx = ListView_GetNextItem(st->hwndTaskList, -1, LVNI_SELECTED);
+        if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size())) {
+            int jid = 0;
+            try { jid = std::stoi(st->taskJobIds[idx]); } catch (...) { jid = 0; }
+            for (const auto& s : snaps) {
+                if (jid > 0 && s.jobId == jid) { selStart = s.startEpochSec; selEnd = s.endEpochSec; break; }
+            }
+        }
+    }
+    if (selStart > 0 && selEnd == 0) selEnd = static_cast<int64_t>(time(nullptr));
+
     HBRUSH bg = CreateSolidBrush(g_theme.panel);
     FillRect(hdc, &rc, bg);
     DeleteObject(bg);
@@ -4802,6 +4820,25 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     uint64_t maxBucket = 1;
     for (uint64_t v : bucketTotal) if (v > maxBucket) maxBucket = v;
 
+     // Highlight selected process/job time range in usage graph background.
+    if (selStart > 0 && points.size() > 0) {
+        int64_t ws = static_cast<int64_t>(windowStartBucket * bucketSec);
+        int64_t we = ws + static_cast<int64_t>(nBuckets * bucketSec);
+        int64_t s = std::max(selStart, ws);
+        int64_t e = std::min(selEnd > 0 ? selEnd : static_cast<int64_t>(time(nullptr)), we);
+        if (e > s && we > ws) {
+            int x0 = gx0 + static_cast<int>((static_cast<double>(s - ws) / (we - ws)) * graphW);
+            int x1 = gx0 + static_cast<int>((static_cast<double>(e - ws) / (we - ws)) * graphW);
+            if (x1 < x0 + 1) x1 = x0 + 1;
+            if (x0 < gx0) x0 = gx0;
+            if (x1 > gx1) x1 = gx1;
+            HBRUSH gb = CreateSolidBrush(g_theme.border);
+            RECT grc = {x0, gy0, x1, gy1};
+            FillRect(hdc, &grc, gb);
+            DeleteObject(gb);
+        }
+    }
+
     // Grid + Y-axis labels
     {
         HPEN grid = CreatePen(PS_DOT, 1, g_theme.border);
@@ -4981,7 +5018,12 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     localtime_s(&tmv, &stv);
     swprintf_s(tbuf, L"%02d:%02d", tmv.tm_hour, tmv.tm_min);
     DrawTextW(hdc, tbuf, -1, &axisL, DT_LEFT | DT_SINGLELINE);
-    DrawTextW(hdc, Tr(L"現在", L"now", L"ahora"), -1, &axisR, DT_RIGHT | DT_SINGLELINE);
+     wchar_t nowBuf[32] = {};
+    time_t nowT = time(nullptr);
+    struct tm nowTm = {};
+    localtime_s(&nowTm, &nowT);
+    swprintf_s(nowBuf, L"%02d:%02d", nowTm.tm_hour, nowTm.tm_min);
+    DrawTextW(hdc, nowBuf, -1, &axisR, DT_RIGHT | DT_SINGLELINE);
 
     SelectObject(hdc, oldFont);
 }

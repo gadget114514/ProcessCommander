@@ -45,6 +45,8 @@ struct ProcessSnapshot {
     DWORD exitCode = STILL_ACTIVE;
     std::string startTimeStr;
     std::string endTimeStr;
+    int64_t startEpochSec = 0;
+    int64_t endEpochSec = 0;
     std::string estimatedEndTimeStr;
     uint64_t startTickMs = 0;
     uint64_t endTickMs = 0;
@@ -177,6 +179,8 @@ private:
 
         std::string startTimeStr;
         std::string endTimeStr;
+        int64_t startEpochSec = 0;
+        int64_t endEpochSec = 0;
         std::string estimatedEndTimeStr;
         uint64_t startTickMs = 0;
         uint64_t restoredElapsedMs = 0;

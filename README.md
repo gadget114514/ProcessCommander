@@ -15,7 +15,7 @@
 
 - Install processcommander*setup.exe
 - In your llm, "find processcommander in PATH, then read help to use it" 
-- In your llm, "create task and use opencode to execute the task via processcommander" 
+- In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
 
 LLM will execute "processcommander help --json", then the llm will know how to use it.

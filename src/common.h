@@ -60,6 +60,7 @@ bool JsonGetBool(const std::string& json, const std::string& key, bool defaultVa
 
 uint64_t GetNowTickMs();
 std::string GetCurrentTimestampStr();
+int64_t ParseTimestampStrToEpoch(const std::string& s);
 std::string GetFileTimestampStr();
 std::string FormatDurationSec(uint64_t ms);
 std::string FormatUptimeHMS(uint64_t ms);

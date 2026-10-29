@@ -202,7 +202,8 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
     proc->destroyTerminalCb = destroyTerminalCb_;
 
     uint64_t now = GetNowTickMs();
-    proc->startTimeStr = GetCurrentTimestampStr();
+     proc->startTimeStr = GetCurrentTimestampStr();
+     proc->startEpochSec = static_cast<int64_t>(time(nullptr));
     proc->startTickMs = now;
     proc->lastOutputTickMs = now;
     proc->lastCpuActivityTickMs = now;
@@ -635,7 +636,8 @@ void ProcessManager::TerminateJobInternal(ManagedProcess& proc, ProcState finalS
 
     uint64_t elapsedMs = (endNow >= proc.startTickMs) ? (endNow - proc.startTickMs) : 0;
     std::string endTimeStr = GetCurrentTimestampStr();
-    proc.endTimeStr = endTimeStr;
+     proc.endTimeStr = endTimeStr;
+     proc.endEpochSec = static_cast<int64_t>(time(nullptr));
     proc.restoredElapsedMs = elapsedMs;
 
     if (!reasonMsg.empty()) {
@@ -728,6 +730,7 @@ void ProcessManager::MonitorThreadFunc() {
                     uint64_t elapsedMs = (now >= proc->startTickMs) ? (now - proc->startTickMs) : 0;
                     std::string endTimeStr = GetCurrentTimestampStr();
                     proc->endTimeStr = endTimeStr;
+     proc->endEpochSec = static_cast<int64_t>(time(nullptr));
                     proc->restoredElapsedMs = elapsedMs;
                     if (!proc->logFilePathWide.empty()) {
                         std::ostringstream ftr;
@@ -1043,8 +1046,10 @@ ProcessSnapshot ProcessManager::BuildSnapshot(ProcessManager::ManagedProcess& p,
     snap.state = p.state.load();
     snap.rootPid = p.rootPid;
     snap.exitCode = p.exitCode.load();
-    snap.startTimeStr = p.startTimeStr;
-    snap.endTimeStr = p.endTimeStr;
+     snap.startTimeStr = p.startTimeStr;
+     snap.endTimeStr = p.endTimeStr;
+     snap.startEpochSec = p.startEpochSec;
+     snap.endEpochSec = p.endEpochSec;
     snap.estimatedEndTimeStr = p.estimatedEndTimeStr;
     snap.startTickMs = p.startTickMs;
     snap.endTickMs = p.endTickMs.load();
@@ -1394,8 +1399,10 @@ void ProcessManager::LoadState() {
         DWORD ec = static_cast<DWORD>(JsonGetInt(itemJson, "exit_code", 0));
         if (ec == STILL_ACTIVE) ec = 1;
         proc->exitCode = ec;
-        proc->startTimeStr = JsonGetString(itemJson, "start_time", "");
-        proc->endTimeStr = JsonGetString(itemJson, "end_time", "");
+     proc->startTimeStr = JsonGetString(itemJson, "start_time", "");
+     proc->startEpochSec = ParseTimestampStrToEpoch(proc->startTimeStr);
+     proc->endTimeStr = JsonGetString(itemJson, "end_time", "");
+     proc->endEpochSec = ParseTimestampStrToEpoch(proc->endTimeStr);
         proc->estimatedEndTimeStr = JsonGetString(itemJson, "estimated_end_time", "");
         proc->restoredElapsedMs = static_cast<uint64_t>(JsonGetInt(itemJson, "elapsed_ms", 0));
         proc->cpuTime100ns = static_cast<uint64_t>(JsonGetInt(itemJson, "cpu_time_ms", 0)) * 10000;

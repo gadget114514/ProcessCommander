@@ -4,7 +4,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cwctype>
-#include <cstdio>
+#include <ctime>
+#include <cstring>
 
 namespace pc {
 
@@ -351,6 +352,23 @@ std::string GetCurrentTimestampStr() {
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
              st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     return buf;
+}
+
+int64_t ParseTimestampStrToEpoch(const std::string& s) {
+    if (s.empty()) return 0;
+    int y, mo, d, h, mi, se;
+    if (sscanf(s.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+    std::tm tmv = {};
+    tmv.tm_year = y - 1900;
+    tmv.tm_mon = mo - 1;
+    tmv.tm_mday = d;
+    tmv.tm_hour = h;
+    tmv.tm_min = mi;
+    tmv.tm_sec = se;
+    tmv.tm_isdst = -1;
+    time_t t = std::mktime(&tmv);
+    if (t == (time_t)-1) return 0;
+    return static_cast<int64_t>(t);
 }
 
 std::string GetFileTimestampStr() {
