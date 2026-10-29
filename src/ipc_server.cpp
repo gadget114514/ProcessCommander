@@ -1,5 +1,7 @@
 #include "ipc_server.h"
 #include "chain_guard.h"
+#include "llm_stream.h"
+#include <ctime>
 #include <sstream>
 #include <cctype>
 
@@ -380,6 +382,27 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
 
         std::string jsonEvents = LlmEventsToJson(events, state);
         return jsonEvents;
+    }
+    else if (action == "get_usage_history") {
+        int sinceSec = static_cast<int>(JsonGetInt(reqJson, "since_sec", 86400));
+        int64_t since = static_cast<int64_t>(time(nullptr)) - sinceSec;
+        std::vector<LlmUsagePoint> pts = GetLlmUsageHistory(since);
+        oss << "{\"ok\":true,\"record_calls\":" << GetLlmUsageRecordCalls()
+            << ",\"count\":" << pts.size() << ",\"points\":[";
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (i) oss << ",";
+            oss << "{\"epoch\":" << pts[i].epochSec
+                << ",\"input\":" << pts[i].inputTokens
+                << ",\"output\":" << pts[i].outputTokens
+                << ",\"thinking\":" << pts[i].thinkingTokens
+                << ",\"cache\":" << (pts[i].cacheReadTokens + pts[i].cacheWriteTokens)
+                << ",\"total\":" << pts[i].totalTokens
+                << ",\"cost\":" << pts[i].costUsd
+                << ",\"agent\":\"" << JsonEscape(pts[i].agentType) << "\""
+                << ",\"model\":\"" << JsonEscape(pts[i].model) << "\"}";
+        }
+        oss << "]}";
+        return oss.str();
     }
     else if (action == "get_agent_state") {
         int id = static_cast<int>(JsonGetInt(reqJson, "id", 0));

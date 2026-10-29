@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <ctime>
 #include <cstdio>
+#include <cmath>
 
 // ---------------------------------------------------------------------------
 // Globals required by src/Terminal/src/TerminalGridView.cpp
@@ -3658,10 +3659,7 @@ static void UpdateToolbarLabels(DashboardState* st) {
 
 static void ApplyLanguageToUi(DashboardState* st) {
     if (!st) return;
-    SetWindowTextW(st->hwndMain,
-        Tr(L"ProcessCommander — マルチターミナル ConPTY ダッシュボード (Direct2D TerminalView)",
-           L"ProcessCommander — Multi-Terminal ConPTY Dashboard (Direct2D TerminalView)",
-           L"ProcessCommander — Panel de terminales ConPTY (Direct2D TerminalView)"));
+    SetWindowTextW(st->hwndMain, L"Process Commander");
     UpdateToolbarLabels(st);
     UpdateListHeaderSortIndicator(st);
     UpdateTaskListHeaders(st);
@@ -4477,6 +4475,45 @@ static void GetUsagePillRects(int width, RECT out[kUsageRangeCount], RECT& close
     closeRc = {width - 28, 5, width - 8, 25};
 }
 
+static COLORREF ColorForUsageKey(const std::string& name) {
+    // Deterministic, well-spaced color per (provider/model) key using golden-ratio hue.
+    unsigned int h = 2166137821u;
+    for (unsigned char c : name) { h ^= c; h *= 16777619u; }
+    double hue = (h % 360) / 360.0;
+    // golden-ratio scatter for better separation
+    hue = fmod(hue + (h % 97) / 97.0 * 0.6180339887, 1.0);
+    double sat = 0.62 + (h % 20) / 100.0;
+    double val = 0.78 + (h % 15) / 100.0;
+    // HSV -> RGB
+    int hi = static_cast<int>(hue * 6.0);
+    double f = hue * 6.0 - hi;
+    double p = val * (1.0 - sat);
+    double q = val * (1.0 - f * sat);
+    double t = val * (1.0 - (1.0 - f) * sat);
+    double r = 0, g = 0, b = 0;
+    switch (hi % 6) {
+        case 0: r = val; g = t; b = p; break;
+        case 1: r = q; g = val; b = p; break;
+        case 2: r = p; g = val; b = t; break;
+        case 3: r = p; g = q; b = val; break;
+        case 4: r = t; g = p; b = val; break;
+        default: r = val; g = p; b = q; break;
+    }
+    return RGB((int)(r * 255), (int)(g * 255), (int)(b * 255));
+}
+
+static COLORREF DesaturateColor(COLORREF c, float amount) {
+    int r = GetRValue(c), g = GetGValue(c), b = GetBValue(c);
+    int gray = (r * 299 + g * 587 + b * 114) / 1000;
+    int nr = (int)(r + (gray - r) * amount);
+    int ng = (int)(g + (gray - g) * amount);
+    int nb = (int)(b + (gray - b) * amount);
+    if (nr < 0) nr = 0; if (nr > 255) nr = 255;
+    if (ng < 0) ng = 0; if (ng > 255) ng = 255;
+    if (nb < 0) nb = 0; if (nb > 255) nb = 255;
+    return RGB(nr, ng, nb);
+}
+
 static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     RECT rc = {};
     GetClientRect(hwnd, &rc);
@@ -4497,7 +4534,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
 
     SetBkMode(hdc, TRANSPARENT);
     HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, st->hFontUiBold ? st->hFontUiBold : GetStockObject(DEFAULT_GUI_FONT)));
-    HBRUSH accent = CreateSolidBrush(g_theme.accent);
+    HBRUSH accent = CreateSolidBrush(DesaturateColor(g_theme.accent, 0.45f));
     RECT accentRc = {10, 8, 13, 22};
     FillRect(hdc, &accentRc, accent);
     DeleteObject(accent);
@@ -4516,7 +4553,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     GetUsagePillRects(w, pills, closeRc);
     for (int i = 0; i < kUsageRangeCount; ++i) {
         bool active = (i == rangeIdx);
-        HBRUSH pb = CreateSolidBrush(active ? g_theme.accent : g_theme.panel);
+        HBRUSH pb = CreateSolidBrush(active ? DesaturateColor(g_theme.accent, 0.45f) : g_theme.panel);
         HPEN pp = CreatePen(PS_SOLID, 1, active ? g_theme.accent : g_theme.border);
         HGDIOBJ ob = SelectObject(hdc, pb);
         HGDIOBJ op = SelectObject(hdc, pp);
@@ -4540,6 +4577,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         std::string name;
         uint64_t total = 0;
         COLORREF color = RGB(128, 128, 128);
+        int64_t lastEpochSec = 0;
     };
     std::vector<KeyStat> keys;
     std::unordered_map<std::string, int> keyIndex;
@@ -4555,7 +4593,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             keyIndex[name] = idx;
             KeyStat ks;
             ks.name = name;
-            ks.color = kUsagePalette[idx % kUsagePaletteCount];
+            ks.color = ColorForUsageKey(ks.name);
             keys.push_back(ks);
         } else {
             idx = it->second;
@@ -4563,6 +4601,7 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
         keys[idx].total += p.totalTokens;
         rangeTotal += p.totalTokens;
         rangeCost += p.costUsd;
+        if (p.epochSec > keys[idx].lastEpochSec) keys[idx].lastEpochSec = p.epochSec;
     }
 
     SelectObject(hdc, st->hFontUiBold ? st->hFontUiBold : GetStockObject(DEFAULT_GUI_FONT));
@@ -4612,6 +4651,10 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     if (nBuckets < 12) nBuckets = 12;
     if (nBuckets > 96) nBuckets = 96;
     double bucketSec = static_cast<double>(kUsageRangeSec[rangeIdx]) / nBuckets;
+    if (bucketSec < 1.0) bucketSec = 1.0;
+    int64_t nowEpoch = static_cast<int64_t>(time(nullptr));
+    int64_t currentBucket = static_cast<int64_t>(nowEpoch / bucketSec);
+    int64_t windowStartBucket = currentBucket - nBuckets + 1;
     std::vector<std::vector<uint64_t>> vals(nBuckets, std::vector<uint64_t>(keys.size(), 0));
     std::vector<std::vector<uint64_t>> valIn(nBuckets, std::vector<uint64_t>(keys.size(), 0));
     std::vector<std::vector<uint64_t>> valOut(nBuckets, std::vector<uint64_t>(keys.size(), 0));
@@ -4619,9 +4662,9 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     std::vector<std::vector<uint64_t>> valCache(nBuckets, std::vector<uint64_t>(keys.size(), 0));
     std::vector<uint64_t> bucketTotal(nBuckets, 0);
     for (const auto& p : points) {
-        int bi = static_cast<int>((p.epochSec - since) / bucketSec);
-        if (bi < 0) bi = 0;
-        if (bi >= nBuckets) bi = nBuckets - 1;
+        int64_t pb = static_cast<int64_t>(p.epochSec / bucketSec);
+        int bi = static_cast<int>(pb - windowStartBucket);
+        if (bi < 0 || bi >= nBuckets) continue;
         std::string name = p.agentType.empty() ? "unknown" : p.agentType;
         if (!p.model.empty()) name += " / " + p.model;
         auto it = keyIndex.find(name);
@@ -4719,8 +4762,24 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
             DeleteObject(mb);
 
             std::wstring val = FormatCompactTokens(keys[i].total);
+            int64_t nowEpoch = static_cast<int64_t>(time(nullptr));
+            int64_t elapsed = (keys[i].lastEpochSec > 0) ? (nowEpoch - keys[i].lastEpochSec) : 0;
+            if (keys[i].lastEpochSec > 0) {
+                int64_t e = elapsed;
+                if (e < 0) e = 0;
+                int hh = (int)(e / 3600);
+                int mm = (int)((e % 3600) / 60);
+                int ss = (int)(e % 60);
+                wchar_t buf[16] = {};
+                swprintf_s(buf, L"%02d:%02d:%02d", hh, mm, ss);
+                val += L"  " + std::wstring(buf);
+            }
             RECT valRc = {barX0 + barW + 4, y, mx1, y + rowH};
-            SetTextColor(hdc, g_theme.muted);
+            if (keys[i].lastEpochSec > 0 && elapsed >= 5 * 3600) {
+                SetTextColor(hdc, RGB(0xFF, 0x6B, 0x6B));
+            } else {
+                SetTextColor(hdc, g_theme.muted);
+            }
             DrawTextW(hdc, val.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             y += rowH + 1;
         }
@@ -4737,30 +4796,6 @@ static void DrawUsagePanel(HWND hwnd, HDC hdc, DashboardState* st) {
     DrawTextW(hdc, tbuf, -1, &axisL, DT_LEFT | DT_SINGLELINE);
     DrawTextW(hdc, Tr(L"現在", L"now", L"ahora"), -1, &axisR, DT_RIGHT | DT_SINGLELINE);
 
-    int lx = gx0;
-    int ly = gy1 + 2;
-    HFONT oldLegendFont = static_cast<HFONT>(SelectObject(hdc, st->hFontUi ? st->hFontUi : GetStockObject(DEFAULT_GUI_FONT)));
-    for (size_t k = 0; k < keys.size(); ++k) {
-        std::wstring label = Utf8ToWide(keys[k].name) + L" " + FormatCompactTokens(keys[k].total);
-        SIZE sz = {};
-        GetTextExtentPoint32W(hdc, label.c_str(), static_cast<int>(label.size()), &sz);
-        if (lx + sz.cx + 16 > gx1) {
-            if (k + 1 < keys.size()) {
-                std::wstring more = L"+" + std::to_wstring(keys.size() - k);
-                DrawTextW(hdc, more.c_str(), -1, &axisL, DT_LEFT | DT_SINGLELINE);
-            }
-            break;
-        }
-        HBRUSH dot = CreateSolidBrush(keys[k].color);
-        RECT dotRc = {lx, ly + 5, lx + 7, ly + 12};
-        FillRect(hdc, &dotRc, dot);
-        DeleteObject(dot);
-        RECT labRc = {lx + 10, ly, gx1, ly + 16};
-        SetTextColor(hdc, g_theme.muted);
-        DrawTextW(hdc, label.c_str(), -1, &labRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-        lx += sz.cx + 18;
-    }
-    SelectObject(hdc, oldLegendFont);
     SelectObject(hdc, oldFont);
 }
 
@@ -4770,7 +4805,7 @@ static LRESULT CALLBACK UsagePanelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-            SetTimer(hwnd, 1, 2000, nullptr);
+            SetTimer(hwnd, 1, 1000, nullptr);
             return 0;
         }
         case WM_TIMER:
@@ -5663,7 +5698,7 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc, TaskQueueManager& tqm) {
     HWND hwnd = CreateWindowExW(
         0,
         wc.lpszClassName,
-        L"ProcessCommander — Multi-Terminal ConPTY Dashboard (Direct2D TerminalView)",
+        L"Process Commander",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 1460, 940,
         nullptr, nullptr, hInst, &state

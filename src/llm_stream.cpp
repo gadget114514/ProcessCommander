@@ -38,10 +38,13 @@ constexpr int64_t kUsageRetentionSec = 24 * 60 * 60;
 constexpr size_t kMaxUsagePoints = 200000;
 static std::mutex g_usageHistoryMutex;
 static std::deque<LlmUsagePoint> g_usageHistory;
+static uint64_t g_recordCalls = 0;
+static std::string g_lastSkipReason;
 
 } // namespace
 
 void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
+    g_recordCalls++;
     if (point.totalTokens == 0 && point.inputTokens == 0 && point.outputTokens == 0 &&
         point.thinkingTokens == 0 && point.cacheReadTokens == 0 && point.cacheWriteTokens == 0 &&
         point.costUsd <= 0.0) {
@@ -60,6 +63,7 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
     }
 }
 
+uint64_t GetLlmUsageRecordCalls() { return g_recordCalls; }
 std::vector<LlmUsagePoint> GetLlmUsageHistory(int64_t sinceEpochSec) {
     std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
     std::vector<LlmUsagePoint> out;

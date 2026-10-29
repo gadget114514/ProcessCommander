@@ -82,6 +82,7 @@ struct LlmUsagePoint {
 
 void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point);
 std::vector<LlmUsagePoint> GetLlmUsageHistory(int64_t sinceEpochSec);
+uint64_t GetLlmUsageRecordCalls();
 
 // Thread-safe tracker that ingests raw output chunks, extracts JSONL lines,
 // persists them to logs/proc_<id>_<name>_stream.jsonl, and maintains the current state.
