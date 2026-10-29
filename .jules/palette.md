@@ -4,3 +4,6 @@
 ## 2024-10-23 - Focus Visible Styles for Owner-Drawn Buttons
 **Learning:** In Win32, owner-drawn buttons (`BS_OWNERDRAW`) lose their default keyboard focus indicator (`ODS_FOCUS`), making keyboard navigation difficult and hindering accessibility.
 **Action:** Always verify if owner-drawn controls handle the `ODS_FOCUS` state and use `DrawFocusRect` to render a visible focus ring.
+## 2024-10-29 - Consistent Destructive Context Menu Actions
+**Learning:** Some destructive actions in context menus were missing confirmation dialogs, leading to accidental process kills or queue purges which frustrated users. Consistency in confirmation dialogs (especially using default "No" focus with `MB_DEFBUTTON2`) is crucial for these kinds of UI elements.
+**Action:** When adding destructive context menu items, always ensure they are wrapped in a `MessageBoxW` confirmation with `MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2` to match standard safety UX patterns.
