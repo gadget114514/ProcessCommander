@@ -122,6 +122,7 @@ private:
     std::string streamFilePath_;
     std::wstring streamFilePathWide_;
     std::string lineBuffer_;
+    bool discardingLine_ = false;
     std::deque<LlmStreamEvent> events_;
     LlmAgentState state_;
     uint64_t nextSeq_ = 1;
@@ -133,6 +134,8 @@ private:
     uint64_t lastCacheWrite_ = 0;
     double lastUsageCost_ = 0.0;
     static constexpr size_t kMaxEvents = 500;
+    // Claude tool_result lines (file contents etc.) routinely exceed 64KB.
+    static constexpr size_t kMaxLineBytes = 16 * 1024 * 1024;
 };
 
 } // namespace pc

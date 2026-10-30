@@ -39,6 +39,15 @@ static std::string TrimStr(const std::string& s) {
     return s.substr(first, last - first + 1);
 }
 
+// Byte-limited prefix that never splits a UTF-8 multi-byte sequence
+// (a split sequence makes nlohmann::json::dump() throw).
+static std::string Utf8Prefix(const std::string& s, size_t maxBytes) {
+    if (s.size() <= maxBytes) return s;
+    size_t n = maxBytes;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) n--;
+    return s.substr(0, n);
+}
+
 constexpr int64_t kUsageRetentionSec = 24 * 60 * 60;
 constexpr size_t kMaxUsagePoints = 200000;
 static std::mutex g_usageHistoryMutex;
@@ -576,6 +585,20 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         return finish();
     }
 
+    // Result / Done. Checked before Status and Usage because Claude's final
+    // {"type":"result", "usage":{...}, "total_cost_usd":...} carries both.
+    if (lType == "result" || lType == "done" || lType == "finish" || lType == "completed") {
+        bool isError = j.contains("is_error") && j["is_error"].is_boolean() && j["is_error"].get<bool>();
+        outEvent.type = isError ? "error" : "result";
+        outEvent.status = isError ? "error" : "completed";
+        outEvent.content = getStr(j, "summary");
+        if (outEvent.content.empty()) outEvent.content = getStr(j, "result");
+        if (j.contains("total_cost_usd") && j["total_cost_usd"].is_number()) {
+            outEvent.costUsd = j["total_cost_usd"].get<double>();
+        }
+        return finish();
+    }
+
     // 5. Status / Progress
     if (lType == "status" || lType == "progress" || lType == "step" || lType == "step_start" || lType == "step_finish" || j.contains("status")) {
         outEvent.type = (lType.find("step") != std::string::npos) ? "step" : "status";
@@ -616,16 +639,6 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
             outEvent.content = getStr(j["error"], "message");
             if (outEvent.content.empty()) outEvent.content = j["error"].dump();
         }
-        return finish();
-    }
-
-    // 8. Result / Done
-    if (lType == "result" || lType == "done" || lType == "finish" || lType == "completed") {
-        outEvent.type = "result";
-        outEvent.status = "completed";
-        outEvent.content = getStr(j, "summary");
-        if (outEvent.content.empty()) outEvent.content = getStr(j, "result");
-        if (outEvent.model.empty() && j.contains("model") && j["model"].is_string()) outEvent.model = j["model"].get<std::string>();
         return finish();
     }
 
@@ -734,16 +747,16 @@ std::string LlmEventsToSummary(const std::vector<LlmStreamEvent>& events, const 
         } else if (ev.type == "tool_result") {
             oss << "TOOL RESULT: " << ev.toolName;
             if (!ev.content.empty()) {
-                std::string preview = ev.content.substr(0, 80);
+                std::string preview = Utf8Prefix(ev.content, 80);
                 std::replace(preview.begin(), preview.end(), '\n', ' ');
                 oss << " -> " << preview;
             }
         } else if (ev.type == "thinking") {
-            std::string preview = ev.content.substr(0, 100);
+            std::string preview = Utf8Prefix(ev.content, 100);
             std::replace(preview.begin(), preview.end(), '\n', ' ');
             oss << "THINKING: " << preview;
         } else if (ev.type == "message") {
-            std::string preview = ev.content.substr(0, 120);
+            std::string preview = Utf8Prefix(ev.content, 120);
             std::replace(preview.begin(), preview.end(), '\n', ' ');
             oss << "MESSAGE: " << preview;
         } else if (ev.type == "error") {
@@ -785,17 +798,24 @@ void LlmStreamTracker::IngestChunk(const char* data, size_t len) {
     std::lock_guard<std::mutex> lock(mutex_);
     lineBuffer_.append(data, len);
 
+    size_t start = 0;
     size_t pos = 0;
-    while ((pos = lineBuffer_.find('\n')) != std::string::npos) {
-        std::string line = lineBuffer_.substr(0, pos);
-        lineBuffer_.erase(0, pos + 1);
-        ProcessLine(line);
+    while ((pos = lineBuffer_.find('\n', start)) != std::string::npos) {
+        if (discardingLine_) {
+            // Tail of an oversized line that was already dropped.
+            discardingLine_ = false;
+        } else {
+            ProcessLine(lineBuffer_.substr(start, pos - start));
+        }
+        start = pos + 1;
     }
+    lineBuffer_.erase(0, start);
 
-    // Safety guard against huge single-line buffer without newlines
-    if (lineBuffer_.size() > 64 * 1024) {
-        ProcessLine(lineBuffer_);
+    // Safety guard against a runaway line without newlines. Splitting it would only
+    // yield unparsable fragments, so drop it entirely up to the next newline.
+    if (lineBuffer_.size() > kMaxLineBytes) {
         lineBuffer_.clear();
+        discardingLine_ = true;
     }
 }
 
@@ -930,12 +950,12 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
     } else if (ev.type == "thinking") {
         state_.status = "thinking";
         if (!ev.content.empty()) {
-            state_.lastThought = ev.content.substr(0, 160);
+            state_.lastThought = Utf8Prefix(ev.content, 160);
         }
     } else if (ev.type == "message") {
         state_.status = "generating";
         if (!ev.content.empty()) {
-            state_.lastMessage = ev.content.substr(0, 160);
+            state_.lastMessage = Utf8Prefix(ev.content, 160);
         }
     } else if (ev.type == "status") {
         if (!ev.status.empty()) state_.status = ev.status;
