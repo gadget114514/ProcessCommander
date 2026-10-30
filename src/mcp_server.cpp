@@ -1,6 +1,7 @@
 #include "mcp_server.h"
 #include "ipc_client.h"
 #include "common.h"
+#include "nlohmann/json.hpp"
 #include <iostream>
 #include <sstream>
 #include <io.h>
@@ -8,54 +9,39 @@
 
 namespace pc {
 
-// Extract raw JSON value for "id" (e.g. 1 or "abc") from top-level request
-static std::string ExtractJsonRpcIdRaw(const std::string& json) {
-    size_t pos = json.find("\"id\"");
-    if (pos == std::string::npos) return "null";
-    pos += 4;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == ':')) pos++;
-    if (pos >= json.size()) return "null";
-    if (json[pos] == '"') {
-        size_t end = pos + 1;
-        while (end < json.size()) {
-            if (json[end] == '"' && json[end - 1] != '\\') {
-                return json.substr(pos, end - pos + 1);
-            }
-            end++;
-        }
-        return "null";
-    } else {
-        size_t end = pos;
-        while (end < json.size() && json[end] != ',' && json[end] != '}' && !std::isspace(static_cast<unsigned char>(json[end]))) {
-            end++;
-        }
-        return json.substr(pos, end - pos);
-    }
-}
+// The top-level JSON-RPC fields of one request line. Parsed with nlohmann::json so that keys
+// inside "params" (e.g. a tool argument named "id") are never mistaken for the request's own;
+// the MCP TypeScript SDK writes "id" after "params".
+struct McpRequest {
+    bool valid = false;
+    std::string idRaw = "null";   // raw JSON value echoed back in the response
+    std::string method;
+    std::string toolName;         // params.name
+    std::string argumentsJson = "{}";  // params.arguments
+};
 
-// Extract the "arguments" object substring inside "params"
-static std::string ExtractArgumentsJson(const std::string& json) {
-    size_t pos = json.find("\"arguments\"");
-    if (pos == std::string::npos) return "{}";
-    pos = json.find('{', pos);
-    if (pos == std::string::npos) return "{}";
-    int depth = 0;
-    bool inStr = false;
-    for (size_t i = pos; i < json.size(); ++i) {
-        char c = json[i];
-        if (c == '"' && (i == 0 || json[i - 1] != '\\')) {
-            inStr = !inStr;
-        } else if (!inStr) {
-            if (c == '{') depth++;
-            else if (c == '}') {
-                depth--;
-                if (depth == 0) {
-                    return json.substr(pos, i - pos + 1);
-                }
-            }
+static McpRequest ParseMcpRequest(const std::string& line) {
+    McpRequest req;
+    auto j = nlohmann::json::parse(line, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return req;
+    req.valid = true;
+    try {
+        auto id = j.find("id");
+        if (id != j.end() && (id->is_string() || id->is_number())) req.idRaw = id->dump();
+        auto method = j.find("method");
+        if (method != j.end() && method->is_string()) req.method = method->get<std::string>();
+        auto params = j.find("params");
+        if (params != j.end() && params->is_object()) {
+            auto name = params->find("name");
+            if (name != params->end() && name->is_string()) req.toolName = name->get<std::string>();
+            auto args = params->find("arguments");
+            if (args != params->end() && args->is_object()) req.argumentsJson = args->dump();
         }
+    } catch (const nlohmann::json::exception&) {
+        // dump() throws on invalid UTF-8; treat the line as unparseable.
+        req.valid = false;
     }
-    return json.substr(pos);
+    return req;
 }
 
 // Extract a raw JSON value (object, array, string or scalar) for a top-level key.
@@ -125,8 +111,13 @@ int RunMcpServer() {
         }
         if (line.empty()) continue;
 
-        std::string method = JsonGetString(line, "method", "");
-        std::string rpcId = ExtractJsonRpcIdRaw(line);
+        McpRequest req = ParseMcpRequest(line);
+        if (!req.valid) {
+            std::cout << "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n" << std::flush;
+            continue;
+        }
+        const std::string& method = req.method;
+        const std::string& rpcId = req.idRaw;
 
         if (method == "initialize") {
             WriteAuditLog("MCP_INIT", line);
@@ -360,8 +351,8 @@ int RunMcpServer() {
             std::cout << oss.str() << "\n" << std::flush;
         }
         else if (method == "tools/call") {
-            std::string toolName = JsonGetString(line, "name", "");
-            std::string argsJson = ExtractArgumentsJson(line);
+            const std::string& toolName = req.toolName;
+            const std::string& argsJson = req.argumentsJson;
             WriteAuditLog("MCP_TOOL_CALL", "tool=" + toolName + " args=" + argsJson);
             std::ostringstream ipcReq;
 

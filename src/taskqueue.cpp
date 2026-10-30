@@ -1558,7 +1558,7 @@ std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::
     // Only "notes" may be updated after a job has finished or is running.
     if (onlyNotes) {
         for (const char* k : {"summary","command","cwd","timeout_sec","idle","max_attempts",
-                              "retry_delay_sec","priority","kill_exclude","env","success",
+                              "retry_delay_sec","priority","kill_exclude","resources","env","success",
                               "instructions_text","instructions_file","depends_on"}) {
             if (HasJsonKey(patchJson, k)) { onlyNotes = false; break; }
         }
