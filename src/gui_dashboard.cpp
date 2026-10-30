@@ -1588,9 +1588,13 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
         }
         if (st->hwndBtnStreamPane) {
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnStreamPane,
-                st->showStreamPane ? Tr(L"JSON ストリームペインを非表示", L"Hide JSON Stream Pane", L"Ocultar panel de flujo JSON")
-                                   : Tr(L"JSON ストリームペインを表示", L"Show JSON Stream Pane", L"Mostrar panel de flujo JSON"));
+                st->showStreamPane ? Tr(L"タスク監視ペインを非表示", L"Hide Monitor Pane", L"Ocultar panel de monitor")
+                                   : Tr(L"タスク監視ペインを表示", L"Show Monitor Pane", L"Mostrar panel de monitor"));
         }
+    }
+    // Repaint the toggles so their latched (pressed) look follows the state.
+    for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane}) {
+        if (b) InvalidateRect(b, nullptr, FALSE);
     }
 }
 
@@ -3244,7 +3248,6 @@ struct LlmStreamDlgState {
     HWND hwndHeader = nullptr;
     HWND hwndList = nullptr;
     HWND hwndEditPreview = nullptr;
-    HWND hwndBtnClose = nullptr;
     HWND hwndAgentIcon = nullptr;
     HWND hwndTooltip = nullptr;
     UINT_PTR timerId = 0;
@@ -4038,17 +4041,10 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
                 12, 365, 820, 180, hwnd, (HMENU)2102, nullptr, nullptr);
 
-            if (ds->embedded) {
-                // Closes the monitor pane (IDOK hides it in the main window).
-                ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる", L"Close", L"Cerrar"),
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDOK, nullptr, nullptr);
-            }
-
             if (ds->hFontUi) {
                 SendMessageW(ds->hwndHeader, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 if (ds->hwndAgentIcon) SendMessageW(ds->hwndAgentIcon, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 SendMessageW(ds->hwndList, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
-                if (ds->hwndBtnClose) SendMessageW(ds->hwndBtnClose, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
             }
             if (ds->hFontMono) {
                 SendMessageW(ds->hwndEditPreview, WM_SETFONT, (WPARAM)ds->hFontMono, TRUE);
@@ -4184,11 +4180,9 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 int availW = (std::max)(300, w - pad * 2);
                 int leftW = availW / 2 - 4;
                 int contentX = pad + 28;
-                const int closeW = 80;
-                int textW = (std::max)(120, leftW - 28 - closeW - 8);
+                int textW = (std::max)(160, leftW - 28);
                 if (ds->hwndAgentIcon) MoveWindow(ds->hwndAgentIcon, pad, pad, 24, 24, TRUE);
                 MoveWindow(ds->hwndHeader, contentX, pad, textW, topH, TRUE);
-                if (ds->hwndBtnClose) MoveWindow(ds->hwndBtnClose, pad + leftW - closeW, pad, closeW, 24, TRUE);
                 int bodyTop = pad + topH + 4;
                 int bodyH = (std::max)(30, h - bodyTop - pad);
                 // Left column: usage graph above, the time-by-kind chart below it.
@@ -6656,7 +6650,14 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 return TRUE;
             }
             if (dis->CtlType != ODT_BUTTON) break;
-            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            // Toggle buttons stay pressed while the pane or list they control is shown.
+            bool latched = false;
+            if (st) {
+                if (dis->hwndItem == st->hwndBtnStreamPane) latched = st->showStreamPane;
+                else if (dis->hwndItem == st->hwndBtnToggleList) latched = !st->hideProcessList;
+                else if (dis->hwndItem == st->hwndBtnToggleTerm) latched = !st->hideTerminalGrid;
+            }
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0 || latched;
             COLORREF bg = pressed ? g_theme.border : g_theme.panel;
             HBRUSH bgBrush = CreateSolidBrush(bg);
             FillRect(dis->hDC, &dis->rcItem, bgBrush);
