@@ -9,10 +9,10 @@ CLI コマンドは Named Pipe (`\\.\pipe\ProcessCommander_IPC_v1`) を通じて
 ## バージョン確認（`--version` / `-V` / `version`）
 
 ```powershell
-pcder.exe --version              # pcder 2.0.0
-pcder.exe version --json         # {"ok":true,"program":"pcder","version":"2.0.0"}
-ProcessCommander.exe --version   # ProcessCommander 2.0.0
-ProcessCommander.exe version --json  # {"ok":true,"program":"ProcessCommander","version":"2.0.0"}
+pcder.exe --version              # pcder 2.0.1
+pcder.exe version --json         # {"ok":true,"program":"pcder","version":"2.0.1"}
+ProcessCommander.exe --version   # ProcessCommander 2.0.1
+ProcessCommander.exe version --json  # {"ok":true,"program":"ProcessCommander","version":"2.0.1"}
 ```
 
 バージョンは両方の help の 1 行目、`pcder.exe help --json` の `version`、MCP の `initialize` 応答の `serverInfo.version` にも出力されます。

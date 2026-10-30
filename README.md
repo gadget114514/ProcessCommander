@@ -4,7 +4,7 @@
 
 **ProcessCommander** is a native Win32 C++ Multi-Terminal ConPTY Process Manager and Dashboard designed for orchestrating, monitoring, and interacting with multiple parallel CLI agents (`claude`, `opencode`, build scripts, and interactive shells) via both **Model Context Protocol (MCP)** and **CLI commands**.
 
-**PCR** is short for ProcessCommander. Check the version with `pcder.exe --version` (current: 2.0.0).
+**PCR** is short for ProcessCommander. Check the version with `pcder.exe --version` (current: 2.0.1).
 
 ### Who is this for?
 
@@ -23,8 +23,8 @@
 
 ## Express
 
-- Download and install [ProcessCommander-v2.0.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64-setup.exe)
-  (portable: [ProcessCommander-v2.0.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.0.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.1/ProcessCommander-v2.0.1-win64-setup.exe)
+  (portable: [ProcessCommander-v2.0.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.1/ProcessCommander-v2.0.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -51,7 +51,7 @@ You use the LLM as frontend supervisor llm, and you can specify other llm as wor
 ## Appendix: `ProcessCommander.exe --help`
 
 ```text
-ProcessCommander 2.0.0 - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+ProcessCommander 2.0.1 - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
 
 NAMING:
   PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
@@ -179,7 +179,7 @@ MCP SERVER SETUP:
 ## Appendix: `pcder.exe help` output
 
 ```text
-pcder 2.0.0 - ProcessCommander console client
+pcder 2.0.1 - ProcessCommander console client
 
 NAMING:
   PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander

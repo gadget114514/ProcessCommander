@@ -9,10 +9,10 @@ The console client `pcder.exe` communicates with the running GUI Dashboard via N
 ## Version (`--version` / `-V` / `version`)
 
 ```powershell
-pcder.exe --version              # pcder 2.0.0
-pcder.exe version --json         # {"ok":true,"program":"pcder","version":"2.0.0"}
-ProcessCommander.exe --version   # ProcessCommander 2.0.0
-ProcessCommander.exe version --json  # {"ok":true,"program":"ProcessCommander","version":"2.0.0"}
+pcder.exe --version              # pcder 2.0.1
+pcder.exe version --json         # {"ok":true,"program":"pcder","version":"2.0.1"}
+ProcessCommander.exe --version   # ProcessCommander 2.0.1
+ProcessCommander.exe version --json  # {"ok":true,"program":"ProcessCommander","version":"2.0.1"}
 ```
 
 The version also appears in the first line of both help outputs, as `version` in `pcder.exe help --json`, and as `serverInfo.version` in the MCP `initialize` response.

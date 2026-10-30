@@ -4,7 +4,7 @@
 
 **ProcessCommander** は、Claude Code や各種自動化スクリプトから複数のサブプロセス・対話型 CLI エージェント（`opencode`, `claude`, PowerShell, cmd, Git Bash 等）を並列起動・監視・制御し、**状況をひと目で把握できる Native Win32 + Direct2D マルチターミナルダッシュボード GUI** を備えたプロセスマネージャです。
 
-**PCR** は ProcessCommander の略称です。バージョンは `pcder.exe --version` で確認できます（現在: 2.0.0）。
+**PCR** は ProcessCommander の略称です。バージョンは `pcder.exe --version` で確認できます（現在: 2.0.1）。
 
 ### 対象ユーザー
 
@@ -20,8 +20,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.0.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.0.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.0.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.1/ProcessCommander-v2.0.1-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.0.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.1/ProcessCommander-v2.0.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -51,7 +51,7 @@ LLM は `processcommander help --json` を実行して使い方を理解しま�
 ## 付録: `ProcessCommander.exe --help` の出力
 
 ```text
-ProcessCommander 2.0.0 - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+ProcessCommander 2.0.1 - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
 
 NAMING:
   PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
@@ -179,7 +179,7 @@ MCP SERVER SETUP:
 ## 付録: `pcder.exe help` の出力
 
 ```text
-pcder 2.0.0 - ProcessCommander console client
+pcder 2.0.1 - ProcessCommander console client
 
 NAMING:
   PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
