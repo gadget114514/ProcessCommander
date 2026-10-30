@@ -6138,6 +6138,15 @@ static LRESULT CALLBACK UsagePanelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     DashboardState* st = GetState(hwnd);
 
+    // "ProcessCommander.exe quit" from another process: exit the way the tray menu's "Exit" does,
+    // so the config is saved and the tray icon is removed on WM_DESTROY.
+    static const UINT quitMessage = RegisterWindowMessageW(L"ProcessCommanderQuit");
+    if (msg == quitMessage) {
+        if (st) st->allowExit = true;
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        return 0;
+    }
+
     switch (msg) {
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);

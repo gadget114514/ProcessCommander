@@ -23,6 +23,9 @@ USAGE:
   ProcessCommander.exe [gui] [--data-dir <path>]
       Launch the live Win32 Dashboard GUI and Named Pipe server.
 
+  ProcessCommander.exe quit
+      Quit the running GUI, including one hidden in the system tray (its tray icon is removed).
+
   ProcessCommander.exe mcp [--data-dir <path>]
       Run as a Model Context Protocol (MCP) stdio server for Claude.
       Automatically connects to (or launches) the Win32 GUI Dashboard.
@@ -136,6 +139,24 @@ MCP SERVER SETUP:
 )";
 }
 
+// Asks the running GUI to exit (same path as the tray menu's "Exit") and waits for it to go.
+static int RunQuitCommand() {
+    const wchar_t* kWindowClass = L"ProcessCommanderDashboardWnd";
+    if (!FindWindowW(kWindowClass, nullptr)) {
+        std::cout << "ProcessCommander is not running" << std::endl;
+        return 1;
+    }
+    UINT quitMessage = RegisterWindowMessageW(L"ProcessCommanderQuit");
+    PostMessageW(FindWindowW(kWindowClass, nullptr), quitMessage, 0, 0);
+    for (int i = 0; i < 100 && FindWindowW(kWindowClass, nullptr); ++i) Sleep(100);
+    if (FindWindowW(kWindowClass, nullptr)) {
+        std::cout << "ProcessCommander did not exit within 10 seconds" << std::endl;
+        return 1;
+    }
+    std::cout << "ProcessCommander quit" << std::endl;
+    return 0;
+}
+
 int main() {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
@@ -192,6 +213,10 @@ int main() {
 
     if (subcmd == "mcp") {
         return RunMcpServer();
+    }
+
+    if (subcmd == "quit" || subcmd == "--quit") {
+        return RunQuitCommand();
     }
 
     if (subcmd == "gui" || subcmd == "--gui") {
