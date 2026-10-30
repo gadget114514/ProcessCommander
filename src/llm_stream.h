@@ -23,6 +23,18 @@ struct LlmStreamEvent {
     std::string content;       // thinking reasoning or assistant message text
     std::string status;        // "thinking", "calling_tool", "generating", "idle", "completed", "error"
     std::string messageId;     // Claude message.id; usage is per message, not cumulative
+    std::string sessionId;     // Claude session_id / OpenCode sessionID
+    std::string stopReason;    // Claude stop_reason, OpenCode step_finish reason
+    std::string cwd;           // Claude system init working directory
+    std::string rateLimitType; // Claude rate_limit_event: "five_hour", "seven_day", ...
+    std::string rateLimitStatus; // "allowed", "rejected", ...
+    double rateLimitUtilization = -1.0; // share of that window used, 0..1; -1 if unknown
+    int64_t rateLimitResetsAtSec = 0;
+    uint64_t apiDurationMs = 0;   // Claude result duration_api_ms
+    uint64_t numTurns = 0;        // Claude result num_turns
+    uint64_t permissionDenials = 0; // Claude result permission_denials count
+    uint64_t toolsOffered = 0;    // Claude system init tools count
+    bool toolError = false;       // a tool_result reported an error
     int64_t recvEpochMs = 0;   // wall clock when the line was received (for activity durations)
     int stepIndex = 0;
     uint64_t totalTokens = 0;
@@ -44,6 +56,19 @@ struct LlmAgentState {
     std::string lastThought;
     std::string lastMessage;
     std::string lastError;
+    std::string sessionId;
+    std::string stopReason;
+    std::string cwd;
+    int toolCalls = 0;
+    int toolErrors = 0;
+    uint64_t toolsOffered = 0;
+    uint64_t numTurns = 0;
+    uint64_t apiDurationMs = 0;
+    uint64_t permissionDenials = 0;
+    std::string rateLimitType;
+    std::string rateLimitStatus;
+    double rateLimitUtilization = -1.0;
+    int64_t rateLimitResetsAtSec = 0;
     // What the agent is doing now, in plain terms (see DescribeLlmActivity).
     std::string activity;          // "read", "edit", "search", "command", "web", "subagent", "plan", "tool",
                                    // "thinking", "replying", "waiting_model", "done", "error", or empty
@@ -65,6 +90,13 @@ std::string DetectAgentType(const std::string& commandLine, const std::string& n
 // Parse a single raw JSON line emitted by claude, agy, or opencode.
 // Returns true if successfully parsed as a JSON event.
 bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgentType, LlmStreamEvent& outEvent);
+
+// Parse a raw JSON line into events. Per agent, the line is split into events by its own format:
+//  - "claude": "assistant" / "user" lines carry several content blocks, one event per block.
+//  - "opencode": one tool_use line gives a tool_call and, once finished, a tool_result.
+// All other lines and agents yield at most one event via ParseLlmStreamLine.
+// Returns false if the line is not a JSON object.
+bool ParseLlmStreamLines(const std::string& line, const std::string& defaultAgentType, std::vector<LlmStreamEvent>& outEvents);
 
 // Format events as JSON array or human-readable summary
 std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state);
@@ -126,6 +158,7 @@ public:
 
 private:
     void ProcessLine(const std::string& line);
+    void ApplyEvent(LlmStreamEvent& ev, const std::string& line);
 
     mutable std::mutex mutex_;
     int processId_ = 0;

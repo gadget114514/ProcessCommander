@@ -20,6 +20,10 @@ add_executable(ProcessCommander
     src/cli.cpp
     src/mcp_server.cpp
     src/llm_stream.cpp
+    src/llm_stream_claude.cpp
+    src/llm_stream_opencode.cpp
+    src/llm_stream_agy.cpp
+    src/llm_stream_codex.cpp
     src/gui_dashboard.cpp
     src/app.rc
     src/Terminal/src/ConPtySession.cpp
@@ -118,6 +122,10 @@ add_executable(taskqueue_smoke
     src/chain_guard.cpp
     src/process_manager.cpp
     src/llm_stream.cpp
+    src/llm_stream_claude.cpp
+    src/llm_stream_opencode.cpp
+    src/llm_stream_agy.cpp
+    src/llm_stream_codex.cpp
     src/common.cpp
     src/Terminal/src/ConPtySession.cpp
     src/Terminal/src/ImageManager.cpp

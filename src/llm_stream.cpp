@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "llm_stream.h"
+#include "llm_stream_internal.h"
 #include "common.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
@@ -273,20 +274,55 @@ std::string DetectAgentType(const std::string& commandLine, const std::string& n
     return MatchAgentKeyword(lcmd);
 }
 
-bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgentType, LlmStreamEvent& outEvent) {
-    std::string trimmed = TrimStr(line);
-    if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') {
-        return false;
-    }
+namespace llm {
 
-    nlohmann::json j;
-    try {
-        j = nlohmann::json::parse(trimmed);
-    } catch (...) {
-        return false;
+void ApplyLlmUsageFields(const nlohmann::json& u, LlmStreamEvent& outEvent) {
+    if (!u.is_object()) return;
+    uint64_t in = JsonU64(u, "input_tokens");
+    if (!in) in = JsonU64(u, "prompt_tokens");
+    if (!in) in = JsonU64(u, "input");
+    uint64_t out = JsonU64(u, "output_tokens");
+    if (!out) out = JsonU64(u, "completion_tokens");
+    if (!out) out = JsonU64(u, "output");
+    uint64_t total = JsonU64(u, "total_tokens");
+    if (!total) total = JsonU64(u, "total");
+    uint64_t cacheRead = JsonU64(u, "cache_read_input_tokens");
+    if (!cacheRead) cacheRead = JsonU64(u, "cache_read_tokens");
+    if (!cacheRead) cacheRead = JsonU64(u, "cache_read");
+    uint64_t cacheWrite = JsonU64(u, "cache_creation_input_tokens");
+    if (u.contains("cache") && u["cache"].is_object()) {
+        if (!cacheRead) cacheRead = JsonU64(u["cache"], "read");
+        if (!cacheWrite) cacheWrite = JsonU64(u["cache"], "write");
     }
-    if (!j.is_object()) return false;
+    uint64_t thinking = JsonU64(u, "reasoning_tokens");
+    if (!thinking) thinking = JsonU64(u, "thinking_tokens");
+    if (!thinking) thinking = JsonU64(u, "reasoning");
+    if (u.contains("completion_tokens_details") && u["completion_tokens_details"].is_object()) {
+        if (!thinking) thinking = JsonU64(u["completion_tokens_details"], "reasoning_tokens");
+    }
+    if (u.contains("output_tokens_details") && u["output_tokens_details"].is_object()) {
+        if (!thinking) thinking = JsonU64(u["output_tokens_details"], "reasoning_tokens");
+    }
+    if (u.contains("details") && u["details"].is_object()) {
+        if (!thinking) thinking = JsonU64(u["details"], "reasoning_tokens");
+    }
+    if (in) outEvent.inputTokens = in;
+    if (out) outEvent.outputTokens = out;
+    if (thinking) outEvent.thinkingTokens = thinking;
+    if (cacheRead) outEvent.cacheReadTokens = cacheRead;
+    if (cacheWrite) outEvent.cacheWriteTokens = cacheWrite;
+    if (total) outEvent.totalTokens = total;
+    else if (in || out) outEvent.totalTokens = in + out + cacheRead + cacheWrite;
+    if (u.contains("cost_usd") && u["cost_usd"].is_number()) outEvent.costUsd = u["cost_usd"].get<double>();
+    else if (u.contains("cost") && u["cost"].is_number()) outEvent.costUsd = u["cost"].get<double>();
+    else if (u.contains("total_cost") && u["total_cost"].is_number()) outEvent.costUsd = u["total_cost"].get<double>();
+}
 
+}  // namespace llm
+
+// Generic parser: any agent's line whose top-level fields look recognisable.
+static bool ParseGenericEvent(const nlohmann::json& j, const std::string& trimmed, const std::string& defaultAgentType,
+                              LlmStreamEvent& outEvent) {
     outEvent = LlmStreamEvent{};
     outEvent.rawJson = trimmed;
     outEvent.agentType = defaultAgentType.empty() ? "generic" : defaultAgentType;
@@ -318,47 +354,7 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         if (obj.contains(key) && obj[key].is_number()) return obj[key].get<uint64_t>();
         return 0;
     };
-    auto applyUsage = [&](const nlohmann::json& u) {
-        if (!u.is_object()) return;
-        uint64_t in = getU64(u, "input_tokens");
-        if (!in) in = getU64(u, "prompt_tokens");
-        if (!in) in = getU64(u, "input");
-        uint64_t out = getU64(u, "output_tokens");
-        if (!out) out = getU64(u, "completion_tokens");
-        if (!out) out = getU64(u, "output");
-        uint64_t total = getU64(u, "total_tokens");
-        if (!total) total = getU64(u, "total");
-        uint64_t cacheRead = getU64(u, "cache_read_input_tokens");
-        if (!cacheRead) cacheRead = getU64(u, "cache_read_tokens");
-        if (!cacheRead) cacheRead = getU64(u, "cache_read");
-        uint64_t cacheWrite = getU64(u, "cache_creation_input_tokens");
-        if (u.contains("cache") && u["cache"].is_object()) {
-            if (!cacheRead) cacheRead = getU64(u["cache"], "read");
-            if (!cacheWrite) cacheWrite = getU64(u["cache"], "write");
-        }
-        uint64_t thinking = getU64(u, "reasoning_tokens");
-        if (!thinking) thinking = getU64(u, "thinking_tokens");
-        if (!thinking) thinking = getU64(u, "reasoning");
-        if (u.contains("completion_tokens_details") && u["completion_tokens_details"].is_object()) {
-            if (!thinking) thinking = getU64(u["completion_tokens_details"], "reasoning_tokens");
-        }
-        if (u.contains("output_tokens_details") && u["output_tokens_details"].is_object()) {
-            if (!thinking) thinking = getU64(u["output_tokens_details"], "reasoning_tokens");
-        }
-        if (u.contains("details") && u["details"].is_object()) {
-            if (!thinking) thinking = getU64(u["details"], "reasoning_tokens");
-        }
-        if (in) outEvent.inputTokens = in;
-        if (out) outEvent.outputTokens = out;
-        if (thinking) outEvent.thinkingTokens = thinking;
-        if (cacheRead) outEvent.cacheReadTokens = cacheRead;
-        if (cacheWrite) outEvent.cacheWriteTokens = cacheWrite;
-        if (total) outEvent.totalTokens = total;
-        else if (in || out) outEvent.totalTokens = in + out + cacheRead + cacheWrite;
-        if (u.contains("cost_usd") && u["cost_usd"].is_number()) outEvent.costUsd = u["cost_usd"].get<double>();
-        else if (u.contains("cost") && u["cost"].is_number()) outEvent.costUsd = u["cost"].get<double>();
-        else if (u.contains("total_cost") && u["total_cost"].is_number()) outEvent.costUsd = u["total_cost"].get<double>();
-    };
+    auto applyUsage = [&](const nlohmann::json& u) { llm::ApplyLlmUsageFields(u, outEvent); };
 
     // Usage can be top-level, nested in message/part/tokens, or under properties.
     if (j.contains("usage")) applyUsage(j["usage"]);
@@ -456,6 +452,10 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         outEvent.messageId = getStr(j["message"], "id");
     }
 
+    outEvent.sessionId = getStr(j, "session_id");
+    if (outEvent.sessionId.empty()) outEvent.sessionId = getStr(j, "sessionID");
+    outEvent.stopReason = getStr(j, "stop_reason");
+
     // Step index
     if (j.contains("step_index") && j["step_index"].is_number()) {
         outEvent.stepIndex = j["step_index"].get<int>();
@@ -474,77 +474,9 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
     if (rawType.empty()) rawType = getStr(j, "role");
     std::string lType = ToLowerStr(rawType);
 
-    // agy (Antigravity) stream-json format: top-level "event" + nested "step_update"/"init".
-    if (j.contains("init") || j.contains("step_update")) {
-        const nlohmann::json* su = nullptr;
-        if (j.contains("step_update") && j["step_update"].is_object()) su = &j["step_update"];
+    if (llm::ParseAgyLine(j, outEvent)) return finish();
 
-        if (su && su->contains("usage") && (*su)["usage"].is_object()) {
-            applyUsage((*su)["usage"]);
-        } else if (j.contains("usage") && j["usage"].is_object()) {
-            applyUsage(j["usage"]);
-        }
-
-        if (j.contains("init")) {
-            outEvent.type = "status";
-            outEvent.status = "running";
-            outEvent.content = "init";
-            return finish();
-        }
-
-        std::string stepType = su ? getStr(*su, "step_type") : "";
-        std::string stateStr = su ? getStr(*su, "state") : "";
-
-        if (stepType == "user_input") {
-            outEvent.type = "user_input";
-            outEvent.status = "generating";
-            return finish();
-        }
-        if (stepType == "agent_response") {
-            outEvent.type = "message";
-            outEvent.status = "generating";
-            return finish();
-        }
-        if (stepType == "tool") {
-            std::string tname = su ? getStr(*su, "tool_name") : "";
-            if (tname.empty() && su && su->contains("tool_info") && (*su)["tool_info"].is_object()) {
-                tname = getStr((*su)["tool_info"], "name");
-                if (tname.empty()) tname = getStr((*su)["tool_info"], "tool_name");
-            }
-            outEvent.toolName = tname;
-            if (su && su->contains("tool_info") && (*su)["tool_info"].is_object()) {
-                const auto& ti = (*su)["tool_info"];
-                if (ti.contains("parameters")) {
-                    outEvent.toolInput = ti["parameters"].is_string() ? ti["parameters"].get<std::string>() : ti["parameters"].dump();
-                }
-                std::string to;
-                if (ti.contains("output")) {
-                    to = ti["output"].is_string() ? ti["output"].get<std::string>() : ti["output"].dump();
-                }
-                if (stateStr == "DONE" || !to.empty()) {
-                    outEvent.type = "tool_result";
-                    outEvent.status = "tool_result";
-                    outEvent.content = to;
-                    if (outEvent.toolAction.empty()) outEvent.toolAction = outEvent.toolName.empty() ? "Result" : ("Result: " + outEvent.toolName);
-                } else {
-                    outEvent.type = "tool_call";
-                    outEvent.status = "calling_tool";
-                    if (outEvent.toolAction.empty() && !outEvent.toolName.empty()) outEvent.toolAction = "Calling " + outEvent.toolName;
-                }
-            } else {
-                outEvent.type = "tool_call";
-                outEvent.status = "calling_tool";
-                if (outEvent.toolAction.empty() && !outEvent.toolName.empty()) outEvent.toolAction = "Calling " + outEvent.toolName;
-            }
-            return finish();
-        }
-
-        outEvent.type = "status";
-        outEvent.status = stateStr.empty() ? "running" : ToLowerStr(stateStr);
-        return finish();
-    }
-
-    // 1. Tool Call / Tool Use (Claude, agy, OpenCode, Codex)
+    // 1. Tool Call / Tool Use (agy, OpenCode, Codex, others)
     std::string partType = partObj ? ToLowerStr(getStr(*partObj, "type")) : "";
     std::string partStatus = partState ? ToLowerStr(getStr(*partState, "status")) : "";
     bool partIsTool = (partType == "tool_use" || partType == "tool" || partType == "function_call");
@@ -659,8 +591,8 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         return finish();
     }
 
-    // Result / Done. Checked before Status and Usage because Claude's final
-    // {"type":"result", "usage":{...}, "total_cost_usd":...} carries both.
+    // Result / Done. Checked before Status and Usage because a final result line can carry both
+    // "usage" and a total cost. Claude's result line is handled in llm_stream_claude.cpp.
     if (lType == "result" || lType == "done" || lType == "finish" || lType == "completed") {
         bool isError = j.contains("is_error") && j["is_error"].is_boolean() && j["is_error"].get<bool>();
         outEvent.type = isError ? "error" : "result";
@@ -723,6 +655,32 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
     if (outEvent.content.empty()) outEvent.content = getStr(j, "text");
     outEvent.status = "running";
     return finish();
+}
+
+
+bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgentType, LlmStreamEvent& outEvent) {
+    std::string trimmed = TrimStr(line);
+    if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') return false;
+    nlohmann::json j = nlohmann::json::parse(trimmed, nullptr, false);
+    if (!j.is_object()) return false;
+    return ParseGenericEvent(j, trimmed, defaultAgentType, outEvent);
+}
+
+bool ParseLlmStreamLines(const std::string& line, const std::string& defaultAgentType, std::vector<LlmStreamEvent>& outEvents) {
+    std::string trimmed = TrimStr(line);
+    if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') return false;
+    nlohmann::json j = nlohmann::json::parse(trimmed, nullptr, false);
+    if (!j.is_object()) return false;
+
+    // Per-agent splitters first. Each returns false for lines that are not its format.
+    if (defaultAgentType == "claude" && llm::ParseClaudeLines(j, trimmed, defaultAgentType, outEvents)) return true;
+    if (defaultAgentType == "opencode" && llm::ParseOpenCodeLines(j, trimmed, defaultAgentType, outEvents)) return true;
+    if (defaultAgentType == "codex" && llm::ParseCodexLines(j, trimmed, defaultAgentType, outEvents)) return true;
+
+    LlmStreamEvent ev;
+    if (!ParseGenericEvent(j, trimmed, defaultAgentType, ev)) return false;
+    outEvents.push_back(std::move(ev));
+    return true;
 }
 
 std::string LlmEventUsageText(const LlmStreamEvent& ev) {
@@ -828,6 +786,7 @@ bool DescribeLlmActivity(const LlmStreamEvent& ev, std::string& kind, std::strin
         kind = "thinking";
         target = ev.content;
     } else if (ev.type == "message") {
+        if (ev.content.empty()) return false;  // a reply with no text does not change the current activity
         kind = "replying";
         target = ev.content;
     } else if (ev.type == "error") {
@@ -866,6 +825,20 @@ std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const Llm
     root["supervisor_notes"] = state.supervisorNotes;
     root["supervisor_goal"] = state.supervisorGoal;
     root["updated_at"] = state.updatedAt;
+    root["session_id"] = state.sessionId;
+    root["stop_reason"] = state.stopReason;
+    root["cwd"] = state.cwd;
+    root["tool_calls"] = state.toolCalls;
+    root["tool_errors"] = state.toolErrors;
+    root["tools_offered"] = state.toolsOffered;
+    root["num_turns"] = state.numTurns;
+    root["api_duration_ms"] = state.apiDurationMs;
+    root["permission_denials"] = state.permissionDenials;
+    if (!state.rateLimitType.empty()) {
+        root["rate_limit"] = {{"type", state.rateLimitType}, {"status", state.rateLimitStatus},
+                              {"utilization", state.rateLimitUtilization},
+                              {"resets_at_epoch_sec", state.rateLimitResetsAtSec}};
+    }
 
     nlohmann::json evArr = nlohmann::json::array();
     for (const auto& ev : events) {
@@ -1021,24 +994,28 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
         if (m.empty()) m = extractAfter("modelID=");
         if (!m.empty()) state_.model = m;
     }
-    LlmStreamEvent ev;
-    if (!ParseLlmStreamLine(line, agentType_, ev)) {
+    std::vector<LlmStreamEvent> parsed;
+    if (!ParseLlmStreamLines(line, agentType_, parsed)) {
         return;
     }
 
+    // Save line to persistent stream file (.jsonl) once, even when it yields several events
+    if (!streamFilePathWide_.empty()) {
+        std::string writeLine = line;
+        if (writeLine.empty() || writeLine.back() != '\n') writeLine += "\r\n";
+        AppendToLogFileWide(streamFilePathWide_, writeLine);
+    }
+
+    for (auto& ev : parsed) ApplyEvent(ev, line);
+}
+
+void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
     ev.seq = nextSeq_++;
     ev.timestamp = GetCurrentTimestampStr();
     ev.recvEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     if (ev.agentType.empty() || ev.agentType == "generic") {
         if (!agentType_.empty()) ev.agentType = agentType_;
-    }
-
-    // Save line to persistent stream file (.jsonl)
-    if (!streamFilePathWide_.empty()) {
-        std::string writeLine = line;
-        if (writeLine.empty() || writeLine.back() != '\n') writeLine += "\r\n";
-        AppendToLogFileWide(streamFilePathWide_, writeLine);
     }
 
     // Update agent state
@@ -1081,7 +1058,9 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
     if (eventTokens == 0) eventTokens = ev.inputTokens + ev.outputTokens + ev.thinkingTokens + ev.cacheReadTokens + ev.cacheWriteTokens;
     // agy reports usage per step (each DONE agent_response carries only that step's
     // tokens), so every event is already a delta and totals are their sum.
-    const bool perStepUsage = (ev.agentType == "agy" || agentType_ == "agy");
+    // OpenCode step_finish tokens are per model step too (input excludes cache reads, as in Claude).
+    const bool perStepUsage = (ev.agentType == "agy" || agentType_ == "agy" ||
+                               ev.agentType == "opencode" || agentType_ == "opencode");
     if (perStepUsage && (eventTokens > 0 || ev.costUsd > 0.0)) {
         state_.totalTokens += eventTokens;
         state_.costUsd += ev.costUsd;
@@ -1154,12 +1133,28 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
         }
     }
 
+    if (!ev.sessionId.empty()) state_.sessionId = ev.sessionId;
+    if (!ev.stopReason.empty()) state_.stopReason = ev.stopReason;
+    if (!ev.cwd.empty()) state_.cwd = ev.cwd;
+    if (ev.toolsOffered > 0) state_.toolsOffered = ev.toolsOffered;
+    if (ev.numTurns > 0) state_.numTurns = ev.numTurns;
+    if (ev.apiDurationMs > 0) state_.apiDurationMs = ev.apiDurationMs;
+    if (ev.permissionDenials > 0) state_.permissionDenials = ev.permissionDenials;
+    if (ev.type == "rate_limit") {
+        state_.rateLimitType = ev.rateLimitType;
+        state_.rateLimitStatus = ev.rateLimitStatus;
+        state_.rateLimitUtilization = ev.rateLimitUtilization;
+        state_.rateLimitResetsAtSec = ev.rateLimitResetsAtSec;
+    }
+
     if (ev.type == "tool_call") {
         state_.status = "calling_tool";
         state_.currentTool = ev.toolName;
         state_.currentToolAction = ev.toolAction;
+        state_.toolCalls++;
     } else if (ev.type == "tool_result") {
         state_.status = "tool_finished";
+        if (ev.toolError) state_.toolErrors++;
     } else if (ev.type == "thinking") {
         state_.status = "thinking";
         if (!ev.content.empty()) {

@@ -68,7 +68,7 @@ static HICON LoadAppSmallIcon() {
 }
 
 enum class UiLanguage { Japanese, English, Spanish };
-enum class UiTheme { System, Dark, Light, Pastel, HighContrast };
+enum class UiTheme { System, Dark, Light, Pastel, HighContrast, Midnight, Ember, Berry, Crimson, Forest, Mist };
 
 struct ThemeColors {
     COLORREF windowBg;
@@ -150,7 +150,7 @@ static ThemeColors ThemeFor(UiTheme theme) {
             };
         case UiTheme::Pastel:
             return {
-                RGB(248, 244, 250), RGB(255, 251, 253), RGB(214, 204, 224),
+                RGB(243, 235, 220), RGB(250, 246, 236), RGB(214, 204, 224),
                 RGB(74, 66, 84), RGB(130, 118, 140), RGB(178, 148, 210),
                 RGB(34, 30, 40), RGB(243, 236, 248), RGB(74, 66, 84), RGB(232, 230, 235),
                 RGB(220, 244, 226), RGB(252, 238, 210), RGB(220, 235, 250), RGB(250, 220, 224)
@@ -161,6 +161,48 @@ static ThemeColors ThemeFor(UiTheme theme) {
                 RGB(255, 255, 255), RGB(220, 220, 220), RGB(255, 255, 0),
                 RGB(0, 0, 0), RGB(0, 0, 0), RGB(255, 255, 255), RGB(60, 60, 60),
                 RGB(0, 40, 0), RGB(50, 40, 0), RGB(0, 20, 50), RGB(50, 0, 0)
+            };
+        case UiTheme::Midnight:
+            return {
+                RGB(12, 22, 44), RGB(20, 34, 64), RGB(48, 68, 104),
+                RGB(220, 228, 240), RGB(140, 156, 184), RGB(96, 165, 250),
+                RGB(8, 15, 32), RGB(16, 28, 54), RGB(220, 228, 240), RGB(38, 62, 104),
+                RGB(20, 52, 58), RGB(40, 44, 64), RGB(24, 40, 80), RGB(60, 30, 46)
+            };
+        case UiTheme::Ember:
+            return {
+                RGB(38, 20, 8), RGB(60, 32, 14), RGB(104, 62, 32),
+                RGB(250, 232, 214), RGB(190, 150, 120), RGB(249, 115, 22),
+                RGB(26, 13, 4), RGB(46, 24, 10), RGB(250, 232, 214), RGB(110, 58, 20),
+                RGB(40, 62, 30), RGB(70, 50, 20), RGB(40, 40, 70), RGB(80, 28, 24)
+            };
+        case UiTheme::Berry:
+            return {
+                RGB(38, 14, 30), RGB(60, 22, 46), RGB(104, 46, 80),
+                RGB(250, 226, 240), RGB(196, 150, 176), RGB(236, 72, 153),
+                RGB(26, 8, 20), RGB(46, 18, 38), RGB(250, 226, 240), RGB(110, 36, 80),
+                RGB(34, 60, 50), RGB(70, 50, 30), RGB(40, 36, 80), RGB(84, 26, 44)
+            };
+        case UiTheme::Crimson:
+            return {
+                RGB(36, 10, 12), RGB(60, 18, 22), RGB(108, 40, 46),
+                RGB(250, 226, 226), RGB(196, 140, 144), RGB(239, 68, 68),
+                RGB(24, 6, 8), RGB(44, 14, 16), RGB(250, 226, 226), RGB(110, 30, 36),
+                RGB(34, 58, 44), RGB(70, 52, 24), RGB(36, 40, 72), RGB(96, 24, 28)
+            };
+        case UiTheme::Forest:
+            return {
+                RGB(10, 30, 20), RGB(18, 50, 34), RGB(46, 96, 70),
+                RGB(220, 244, 232), RGB(140, 186, 162), RGB(34, 197, 94),
+                RGB(6, 20, 13), RGB(14, 40, 27), RGB(220, 244, 232), RGB(36, 96, 64),
+                RGB(26, 80, 50), RGB(60, 64, 28), RGB(24, 52, 70), RGB(70, 36, 30)
+            };
+        case UiTheme::Mist:
+            return {
+                RGB(226, 228, 231), RGB(240, 241, 243), RGB(190, 194, 200),
+                RGB(31, 36, 44), RGB(92, 99, 112), RGB(70, 100, 140),
+                RGB(28, 31, 38), RGB(222, 225, 230), RGB(31, 36, 44), RGB(206, 212, 222),
+                RGB(220, 242, 228), RGB(246, 236, 212), RGB(220, 230, 246), RGB(248, 222, 222)
             };
         case UiTheme::Dark:
         default:
@@ -173,18 +215,33 @@ static ThemeColors ThemeFor(UiTheme theme) {
     }
 }
 
+static bool IsDarkUiTheme(UiTheme theme) {
+    switch (theme) {
+        case UiTheme::Dark:
+        case UiTheme::HighContrast:
+        case UiTheme::Midnight:
+        case UiTheme::Ember:
+        case UiTheme::Berry:
+        case UiTheme::Crimson:
+        case UiTheme::Forest:
+            return true;
+        case UiTheme::System:
+            return IsSystemDarkMode();
+        default:
+            return false;
+    }
+}
+
 static void ApplyTheme() {
     g_theme = ThemeFor(g_uiTheme);
-    g_darkThemeActive = g_uiTheme == UiTheme::Dark || g_uiTheme == UiTheme::HighContrast ||
-                        (g_uiTheme == UiTheme::System && IsSystemDarkMode());
+    g_darkThemeActive = IsDarkUiTheme(g_uiTheme);
     if (g_dialogBgBrush) {
         DeleteObject(g_dialogBgBrush);
     }
     g_dialogBgBrush = CreateSolidBrush(g_theme.panel);
 }
 static bool IsDarkThemeActive() {
-    return g_uiTheme == UiTheme::Dark || g_uiTheme == UiTheme::HighContrast ||
-           (g_uiTheme == UiTheme::System && IsSystemDarkMode());
+    return IsDarkUiTheme(g_uiTheme);
 }
 
 using SetPreferredAppModeFn = int(WINAPI*)(int);
@@ -301,6 +358,79 @@ static LRESULT CALLBACK HeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, L
     return res;
 }
 
+// Draws the thumb of one native scrollbar inside its track rectangle, from the control's scroll info.
+static void PaintListScrollThumb(HDC hdc, HWND hwnd, int which, const RECT& bar, HBRUSH thumbBrush) {
+    SCROLLINFO si = {};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_ALL;
+    if (!GetScrollInfo(hwnd, which, &si)) return;
+    int range = si.nMax - si.nMin + 1;
+    if (si.nPage == 0 || range <= 0 || static_cast<int>(si.nPage) >= range) return;
+    bool vert = which == SB_VERT;
+    int trackLen = vert ? (bar.bottom - bar.top) : (bar.right - bar.left);
+    int thumbLen = (std::max)(16, trackLen * static_cast<int>(si.nPage) / range);
+    int scrollable = range - static_cast<int>(si.nPage);
+    int thumbPos = (trackLen - thumbLen) * (si.nPos - si.nMin) / scrollable;
+    thumbPos = (std::clamp)(thumbPos, 0, trackLen - thumbLen);
+    RECT thumb = bar;
+    if (vert) {
+        thumb.top += thumbPos;
+        thumb.bottom = thumb.top + thumbLen;
+        thumb.left += 3;
+        thumb.right -= 3;
+    } else {
+        thumb.left += thumbPos;
+        thumb.right = thumb.left + thumbLen;
+        thumb.top += 3;
+        thumb.bottom -= 3;
+    }
+    FillRect(hdc, &thumb, thumbBrush);
+}
+
+// The native list scrollbars are painted by the system in the theme's default colours. Repaint them
+// over with the active theme after each message, so the track and thumb follow the theme.
+static void PaintThemedListScrollBars(HWND hwnd) {
+    DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+    bool vert = (style & WS_VSCROLL) != 0;
+    bool horz = (style & WS_HSCROLL) != 0;
+    if (!vert && !horz) return;
+    HDC hdc = GetWindowDC(hwnd);
+    if (!hdc) return;
+    RECT wr = {};
+    GetWindowRect(hwnd, &wr);
+    RECT cr = {};
+    GetClientRect(hwnd, &cr);
+    POINT origin = {0, 0};
+    ClientToScreen(hwnd, &origin);
+    int offX = origin.x - wr.left;
+    int offY = origin.y - wr.top;
+    int cw = cr.right - cr.left;
+    int ch = cr.bottom - cr.top;
+    int sbw = GetSystemMetrics(SM_CXVSCROLL);
+    int sbh = GetSystemMetrics(SM_CYHSCROLL);
+    HBRUSH trackBrush = CreateSolidBrush(g_theme.panel);
+    HBRUSH thumbBrush = CreateSolidBrush(g_theme.border);
+    if (vert) {
+        RECT bar = {offX + cw, offY, offX + cw + sbw, offY + ch - (horz ? sbh : 0)};
+        FillRect(hdc, &bar, trackBrush);
+        PaintListScrollThumb(hdc, hwnd, SB_VERT, bar, thumbBrush);
+    }
+    if (horz) {
+        RECT bar = {offX, offY + ch, offX + cw - (vert ? sbw : 0), offY + ch + sbh};
+        FillRect(hdc, &bar, trackBrush);
+        PaintListScrollThumb(hdc, hwnd, SB_HORZ, bar, thumbBrush);
+    }
+    if (vert && horz) {
+        RECT corner = {offX + cw, offY + ch, offX + cw + sbw, offY + ch + sbh};
+        HBRUSH cornerBrush = CreateSolidBrush(g_theme.windowBg);
+        FillRect(hdc, &corner, cornerBrush);
+        DeleteObject(cornerBrush);
+    }
+    DeleteObject(trackBrush);
+    DeleteObject(thumbBrush);
+    ReleaseDC(hwnd, hdc);
+}
+
 static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                              UINT_PTR, DWORD_PTR) {
     if (msg == WM_DRAWITEM) {
@@ -310,7 +440,9 @@ static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
             return TRUE;
         }
     }
-    return DefSubclassProc(hwnd, msg, wParam, lParam);
+    LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
+    if (msg != WM_NCDESTROY && msg != WM_DESTROY) PaintThemedListScrollBars(hwnd);
+    return res;
 }
 
 static LRESULT CALLBACK TabSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
@@ -332,6 +464,19 @@ static COLORREF BlendColor(COLORREF from, COLORREF to, float t) {
     return RGB(mix(GetRValue(from), GetRValue(to)),
                mix(GetGValue(from), GetGValue(to)),
                mix(GetBValue(from), GetBValue(to)));
+}
+
+// Thin row separator drawn in place of LVS_EX_GRIDLINES, softened toward the window background.
+static void DrawListRowSeparator(const NMLVCUSTOMDRAW* lvcd) {
+    RECT rc = {};
+    if (!ListView_GetItemRect(lvcd->nmcd.hdr.hwndFrom, lvcd->nmcd.dwItemSpec, &rc, LVIR_BOUNDS)) return;
+    HDC hdc = lvcd->nmcd.hdc;
+    HPEN pen = CreatePen(PS_SOLID, 1, BlendColor(g_theme.border, g_theme.windowBg, 0.5f));
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    MoveToEx(hdc, rc.left, rc.bottom - 1, nullptr);
+    LineTo(hdc, rc.right, rc.bottom - 1);
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
 }
 
 // Low-saturation variant of a theme row color (keeps brightness, mutes the hue).
@@ -396,6 +541,12 @@ static const char* ThemeCode(UiTheme theme) {
         case UiTheme::Light:        return "light";
         case UiTheme::Pastel:       return "pastel";
         case UiTheme::HighContrast: return "high_contrast";
+        case UiTheme::Midnight:     return "midnight";
+        case UiTheme::Ember:        return "ember";
+        case UiTheme::Berry:        return "berry";
+        case UiTheme::Crimson:      return "crimson";
+        case UiTheme::Forest:       return "forest";
+        case UiTheme::Mist:         return "mist";
         default:                    return "system";
     }
 }
@@ -404,6 +555,12 @@ static UiTheme ParseTheme(const std::string& code) {
     if (code == "light") return UiTheme::Light;
     if (code == "pastel") return UiTheme::Pastel;
     if (code == "high_contrast") return UiTheme::HighContrast;
+    if (code == "midnight") return UiTheme::Midnight;
+    if (code == "ember") return UiTheme::Ember;
+    if (code == "berry") return UiTheme::Berry;
+    if (code == "crimson") return UiTheme::Crimson;
+    if (code == "forest") return UiTheme::Forest;
+    if (code == "mist") return UiTheme::Mist;
     return UiTheme::System;
 }
 
@@ -454,6 +611,12 @@ enum ControlId {
     IDC_SET_THEME_LIGHT = 6012,
     IDC_SET_THEME_HC = 6013,
     IDC_SET_THEME_PASTEL = 6014,
+    IDC_SET_THEME_MIDNIGHT = 6015,
+    IDC_SET_THEME_EMBER = 6016,
+    IDC_SET_THEME_BERRY = 6017,
+    IDC_SET_THEME_CRIMSON = 6018,
+    IDC_SET_THEME_FOREST = 6019,
+    IDC_SET_THEME_MIST = 6020,
     IDC_SET_SHELL_CONFIG = 6022,
     IDC_SET_RESET_IDS = 6021,
     IDC_SET_CLEAR_ENDED = 6023,
@@ -3490,16 +3653,17 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
     SelectObject(hdc, oldPen);
     DeleteObject(frame);
 
+    // Each event is painted over its own time span on the shared axis, in the colour of its activity.
     struct KindRow {
         const wchar_t* label;
-        COLORREF color;
         int64_t ms;
+        std::vector<const ActivityRow*> items;
     };
     KindRow kinds[4] = {
-        {L"read", RGB(0x4F, 0x8C, 0xFF), 0},
-        {L"write", RGB(0x3D, 0xD5, 0x98), 0},
-        {L"tool", RGB(0xFF, 0xB0, 0x40), 0},
-        {L"other", RGB(0x5C, 0x6C, 0x8C), 0},
+        {L"read", 0, {}},
+        {L"write", 0, {}},
+        {L"tool", 0, {}},
+        {L"other", 0, {}},
     };
     for (const auto& r : rows) {
         if (r.startMs <= 0 || r.endMs < r.startMs) continue;  // events restored from an older session
@@ -3508,6 +3672,7 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
         else if (r.kind == "edit") idx = 1;
         else if (r.kind == "tool" || r.kind == "command" || r.kind == "subagent") idx = 2;
         kinds[idx].ms += r.endMs - r.startMs;
+        kinds[idx].items.push_back(&r);
     }
     int64_t maxMs = span.lengthMs;  // the full axis is the run's elapsed time, shared with the usage graph
 
@@ -3551,12 +3716,20 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
         SetTextColor(hdc, g_theme.muted);
         DrawTextW(hdc, kinds[i].label, -1, &labelRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         if (kinds[i].ms <= 0) continue;
-        int barRight = plotLeft + static_cast<int>(plotW * kinds[i].ms / maxMs);
-        barRight = (std::clamp)(barRight, plotLeft + 1, plotRight);
-        HBRUSH br = CreateSolidBrush(kinds[i].color);
-        RECT barRc = {plotLeft, top + barPad, barRight, top + rowH - barPad};
-        FillRect(hdc, &barRc, br);
-        DeleteObject(br);
+        auto timeToX = [&](int64_t ms) {
+            double f = static_cast<double>(ms - span.startMs) / static_cast<double>(maxMs);
+            return plotLeft + static_cast<int>(plotW * (std::clamp)(f, 0.0, 1.0));
+        };
+        int barRight = plotLeft;
+        for (const ActivityRow* r : kinds[i].items) {
+            int x0 = timeToX(r->startMs);
+            int x1 = (std::min)((std::max)(timeToX(r->endMs), x0 + 1), plotRight);
+            HBRUSH br = CreateSolidBrush(ActivityColor(r->kind));
+            RECT segRc = {x0, top + barPad, x1, top + rowH - barPad};
+            FillRect(hdc, &segRc, br);
+            DeleteObject(br);
+            barRight = (std::max)(barRight, x1);
+        }
         std::wstring value = FormatElapsed(kinds[i].ms);
         SetTextColor(hdc, g_theme.text);
         if (barRight + 64 <= rc.right) {
@@ -3671,6 +3844,62 @@ static std::wstring ActivityRowStartTime(const ActivityRow& r) {
     return buf;
 }
 
+// One step as tab-separated values for the clipboard, with the full target rather than the cell's shortened text.
+static std::wstring ActivityRowCopyText(const ActivityRow& r) {
+    return ActivityRowStartTime(r) + L"\t" + ActivityRowDuration(r) + L"\t" + ActivityLabel(r.kind) + L"\t" +
+           Utf8ToWide(r.target) + L"\t" + TokenCellText(r.tokIn) + L"\t" + TokenCellText(r.tokOut) + L"\t" +
+           TokenCellText(r.tokCache) + L"\t" + TokenCellText(r.tokThink) + L"\t" +
+           TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink);
+}
+
+// Session facts from the stream: session, turns, API time, tool results, denials, plan limit.
+// Empty when the agent reports none of them.
+static std::wstring AgentStatsText(const LlmAgentState& as) {
+    std::wstringstream o;
+    bool any = false;
+    auto sep = [&]() { if (any) o << L"  |  "; any = true; };
+    if (!as.sessionId.empty()) {
+        sep();
+        o << L"Session " << Utf8ToWide(as.sessionId.substr(0, 8));
+    }
+    if (as.numTurns > 0) {
+        sep();
+        o << Tr(L"ターン ", L"Turns ", L"Turnos ") << as.numTurns;
+    }
+    if (as.apiDurationMs > 0) {
+        sep();
+        o << L"API " << FormatElapsed(static_cast<int64_t>(as.apiDurationMs));
+    }
+    if (as.toolCalls > 0) {
+        sep();
+        o << Tr(L"ツール ", L"Tools ", L"Herramientas ") << as.toolCalls;
+        if (as.toolErrors > 0) o << Tr(L" (失敗 ", L" (failed ", L" (fallidas ") << as.toolErrors << L")";
+    }
+    if (as.permissionDenials > 0) {
+        sep();
+        o << Tr(L"権限拒否 ", L"Denied ", L"Denegadas ") << as.permissionDenials;
+    }
+    if (!as.rateLimitType.empty()) {
+        sep();
+        o << Tr(L"上限 ", L"Limit ", L"Límite ") << Utf8ToWide(as.rateLimitType);
+        if (as.rateLimitUtilization >= 0.0) {
+            wchar_t pct[16] = {};
+            swprintf_s(pct, L" %.0f%%", as.rateLimitUtilization * 100.0);
+            o << pct;
+        }
+        if (as.rateLimitStatus == "rejected") o << Tr(L" (拒否中)", L" (rejected)", L" (rechazado)");
+        if (as.rateLimitResetsAtSec > 0) {
+            time_t t = static_cast<time_t>(as.rateLimitResetsAtSec);
+            struct tm lt = {};
+            localtime_s(&lt, &t);
+            wchar_t reset[16] = {};
+            swprintf_s(reset, L" → %02d:%02d", lt.tm_hour, lt.tm_min);
+            o << reset;
+        }
+    }
+    return o.str();
+}
+
 // The execution monitor pane: goal, where things stand now, and the activity history.
 static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
     const ProcessSnapshot& s = ds->snap;
@@ -3712,8 +3941,15 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
 
     std::wstringstream hdr;
 
-    // How it ends: the agent's own TODO list, the job's success check, attempts and time limits.
-    // This is the first line of the pane; the goal follows it.
+    // First line: the task ID (the task queue job key when there is one, else the process).
+    std::wstring processLabel = L"#" + std::to_wstring(s.id) + L" " + Utf8ToWide(s.name);
+    if (s.jobKey.empty()) {
+        hdr << Tr(L"タスクID: ", L"Task ID: ", L"ID de tarea: ") << processLabel << L"\r\n";
+    } else {
+        hdr << Tr(L"タスクID: ", L"Task ID: ", L"ID de tarea: ") << Utf8ToWide(s.jobKey) << L"  (" << processLabel << L")\r\n";
+    }
+
+    // End condition: the agent's own TODO list, the job's success check, attempts and time limits.
     std::vector<std::wstring> ends;
     for (auto it = ds->events.rbegin(); it != ds->events.rend(); ++it) {
         std::string kind, target;
@@ -3743,7 +3979,7 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
         ends.push_back(Tr(L"💤 無出力 ", L"💤 no output for ", L"💤 sin salida ") + FormatElapsed(static_cast<int64_t>(s.idleTimeoutSec) * 1000)
                        + Tr(L" で打ち切り", L" stops it", L" lo detiene"));
     }
-    hdr << Tr(L"終わり: ", L"Ends: ", L"Fin: ");
+    hdr << Tr(L"終了条件: ", L"End condition: ", L"Condición de fin: ");
     if (ends.empty()) {
         hdr << Tr(L"プロセスが終了したとき (制限なし)", L"when the process exits (no limit)", L"cuando el proceso termine (sin límite)");
     } else {
@@ -3780,10 +4016,10 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
     hdr << L"\r\n";
 
     std::wstring agentLabel = Utf8ToWide(s.agentType.empty() ? ds->agentState.agentType : s.agentType);
-    hdr << L"#" << s.id << L" " << Utf8ToWide(s.name);
-    if (!agentLabel.empty()) hdr << L"  [" << agentLabel << L"]";
-    if (!ds->agentState.model.empty()) hdr << L" " << Utf8ToWide(ds->agentState.model);
-    hdr << L"  |  " << Tr(L"経過 ", L"Elapsed ", L"Transcurrido ") << FormatElapsed(static_cast<int64_t>(s.elapsedMs));
+    if (!agentLabel.empty()) hdr << L"[" << agentLabel << L"]";
+    if (!ds->agentState.model.empty()) hdr << (agentLabel.empty() ? L"" : L" ") << Utf8ToWide(ds->agentState.model);
+    if (!agentLabel.empty() || !ds->agentState.model.empty()) hdr << L"  |  ";
+    hdr << Tr(L"経過 ", L"Elapsed ", L"Transcurrido ") << FormatElapsed(static_cast<int64_t>(s.elapsedMs));
     if (ds->agentState.stepCount > 0) hdr << L"  |  Steps " << ds->agentState.stepCount;
     if (ds->agentState.totalTokens > 0) hdr << L"  |  Tokens " << ds->agentState.totalTokens;
     if (ds->agentState.costUsd > 0.0) {
@@ -3792,6 +4028,8 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
         hdr << cost;
     }
     hdr << L"\r\n";
+    std::wstring stats = AgentStatsText(ds->agentState);
+    if (!stats.empty()) hdr << stats << L"\r\n";
     if (!s.supervisorNotes.empty()) {
         hdr << Tr(L"メモ: ", L"Notes: ", L"Notas: ") << Utf8ToWide(s.supervisorNotes) << L"\r\n";
     }
@@ -3809,35 +4047,37 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
         ds->lastEventSeq = lastSeq;
         SendMessageW(ds->hwndList, WM_SETREDRAW, FALSE, 0);
         ListView_DeleteAllItems(ds->hwndList);
-        for (int i = 0; i < static_cast<int>(ds->rows.size()); ++i) {
-            const auto& r = ds->rows[i];
+        const int rowCount = static_cast<int>(ds->rows.size());
+        for (int d = 0; d < rowCount; ++d) {
+            // Newest step on top: display row d shows rows[rowCount - 1 - d]. lParam keeps that index.
+            const int ri = rowCount - 1 - d;
+            const auto& r = ds->rows[ri];
             std::wstring startStr = ActivityRowStartTime(r);
             std::wstring durStr = ActivityRowDuration(r);
             std::wstring whatStr = ActivityLabel(r.kind);
             std::wstring targetStr = ShortTarget(r.target, 200);
             LVITEMW lvi = {};
             lvi.mask = LVIF_TEXT | LVIF_PARAM;
-            lvi.iItem = i;
+            lvi.iItem = d;
             lvi.pszText = startStr.data();
-            lvi.lParam = i;
+            lvi.lParam = ri;
             ListView_InsertItem(ds->hwndList, &lvi);
-            ListView_SetItemText(ds->hwndList, i, 1, durStr.data());
-            ListView_SetItemText(ds->hwndList, i, 2, whatStr.data());
-            ListView_SetItemText(ds->hwndList, i, 3, targetStr.data());
-            ListView_SetItemText(ds->hwndList, i, 4, TokenCellText(r.tokIn).data());
-            ListView_SetItemText(ds->hwndList, i, 5, TokenCellText(r.tokOut).data());
-            ListView_SetItemText(ds->hwndList, i, 6, TokenCellText(r.tokCache).data());
-            ListView_SetItemText(ds->hwndList, i, 7, TokenCellText(r.tokThink).data());
-            ListView_SetItemText(ds->hwndList, i, 8, TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink).data());
+            ListView_SetItemText(ds->hwndList, d, 1, durStr.data());
+            ListView_SetItemText(ds->hwndList, d, 2, whatStr.data());
+            ListView_SetItemText(ds->hwndList, d, 3, targetStr.data());
+            ListView_SetItemText(ds->hwndList, d, 4, TokenCellText(r.tokIn).data());
+            ListView_SetItemText(ds->hwndList, d, 5, TokenCellText(r.tokOut).data());
+            ListView_SetItemText(ds->hwndList, d, 6, TokenCellText(r.tokCache).data());
+            ListView_SetItemText(ds->hwndList, d, 7, TokenCellText(r.tokThink).data());
+            ListView_SetItemText(ds->hwndList, d, 8, TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink).data());
         }
         SendMessageW(ds->hwndList, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(ds->hwndList, nullptr, FALSE);
-        if (!ds->rows.empty()) ListView_EnsureVisible(ds->hwndList, static_cast<int>(ds->rows.size()) - 1, FALSE);
+        if (!ds->rows.empty()) ListView_EnsureVisible(ds->hwndList, 0, FALSE);
     } else if (ds->hwndList && !ds->rows.empty() && ds->rows.back().ongoing) {
-        // Only the running step's duration changes between events.
-        int last = static_cast<int>(ds->rows.size()) - 1;
+        // Only the running step's duration changes between events. It is the top row.
         std::wstring durStr = ActivityRowDuration(ds->rows.back());
-        ListView_SetItemText(ds->hwndList, last, 1, durStr.data());
+        ListView_SetItemText(ds->hwndList, 0, 1, durStr.data());
     }
     if (ds->rcUsageGraph.right > ds->rcUsageGraph.left) InvalidateRect(hwnd, &ds->rcUsageGraph, FALSE);
     if (ds->rcKindChart.right > ds->rcKindChart.left) InvalidateRect(hwnd, &ds->rcKindChart, FALSE);
@@ -3912,6 +4152,8 @@ static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
         hdr << L"  |  Cost: $" << ds->agentState.costUsd;
     }
     hdr << L"\r\n";
+    std::wstring stats = AgentStatsText(ds->agentState);
+    if (!stats.empty()) hdr << stats << L"\r\n";
     if (!ds->snap.supervisorGoal.empty()) {
         hdr << Tr(L"目標: ", L"Goal: ", L"Objetivo: ") << Utf8ToWide(ds->snap.supervisorGoal) << L"\r\n";
     }
@@ -3991,7 +4233,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ds->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                 12, 95, 820, 260, hwnd, (HMENU)2101, nullptr, nullptr);
-            ListView_SetExtendedListViewStyle(ds->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            ListView_SetExtendedListViewStyle(ds->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
             ListView_SetBkColor(ds->hwndList, g_theme.panel);
             ListView_SetTextBkColor(ds->hwndList, g_theme.panel);
             ListView_SetTextColor(ds->hwndList, g_theme.listText);
@@ -4036,6 +4278,19 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 lvc.iSubItem = i;
                 ListView_InsertColumn(ds->hwndList, i, &lvc);
             }
+            HWND hMonHeader = ListView_GetHeader(ds->hwndList);
+            if (hMonHeader) {
+                for (int i = 0; i < colCount; ++i) {
+                    HDITEMW hdi = {};
+                    hdi.mask = HDI_FORMAT;
+                    if (Header_GetItem(hMonHeader, i, &hdi)) {
+                        hdi.fmt |= HDF_OWNERDRAW;
+                        Header_SetItem(hMonHeader, i, &hdi);
+                    }
+                }
+                SetWindowSubclass(hMonHeader, HeaderSubclassProc, 1, 0);
+            }
+            SetWindowSubclass(ds->hwndList, ListViewSubclassProc, 1, 0);
 
             ds->hwndEditPreview = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
@@ -4110,7 +4365,9 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     auto* pnmlv = reinterpret_cast<NMLISTVIEW*>(lParam);
                     int evIdx = pnmlv->iItem;
                     if (ds->embedded) {
-                        evIdx = (evIdx >= 0 && evIdx < static_cast<int>(ds->rows.size())) ? ds->rows[evIdx].firstEvent : -1;
+                        // The activity list is newest-first; lParam is the row's index in ds->rows.
+                        int rowIdx = static_cast<int>(pnmlv->lParam);
+                        evIdx = (rowIdx >= 0 && rowIdx < static_cast<int>(ds->rows.size())) ? ds->rows[rowIdx].firstEvent : -1;
                     }
                     if ((pnmlv->uNewState & LVIS_SELECTED) && evIdx >= 0 &&
                         evIdx < static_cast<int>(ds->events.size())) {
@@ -4142,16 +4399,51 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                << Utf8ToWide(ev.rawJson) << L"\r\n";
                         SetWindowTextW(ds->hwndEditPreview, detail.str().c_str());
                     }
+                } else if (pnmh->code == NM_RCLICK && ds->embedded) {
+                    // Right-click on a step: copy the whole row, or only its full target.
+                    auto* act = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+                    if (act->iItem < 0) return 0;
+                    LVITEMW item = {};
+                    item.mask = LVIF_PARAM;
+                    item.iItem = act->iItem;
+                    ListView_GetItem(ds->hwndList, &item);
+                    int rowIdx = static_cast<int>(item.lParam);
+                    if (rowIdx < 0 || rowIdx >= static_cast<int>(ds->rows.size())) return 0;
+                    const auto& r = ds->rows[rowIdx];
+                    POINT pt = {};
+                    GetCursorPos(&pt);
+                    HMENU menu = CreatePopupMenu();
+                    AppendMenuW(menu, MF_STRING, 1, Tr(L"行をコピー", L"Copy row", L"Copiar fila"));
+                    AppendMenuW(menu, MF_STRING, 2, Tr(L"対象をコピー（全文）", L"Copy target (full text)", L"Copiar objetivo (texto completo)"));
+                    int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+                    DestroyMenu(menu);
+                    if (cmd == 1) CopyTextToClipboard(hwnd, ActivityRowCopyText(r));
+                    else if (cmd == 2) CopyTextToClipboard(hwnd, Utf8ToWide(r.target));
+                    return 0;
+                } else if (pnmh->code == LVN_GETINFOTIPW && ds->embedded) {
+                    // Hover: the full text of the step, not the shortened cell.
+                    auto* tip = reinterpret_cast<NMLVGETINFOTIPW*>(lParam);
+                    int rowIdx = static_cast<int>(tip->lParam);
+                    if (rowIdx >= 0 && rowIdx < static_cast<int>(ds->rows.size()) && tip->pszText && tip->cchTextMax > 0) {
+                        const auto& r = ds->rows[rowIdx];
+                        std::wstring text = ActivityLabel(r.kind);
+                        if (!r.target.empty()) text += L"\r\n" + Utf8ToWide(r.target);
+                        wcsncpy_s(tip->pszText, tip->cchTextMax, text.c_str(), _TRUNCATE);
+                    }
                 } else if (pnmh->code == NM_CUSTOMDRAW && ds->embedded) {
                     auto* lvcd = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
                     if (lvcd->nmcd.dwDrawStage == CDDS_PREPAINT) {
                         return CDRF_NOTIFYITEMDRAW;
                     }
+                    if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+                        DrawListRowSeparator(lvcd);
+                        return CDRF_DODEFAULT;
+                    }
                     if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                         bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
                         lvcd->clrText = g_theme.listText;
                         lvcd->clrTextBk = selected ? g_theme.rowSelected : g_theme.panel;
-                        int idx = static_cast<int>(lvcd->nmcd.dwItemSpec);
+                        int idx = static_cast<int>(lvcd->nmcd.lItemlParam);  // rows index, see ReloadMonitorPane
                         if (idx >= 0 && idx < static_cast<int>(ds->rows.size())) {
                             const auto& r = ds->rows[idx];
                             if (g_activityStyle) {
@@ -4161,7 +4453,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                 if (!selected) lvcd->clrTextBk = ActivityRowBackground(r.kind, r.ongoing, longStep);
                             }
                         }
-                        return CDRF_NEWFONT;
+                        return CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
                     }
                     return CDRF_DODEFAULT;
                 }
@@ -4427,6 +4719,7 @@ static void ApplyStreamPaneTheme(DashboardState* st) {
     ListView_SetBkColor(hList, g_theme.panel);
     ListView_SetTextBkColor(hList, g_theme.panel);
     ListView_SetTextColor(hList, g_theme.listText);
+    RedrawWindow(hList, nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE);
     ApplyNativeThemeToWindow(st->hwndStreamPane);
     InvalidateRect(st->hwndStreamPane, nullptr, TRUE);
 }
@@ -4621,6 +4914,7 @@ static void ApplyListTheme(DashboardState* st) {
     ListView_SetTextBkColor(st->hwndList, g_theme.panel);
     ListView_SetTextColor(st->hwndList, g_theme.listText);
     InvalidateRect(st->hwndList, nullptr, TRUE);
+    RedrawWindow(st->hwndList, nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE);
     HWND hHeader = ListView_GetHeader(st->hwndList);
     if (hHeader) InvalidateRect(hHeader, nullptr, TRUE);
     if (st->hwndTaskList) {
@@ -4628,6 +4922,7 @@ static void ApplyListTheme(DashboardState* st) {
         ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
         ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
         InvalidateRect(st->hwndTaskList, nullptr, TRUE);
+        RedrawWindow(st->hwndTaskList, nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE);
         HWND hTaskHeader = ListView_GetHeader(st->hwndTaskList);
         if (hTaskHeader) InvalidateRect(hTaskHeader, nullptr, TRUE);
     }
@@ -4671,7 +4966,7 @@ static void UpdateToolbarLabels(DashboardState* st) {
     }
     UpdatePanelToggleLabels(st);
     if (st->hwndBtnViewTasks) {
-        const wchar_t* btnLabel = Tr(L"表示: 2行 (上下)", L"View: 2 Rows", L"Vista: 2 Filas");
+        const wchar_t* btnLabel = Tr(L"表示(上下)", L"View: 2 Rows", L"Vista: 2 Filas");
         if (st->listDisplayMode == ListDisplayMode::ProcessOnly) {
             btnLabel = Tr(L"表示: プロセス", L"View: Process Only", L"Vista: Solo Proc");
         } else if (st->listDisplayMode == ListDisplayMode::TaskOnly) {
@@ -5094,6 +5389,38 @@ static void ResetProcessIdsWithConfirm(DashboardState* st) {
     }
 }
 
+static UiTheme ThemeForButton(int id) {
+    switch (id) {
+        case IDC_SET_THEME_DARK:     return UiTheme::Dark;
+        case IDC_SET_THEME_LIGHT:    return UiTheme::Light;
+        case IDC_SET_THEME_PASTEL:   return UiTheme::Pastel;
+        case IDC_SET_THEME_HC:       return UiTheme::HighContrast;
+        case IDC_SET_THEME_MIDNIGHT: return UiTheme::Midnight;
+        case IDC_SET_THEME_EMBER:    return UiTheme::Ember;
+        case IDC_SET_THEME_BERRY:    return UiTheme::Berry;
+        case IDC_SET_THEME_CRIMSON:  return UiTheme::Crimson;
+        case IDC_SET_THEME_FOREST:   return UiTheme::Forest;
+        case IDC_SET_THEME_MIST:     return UiTheme::Mist;
+        default:                     return UiTheme::System;
+    }
+}
+
+static int ThemeButtonId(UiTheme theme) {
+    switch (theme) {
+        case UiTheme::Dark:          return IDC_SET_THEME_DARK;
+        case UiTheme::Light:         return IDC_SET_THEME_LIGHT;
+        case UiTheme::Pastel:        return IDC_SET_THEME_PASTEL;
+        case UiTheme::HighContrast:  return IDC_SET_THEME_HC;
+        case UiTheme::Midnight:      return IDC_SET_THEME_MIDNIGHT;
+        case UiTheme::Ember:         return IDC_SET_THEME_EMBER;
+        case UiTheme::Berry:         return IDC_SET_THEME_BERRY;
+        case UiTheme::Crimson:       return IDC_SET_THEME_CRIMSON;
+        case UiTheme::Forest:        return IDC_SET_THEME_FOREST;
+        case UiTheme::Mist:          return IDC_SET_THEME_MIST;
+        default:                     return IDC_SET_THEME_SYSTEM;
+    }
+}
+
 struct SettingsDlgState {
     DashboardState* dash = nullptr;
     HWND hwndTitle = nullptr;
@@ -5107,6 +5434,12 @@ struct SettingsDlgState {
     HWND btnLight = nullptr;
     HWND btnPastel = nullptr;
     HWND btnHc = nullptr;
+    HWND btnMidnight = nullptr;
+    HWND btnEmber = nullptr;
+    HWND btnBerry = nullptr;
+    HWND btnCrimson = nullptr;
+    HWND btnForest = nullptr;
+    HWND btnMist = nullptr;
     HWND btnShell = nullptr;
     HWND btnReset = nullptr;
     HWND btnClear = nullptr;
@@ -5148,6 +5481,12 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnLight, Tr(L"ライト", L"Light", L"Claro"));
     SetWindowTextW(ds->btnPastel, Tr(L"パステル", L"Pastel", L"Pastel"));
     SetWindowTextW(ds->btnHc, Tr(L"ハイコントラスト", L"High Contrast", L"Alto contraste"));
+    SetWindowTextW(ds->btnMidnight, Tr(L"深夜", L"Midnight", L"Medianoche"));
+    SetWindowTextW(ds->btnEmber, Tr(L"残り火", L"Ember", L"Brasa"));
+    SetWindowTextW(ds->btnBerry, Tr(L"ベリー", L"Berry", L"Baya"));
+    SetWindowTextW(ds->btnCrimson, Tr(L"クリムゾン", L"Crimson", L"Carmesí"));
+    SetWindowTextW(ds->btnForest, Tr(L"深緑", L"Forest", L"Bosque"));
+    SetWindowTextW(ds->btnMist, Tr(L"ミスト", L"Mist", L"Niebla"));
     SetWindowTextW(ds->btnShell, Tr(L"シェル構成...", L"Shell Config...", L"Configurar shell..."));
     SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
     SetWindowTextW(ds->btnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
@@ -5177,11 +5516,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     CheckRadioButton(hwnd, IDC_SET_LANG_JA, IDC_SET_LANG_ES,
         g_uiLanguage == UiLanguage::Japanese ? IDC_SET_LANG_JA :
         g_uiLanguage == UiLanguage::Spanish ? IDC_SET_LANG_ES : IDC_SET_LANG_EN);
-    CheckRadioButton(hwnd, IDC_SET_THEME_SYSTEM, IDC_SET_THEME_PASTEL,
-        g_uiTheme == UiTheme::Dark ? IDC_SET_THEME_DARK :
-        g_uiTheme == UiTheme::Light ? IDC_SET_THEME_LIGHT :
-        g_uiTheme == UiTheme::Pastel ? IDC_SET_THEME_PASTEL :
-        g_uiTheme == UiTheme::HighContrast ? IDC_SET_THEME_HC : IDC_SET_THEME_SYSTEM);
+    CheckRadioButton(hwnd, IDC_SET_THEME_SYSTEM, IDC_SET_THEME_MIST, ThemeButtonId(g_uiTheme));
 }
 
 static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -5222,43 +5557,55 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 352, 142, 100, 30, hwnd, (HMENU)IDC_SET_THEME_PASTEL, hInst, nullptr);
             ds->btnHc = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 460, 142, 168, 30, hwnd, (HMENU)IDC_SET_THEME_HC, hInst, nullptr);
+            ds->btnMidnight = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                18, 178, 100, 30, hwnd, (HMENU)IDC_SET_THEME_MIDNIGHT, hInst, nullptr);
+            ds->btnEmber = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                126, 178, 100, 30, hwnd, (HMENU)IDC_SET_THEME_EMBER, hInst, nullptr);
+            ds->btnBerry = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                234, 178, 100, 30, hwnd, (HMENU)IDC_SET_THEME_BERRY, hInst, nullptr);
+            ds->btnCrimson = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                342, 178, 100, 30, hwnd, (HMENU)IDC_SET_THEME_CRIMSON, hInst, nullptr);
+            ds->btnForest = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                450, 178, 100, 30, hwnd, (HMENU)IDC_SET_THEME_FOREST, hInst, nullptr);
+            ds->btnMist = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                558, 178, 100, 30, hwnd, (HMENU)IDC_SET_THEME_MIST, hInst, nullptr);
 
             ds->hwndSatLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 180, 220, 20, hwnd, nullptr, hInst, nullptr);
+                18, 216, 220, 20, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSatLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
 
             ds->hwndSatCombo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                18, 202, 220, 200, hwnd, (HMENU)IDC_SET_KPI_SAT, hInst, nullptr);
+                18, 238, 220, 200, hwnd, (HMENU)IDC_SET_KPI_SAT, hInst, nullptr);
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"30%");
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"50%");
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"70%");
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"100%");
 
             ds->btnShell = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                18, 240, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
+                18, 276, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
             ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                210, 240, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
+                210, 276, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
             ds->btnClear = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                402, 240, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
+                402, 276, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
             ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                560, 360, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
+                560, 396, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
 
             ds->hwndSoundLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 248, 300, 20, hwnd, nullptr, hInst, nullptr);
+                18, 284, 300, 20, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSoundLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
 
             ds->chkSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 272, 340, 24, hwnd, (HMENU)IDC_SET_SOUND_ENABLED, hInst, nullptr);
+                18, 308, 340, 24, hwnd, (HMENU)IDC_SET_SOUND_ENABLED, hInst, nullptr);
             ds->editSound = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                18, 302, 470, 26, hwnd, (HMENU)IDC_SET_SOUND_PATH, hInst, nullptr);
+                18, 338, 470, 26, hwnd, (HMENU)IDC_SET_SOUND_PATH, hInst, nullptr);
             ds->btnBrowseSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                496, 302, 90, 26, hwnd, (HMENU)IDC_SET_SOUND_BROWSE, hInst, nullptr);
+                496, 338, 90, 26, hwnd, (HMENU)IDC_SET_SOUND_BROWSE, hInst, nullptr);
             ds->btnTestSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                594, 302, 80, 26, hwnd, (HMENU)IDC_SET_SOUND_TEST, hInst, nullptr);
+                594, 338, 80, 26, hwnd, (HMENU)IDC_SET_SOUND_TEST, hInst, nullptr);
             ds->hwndSoundHint = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 332, 470, 18, hwnd, nullptr, hInst, nullptr);
+                18, 368, 470, 18, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSoundHint, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             SendMessageW(ds->chkSound, BM_SETCHECK,
@@ -5266,31 +5613,32 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SetWindowTextW(ds->editSound, Utf8ToWide(ds->dash->completionSoundPath).c_str());
 
             ds->chkHideEnded = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 364, 380, 24, hwnd, (HMENU)IDC_SET_HIDE_ENDED, hInst, nullptr);
+                18, 400, 380, 24, hwnd, (HMENU)IDC_SET_HIDE_ENDED, hInst, nullptr);
             SendMessageW(ds->chkHideEnded, BM_SETCHECK,
                 ds->dash->hideEndedProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 388, 380, 24, hwnd, (HMENU)IDC_SET_USAGE_GRAPH_MODE, hInst, nullptr);
+                18, 424, 380, 24, hwnd, (HMENU)IDC_SET_USAGE_GRAPH_MODE, hInst, nullptr);
             SendMessageW(ds->chkUsageGraph, BM_SETCHECK,
                 ds->dash->usageGraphMode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkRestoreUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 412, 380, 24, hwnd, (HMENU)IDC_SET_RESTORE_USAGE_GRAPH, hInst, nullptr);
+                18, 448, 380, 24, hwnd, (HMENU)IDC_SET_RESTORE_USAGE_GRAPH, hInst, nullptr);
             SendMessageW(ds->chkRestoreUsageGraph, BM_SETCHECK,
                 ds->dash->restoreUsageGraph ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkResourceLocks = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 436, 520, 24, hwnd, (HMENU)IDC_SET_RESOURCE_LOCKS, hInst, nullptr);
+                18, 472, 520, 24, hwnd, (HMENU)IDC_SET_RESOURCE_LOCKS, hInst, nullptr);
             SendMessageW(ds->chkResourceLocks, BM_SETCHECK,
                 ds->dash->resourceLocks ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkActivityStyle = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 460, 520, 24, hwnd, (HMENU)IDC_SET_ACTIVITY_STYLE, hInst, nullptr);
+                18, 496, 520, 24, hwnd, (HMENU)IDC_SET_ACTIVITY_STYLE, hInst, nullptr);
             SendMessageW(ds->chkActivityStyle, BM_SETCHECK,
                 g_activityStyle ? BST_CHECKED : BST_UNCHECKED, 0);
 
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
+                             ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
                              ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
                              ds->chkResourceLocks, ds->chkActivityStyle };
@@ -5385,13 +5733,8 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
             }
-            if (id == IDC_SET_THEME_SYSTEM || id == IDC_SET_THEME_DARK ||
-                id == IDC_SET_THEME_LIGHT || id == IDC_SET_THEME_PASTEL ||
-                id == IDC_SET_THEME_HC) {
-                g_uiTheme = (id == IDC_SET_THEME_LIGHT) ? UiTheme::Light :
-                            (id == IDC_SET_THEME_PASTEL) ? UiTheme::Pastel :
-                            (id == IDC_SET_THEME_HC) ? UiTheme::HighContrast :
-                            (id == IDC_SET_THEME_DARK) ? UiTheme::Dark : UiTheme::System;
+            if (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_MIST) {
+                g_uiTheme = ThemeForButton(id);
                 ApplyTheme();
                 SaveShellConfig(ds->dash);
                 ApplyListTheme(ds->dash);
@@ -5441,16 +5784,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             if (!dis || !ds) break;
             int id = static_cast<int>(dis->CtlID);
             bool radio = (id >= IDC_SET_LANG_JA && id <= IDC_SET_LANG_ES) ||
-                         (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_PASTEL);
+                         (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_MIST);
             bool checked = false;
             if (id == IDC_SET_LANG_JA) checked = (g_uiLanguage == UiLanguage::Japanese);
             else if (id == IDC_SET_LANG_EN) checked = (g_uiLanguage == UiLanguage::English);
             else if (id == IDC_SET_LANG_ES) checked = (g_uiLanguage == UiLanguage::Spanish);
-            else if (id == IDC_SET_THEME_SYSTEM) checked = (g_uiTheme == UiTheme::System);
-            else if (id == IDC_SET_THEME_DARK) checked = (g_uiTheme == UiTheme::Dark);
-            else if (id == IDC_SET_THEME_LIGHT) checked = (g_uiTheme == UiTheme::Light);
-            else if (id == IDC_SET_THEME_PASTEL) checked = (g_uiTheme == UiTheme::Pastel);
-            else if (id == IDC_SET_THEME_HC) checked = (g_uiTheme == UiTheme::HighContrast);
+            else if (radio) checked = (ThemeButtonId(g_uiTheme) == id);
 
             bool pressed = (dis->itemState & ODS_SELECTED) != 0;
             COLORREF bg = pressed ? g_theme.border : g_theme.panel;
@@ -5556,7 +5895,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 545;
+    int dlgH = 581;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 
@@ -6232,7 +6571,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             st->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                 0, 0, 600, 160, hwnd, (HMENU)IDC_LIST_PROCS, nullptr, nullptr);
-            ListView_SetExtendedListViewStyle(st->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            ListView_SetExtendedListViewStyle(st->hwndList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
             ApplyListTheme(st);
 
             const int colWidths[14] = {52, 78, 100, 100, 120, 140, 85, 65, 72, 78, 70, 185, 175, 80};
@@ -6263,7 +6602,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             st->hwndTaskList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                 0, 0, 600, 160, hwnd, (HMENU)IDC_LIST_TASKS, nullptr, nullptr);
-            ListView_SetExtendedListViewStyle(st->hwndTaskList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            ListView_SetExtendedListViewStyle(st->hwndTaskList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
             ListView_SetBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
@@ -6847,6 +7186,10 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     if (lvcd->nmcd.dwDrawStage == CDDS_PREPAINT) {
                         return CDRF_NOTIFYITEMDRAW;
                     }
+                    if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+                        DrawListRowSeparator(lvcd);
+                        return CDRF_DODEFAULT;
+                    }
                     if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                         int idx = static_cast<int>(lvcd->nmcd.dwItemSpec);
                         std::string kind;
@@ -6863,7 +7206,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         } else {
                             lvcd->clrTextBk = g_theme.panel;
                         }
-                        return CDRF_NEWFONT;
+                        return CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
                     }
                 }
             } else if (nmhdr->idFrom == IDC_LIST_PROCS) {
@@ -6921,6 +7264,10 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     if (lvcd->nmcd.dwDrawStage == CDDS_PREPAINT) {
                         return CDRF_NOTIFYITEMDRAW;
                     }
+                    if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+                        DrawListRowSeparator(lvcd);
+                        return CDRF_DODEFAULT;
+                    }
                     if (lvcd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                         int itemIdx = static_cast<int>(lvcd->nmcd.dwItemSpec);
                         if (itemIdx >= 0 && itemIdx < static_cast<int>(st->cachedSnapshots.size())) {
@@ -6929,7 +7276,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             lvcd->clrTextBk = selected ? g_theme.rowSelected : GetStateRowBgColor(snap);
                             lvcd->clrText = g_theme.listText;
                         }
-                        return CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT;
+                        return CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
                     }
                     if (lvcd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
                         int itemIdx = static_cast<int>(lvcd->nmcd.dwItemSpec);

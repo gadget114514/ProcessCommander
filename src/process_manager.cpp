@@ -1234,11 +1234,13 @@ bool ProcessManager::GetAgentStream(int id, int tail, const std::string& typeFil
         uint64_t seq = 1;
         while (std::getline(iss, line)) {
             if (line.empty()) continue;
-            LlmStreamEvent ev;
-            if (ParseLlmStreamLine(line, proc->agentType, ev)) {
-                ev.seq = seq++;
-                if (ev.seq > sinceSeq && (typeFilter.empty() || ev.type == typeFilter)) {
-                    outEvents.push_back(ev);
+            std::vector<LlmStreamEvent> parsed;
+            if (ParseLlmStreamLines(line, proc->agentType, parsed)) {
+                for (auto& ev : parsed) {
+                    ev.seq = seq++;
+                    if (ev.seq > sinceSeq && (typeFilter.empty() || ev.type == typeFilter)) {
+                        outEvents.push_back(ev);
+                    }
                 }
             }
         }
