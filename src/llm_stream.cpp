@@ -773,6 +773,17 @@ static std::string ActivityTargetFromInput(const std::string& kind, const std::s
     return t;
 }
 
+std::string DescribeLlmNote(const LlmStreamEvent& ev) {
+    if (ev.type != "tool_call") return "";
+    // A subagent's target already is its description.
+    if (ActivityKindForTool(ev.toolName) == "subagent") return "";
+    auto j = nlohmann::json::parse(ev.toolInput, nullptr, false);
+    if (!j.is_object()) return "";
+    auto it = j.find("description");
+    if (it == j.end() || !it->is_string()) return "";
+    return it->get<std::string>();
+}
+
 bool DescribeLlmActivity(const LlmStreamEvent& ev, std::string& kind, std::string& target) {
     kind.clear();
     target.clear();

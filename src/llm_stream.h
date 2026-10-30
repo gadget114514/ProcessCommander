@@ -107,6 +107,10 @@ std::string LlmEventsToSummary(const std::vector<LlmStreamEvent>& events, const 
 // start an activity (usage, status, step, other).
 bool DescribeLlmActivity(const LlmStreamEvent& ev, std::string& kind, std::string& target);
 
+// The "description" the agent gave for a tool call, e.g. why a Bash command runs. Empty when none,
+// and for subagents (their target already is the description).
+std::string DescribeLlmNote(const LlmStreamEvent& ev);
+
 // Human-readable usage summary (tokens / cache / cost) for one event. Empty if no usage data.
 std::string LlmEventUsageText(const LlmStreamEvent& ev);
 

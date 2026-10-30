@@ -473,7 +473,7 @@ function Get-EstimateMinutes {
 }
 
 # Short target for a tool call: file path for read/edit/write, command for bash/run_command, then title/input/parameters.
-function Get-EventTarget([object]$Part) {
+function Get-EventTargetCore([object]$Part) {
     if (-not $Part) { return "" }
     $tool = if ($Part.tool_name) { [string]$Part.tool_name }
             elseif ($Part.tool) { [string]$Part.tool }
@@ -508,6 +508,17 @@ function Get-EventTarget([object]$Part) {
     return ""
 }
 
+# Target plus the tool's "description" (Claude's Bash, Grep, Task ... carry one): "target - description".
+function Get-EventTarget([object]$Part) {
+    $target = Get-EventTargetCore -Part $Part
+    $input = if ($Part -and $Part.tool_info -and $Part.tool_info.parameters) { $Part.tool_info.parameters }
+             elseif ($Part -and $Part.parameters) { $Part.parameters }
+             elseif ($Part -and $Part.state -and $Part.state.input) { $Part.state.input }
+             elseif ($Part -and $Part.input) { $Part.input }
+             else { $null }    $d = if ($input -and $input.description) { Shorten-Text ([string]$input.description) 80 } else { "" }
+    if ($target -and $d -and $d -ne $target) { return ($target + " - " + $d) }
+    return $target
+}
 # One event line -> "HH:mm:ss  <kind>  <short target>" (or $null for empty/uninteresting text).
 # Non-JSON lines and unknown event types never throw; they become a raw/type line instead.
 function Format-ProgressEvent {
