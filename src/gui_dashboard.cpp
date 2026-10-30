@@ -3217,6 +3217,7 @@ struct LlmStreamDlgState {
     HWND hwndHeader = nullptr;
     HWND hwndList = nullptr;
     HWND hwndEditPreview = nullptr;
+    HWND hwndBtnClose = nullptr;
     HWND hwndAgentIcon = nullptr;
     HWND hwndTooltip = nullptr;
     UINT_PTR timerId = 0;
@@ -3969,10 +3970,17 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
                 12, 365, 820, 180, hwnd, (HMENU)2102, nullptr, nullptr);
 
+            if (ds->embedded) {
+                // Closes the monitor pane (IDOK hides it in the main window).
+                ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる", L"Close", L"Cerrar"),
+                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDOK, nullptr, nullptr);
+            }
+
             if (ds->hFontUi) {
                 SendMessageW(ds->hwndHeader, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 if (ds->hwndAgentIcon) SendMessageW(ds->hwndAgentIcon, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 SendMessageW(ds->hwndList, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+                if (ds->hwndBtnClose) SendMessageW(ds->hwndBtnClose, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
             }
             if (ds->hFontMono) {
                 SendMessageW(ds->hwndEditPreview, WM_SETFONT, (WPARAM)ds->hFontMono, TRUE);
@@ -4108,9 +4116,11 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 int availW = (std::max)(300, w - pad * 2);
                 int leftW = availW / 2 - 4;
                 int contentX = pad + 28;
-                int textW = (std::max)(160, leftW - 28);
+                const int closeW = 80;
+                int textW = (std::max)(120, leftW - 28 - closeW - 8);
                 if (ds->hwndAgentIcon) MoveWindow(ds->hwndAgentIcon, pad, pad, 24, 24, TRUE);
                 MoveWindow(ds->hwndHeader, contentX, pad, textW, topH, TRUE);
+                if (ds->hwndBtnClose) MoveWindow(ds->hwndBtnClose, pad + leftW - closeW, pad, closeW, 24, TRUE);
                 int bodyTop = pad + topH + 4;
                 int bodyH = (std::max)(30, h - bodyTop - pad);
                 // Left column: usage graph above, the time-by-kind chart below it.
