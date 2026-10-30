@@ -3197,6 +3197,10 @@ struct ActivityRow {
     int firstEvent = 0;
     int lastEvent = 0;
     bool ongoing = false;
+    uint64_t tokIn = 0;      // input tokens used by this step's events
+    uint64_t tokOut = 0;     // output tokens
+    uint64_t tokCache = 0;   // cache read + write tokens
+    uint64_t tokThink = 0;   // thinking tokens
 };
 
 struct LlmStreamDlgState {
@@ -3541,6 +3545,13 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
     SelectObject(hdc, oldFont);
 }
 
+static std::wstring TokenCountText(uint64_t n) {
+    if (n < 1000) return std::to_wstring(n);
+    wchar_t buf[32] = {};
+    swprintf_s(buf, L"%.1fk", static_cast<double>(n) / 1000.0);
+    return buf;
+}
+
 // One line on what the agent is doing now, taken from the JSON stream.
 static std::wstring StreamActivityText(const LlmAgentState& as, const std::vector<LlmStreamEvent>& events) {
     std::wstring text;
@@ -3567,6 +3578,23 @@ static std::wstring StreamActivityText(const LlmAgentState& as, const std::vecto
     return text;
 }
 
+// "-" for a step with no usage of this kind, otherwise a compact count.
+static std::wstring TokenCellText(uint64_t n) {
+    return n == 0 ? std::wstring(L"-") : TokenCountText(n);
+}
+
+static void AddEventTokens(ActivityRow& row, const LlmStreamEvent& ev) {
+    uint64_t in = ev.inputTokens;
+    uint64_t out = ev.outputTokens;
+    uint64_t think = ev.thinkingTokens;
+    uint64_t cache = ev.cacheReadTokens + ev.cacheWriteTokens;
+    if (in == 0 && out == 0 && think == 0 && cache == 0 && ev.totalTokens > 0) in = ev.totalTokens;
+    row.tokIn += in;
+    row.tokOut += out;
+    row.tokThink += think;
+    row.tokCache += cache;
+}
+
 static std::vector<ActivityRow> BuildActivityRows(const std::vector<LlmStreamEvent>& events, bool running) {
     std::vector<ActivityRow> rows;
     for (int i = 0; i < static_cast<int>(events.size()); ++i) {
@@ -3591,6 +3619,9 @@ static std::vector<ActivityRow> BuildActivityRows(const std::vector<LlmStreamEve
         last.ongoing = running && last.kind != "done" && last.kind != "error";
         if (last.ongoing) last.endMs = NowEpochMs();
         else if (last.lastEvent < static_cast<int>(events.size())) last.endMs = events[last.lastEvent].recvEpochMs;
+    }
+    for (auto& r : rows) {
+        for (int i = r.firstEvent; i <= r.lastEvent && i < static_cast<int>(events.size()); ++i) AddEventTokens(r, events[i]);
     }
     return rows;
 }
@@ -3763,6 +3794,10 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
             ListView_SetItemText(ds->hwndList, i, 1, durStr.data());
             ListView_SetItemText(ds->hwndList, i, 2, whatStr.data());
             ListView_SetItemText(ds->hwndList, i, 3, targetStr.data());
+            ListView_SetItemText(ds->hwndList, i, 4, TokenCellText(r.tokIn).data());
+            ListView_SetItemText(ds->hwndList, i, 5, TokenCellText(r.tokOut).data());
+            ListView_SetItemText(ds->hwndList, i, 6, TokenCellText(r.tokCache).data());
+            ListView_SetItemText(ds->hwndList, i, 7, TokenCellText(r.tokThink).data());
         }
         SendMessageW(ds->hwndList, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(ds->hwndList, nullptr, FALSE);
@@ -3944,10 +3979,14 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 Tr(L"開始", L"Start", L"Inicio"),
                 Tr(L"所要", L"Took", L"Duración"),
                 Tr(L"実行中", L"Running", L"En curso"),
-                Tr(L"対象", L"Target", L"Objetivo")
+                Tr(L"対象", L"Target", L"Objetivo"),
+                L"i",
+                L"o",
+                L"c",
+                L"t"
             };
-            const int monWidths[] = {70, 70, 190, 420};
-            int colCount = ds->embedded ? 4 : 7;
+            const int monWidths[] = {60, 60, 150, 170, 44, 44, 44, 44};
+            int colCount = ds->embedded ? 8 : 7;
             for (int i = 0; i < colCount; ++i) {
                 if (ds->embedded) {
                     LVCOLUMNW lvc = {};
