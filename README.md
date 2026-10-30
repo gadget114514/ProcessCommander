@@ -14,10 +14,10 @@
 
 **Probably not for you if** your tasks are short reasoning or code edits that LLM sub-agents already handle well. See the [Pros/Cons comparison](doc/pros-cons-comparison.md).
 
-![ProcessCommander Dashboard](docs/images/dashboardgraph.jpg)
-![ProcessCommander Dashboard](docs/images/dashboard.jpg)
+![ProcessCommander Dashboard](doc/images/dashboardgraph.jpg)
+![ProcessCommander Dashboard](doc/images/dashboard.jpg)
 
-![Architecture](docs/images/archimage.jpg)
+![Architecture](doc/images/archimage.jpg)
 
 ---
 

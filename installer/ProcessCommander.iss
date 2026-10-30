@@ -4,7 +4,7 @@
 ;   1. Build the Release binaries and assemble the payload into
 ;      dist\ProcessCommander-v<version>-win64\ :
 ;        ProcessCommander.exe, pcder.exe, conpty.dll, OpenConsole.exe,
-;        LICENSE, README.md, README-ja.md, docs\images\*
+;        LICENSE, README.md, README-ja.md, doc\* (topic documents and doc\images)
 ;      tools\ (the ww task-card runner template) is taken from the repository directly.
 ;   2. Run installer\build_installer.cmd (it reads the version from CMakeLists.txt),
 ;      or compile with:  ISCC.exe /DMyAppVersion=<version> installer\ProcessCommander.iss
@@ -74,7 +74,8 @@ Source: "{#PayloadDir}\OpenConsole.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\README-ja.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
+; doc\: the topic documents the READMEs link to (doc/start.md, doc/cli.md, ...) and doc\images
+Source: "{#PayloadDir}\doc\*"; DestDir: "{app}\doc"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; tools\ww: optional task-card runner template (copied into projects by an LLM agent; see tools\ww\README-ww.md)
 Source: "..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
 

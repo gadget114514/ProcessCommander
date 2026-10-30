@@ -14,7 +14,7 @@
 
 **向いていないケース**: 短い推論やコード修正だけで、LLM のサブエージェントで足りている場合。詳しくは [Pros/Cons 比較（英語）](doc/pros-cons-comparison.md) を参照してください。
 
-![ProcessCommander Dashboard](docs/images/dashboard.jpg)
+![ProcessCommander Dashboard](doc/images/dashboard.jpg)
 
 ---
 

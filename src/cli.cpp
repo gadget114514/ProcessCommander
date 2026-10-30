@@ -677,7 +677,7 @@ void PrintCliUsageJson() {
         "ProcessCommander auto-detects common agents (claude, agy/antigravity, opencode, codex, aider, ollama) and enables JSON stream parsing if detected.",
         "Parsed events are written to <logfile>.stream.jsonl. Use GUI context menu 'LLM JSON Stream Events...' or 'pcder agent stream <id>'.",
         "Model is captured from stream fields (model/modelId/llm.model/metadata.model) when present; hover the agent icon in the stream dialog to see it.",
-        "Format reference: docs/LLM-jsonstream-format.md"
+        "Format reference: doc/LLM-jsonstream-format.md"
       ]
     },
     "working_model": {

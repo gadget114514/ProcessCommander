@@ -29,13 +29,13 @@
   - **`[⤓]`** タスクトレイに格納
   - ツールバーの各アイコンボタンに状態対応のホバーツールチップが設定されています。
 
-![Terminal Grid View](../docs/images/grid_view.png)
+![Terminal Grid View](images/grid_view.png)
 
 ## 2. `[Config]` ボタンによるシェル起動設定 (`cmd` / `powershell` / `bash`)
 - ツールバーの **`[+ Launch (...)]`** ボタンで、設定中のデフォルトシェルを即座に ConPTY タブとして起動します。
 - **`[設定]`** → **`[シェル構成...]`** からシェル設定ダイアログを開き、**`cmd`** (`cmd.exe`)、**`powershell`** (`powershell.exe`)、**`bash`** (`Git Bash` / `WSL`) のデフォルト切り替え・起動コマンドの編集・その場での個別起動が可能です（設定は `logs/config.json` に永続化されます）。
 
-![Shell Config Dialog](../docs/images/config_dialog.png)
+![Shell Config Dialog](images/config_dialog.png)
 
 ## 3. 終了履歴の管理、タスク詳細・LLM JSON ツリービューア
 - **終了履歴を非表示** (設定ダイアログ): 設定ダイアログのチェックボックスで、履歴データを消さずに終了したプロセスをリスト・タブから非表示にして「実行中のプロセスのみ」を絞り込み表示できます。
@@ -62,7 +62,7 @@
 - **`[シェル構成...]`**、**`[プロセスIDをリセット]`**、**`[終了履歴を消去]`**、および **「終了履歴を非表示」** チェックボックスは設定ダイアログ内に集約されています（ツールバーをすっきりと整理）。
 - 設定・言語・テーマ・リスト/ターミナルの表示状態・レイアウトは `logs/config.json` に自動保存され、次回起動時に復元されます。
 
-![設定ダイアログ](../docs/images/settings_dialog.png)
+![設定ダイアログ](images/settings_dialog.png)
 
 ## 7. タスクキュー: 順序・依存・タイムアウト・自動再実行
 - ジョブを**1 コマンドずつ**登録すると、ProcessCommander が実行順・同時実行数・優先度を決め、キューを永続化します（`logs/taskqueues/<name>.json`）。

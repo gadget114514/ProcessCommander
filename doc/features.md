@@ -33,7 +33,7 @@
 - Click **`[+ Launch (...)]`** on the toolbar to immediately spawn a new interactive ConPTY terminal tab.
 - Open **`[Settings]`** → **`[Shell Config...]`** to select the default shell (`cmd`, `powershell`, or `bash` — auto-detecting Git Bash / WSL Bash), customize startup command lines, or launch any shell on the spot. Settings are persisted in `logs/config.json`.
 
-![Shell Config Dialog](../docs/images/config_dialog.png)
+![Shell Config Dialog](images/config_dialog.png)
 
 ## 3. History Management, Task Details & LLM JSON Tree Viewer
 - **Hide Ended Processes** (Settings dialog): A convenient checkbox in the Settings dialog lets you toggle hiding/showing finished processes so you can focus exclusively on currently running tasks without deleting history.
@@ -63,7 +63,7 @@
 - **`[Shell Config...]`**, **`[Reset Process IDs]`**, **`[Clear Ended]`**, and **Hide Ended Processes** checkbox are available here (keeping the toolbar clean and focused).
 - Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
 
-![Settings Dialog](../docs/images/settings_dialog.png)
+![Settings Dialog](images/settings_dialog.png)
 
 ## 8. Task Queue: Ordering, Dependencies, Timeouts and Automatic Retries
 - Register jobs with **one command each**; ProcessCommander decides when to run them (concurrency, dependencies, priority) and persists the queue across restarts (`logs/taskqueues/<name>.json`).
