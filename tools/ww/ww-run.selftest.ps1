@@ -177,6 +177,65 @@ try {
 }
 Check ($outOpencode -match 'engine\s+:\s+opencode') "dry-run prints engine opencode with -Engine opencode"
 
+Write-Host "`n== 4b. -Help, default shared mode and -Jobs ==" -ForegroundColor Cyan
+$helpOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript -Help 2>&1 | Out-String
+Check ($LASTEXITCODE -eq 0 -and $helpOut -match '-Shared' -and $helpOut -match 'SUPERVISOR LLM') "-Help prints usage with shared mode and supervisor steps"
+$noArgOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript 2>&1 | Out-String
+Check ($noArgOut -match 'USAGE') "no arguments prints the help"
+
+Set-Content -LiteralPath (Join-Path $tasks "904-a.md") -Value "# 904`n`n## Authorised edits`n- ``src/a.cpp```n- ``Foo.cs```n`n## Read-only`n- ``src/common.h``" -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $tasks "905-b.md") -Value "# 905`n`n## Authorised edits`n- ``src/b.cpp```n`n## Read-only`n- ``src/common.h``" -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $tasks "906-c.md") -Value "# 906`n`n## Authorised edits`n- ``src/a.cpp``" -Encoding UTF8
+$jobsFile = Join-Path $base "jobs.json"
+$oldRoot = $env:WW_ROOT
+$oldData = $env:WW_DATA_DIR
+$env:WW_ROOT = $fixture
+$env:WW_DATA_DIR = $data
+$oldEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"   # -Jobs notes go to stderr
+try {
+    $autoOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript -Task "904" -DryRun 2>&1 | Out-String
+    $mainOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript -Task "904" -Main -DryRun 2>&1 | Out-String
+    $noEditsOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript -Task "903" -DryRun 2>&1 | Out-String
+    $stdoutJson = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript -Jobs "904,905" -Engine claude 2>$null | Out-String
+    $jobsErr = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript -Jobs "904,905,906,903" -Engine claude -Out $jobsFile -Verify "build.cmd" 2>&1 | Out-String
+    $jobsCode = $LASTEXITCODE
+    $missingOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $runScript -Jobs "999" 2>&1 | Out-String
+    $missingCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $oldEap
+    $env:WW_ROOT = $oldRoot
+    $env:WW_DATA_DIR = $oldData
+}
+Check ($autoOut -match 'mode\s+:\s+shared') "a card with Authorised edits runs shared by default"
+Check ($mainOut -match 'mode\s+:\s+main') "-Main forces an exclusive main run"
+Check ($noEditsOut -match 'mode\s+:\s+main') "a card without Authorised edits stays main"
+$parsed = $stdoutJson | ConvertFrom-Json
+Check (@($parsed).Count -eq 2 -and $parsed[0].id -eq 'ww-904') "-Jobs without -Out prints a JSON array of jobs"
+Check ($jobsCode -eq 0 -and (Test-Path $jobsFile)) "-Jobs -Out writes the file"
+$jobs = @((Get-Content -LiteralPath $jobsFile -Raw | ConvertFrom-Json) | ForEach-Object { $_ })
+$j904 = $jobs | Where-Object { $_.id -eq 'ww-904' }
+Check ($j904.command -match 'ww-run\.cmd"? 904 -Shared -Engine claude -Root .* -JsonStdout$') "job command runs the card with -Shared"
+Check ((@($j904.resources.write) -join ',') -eq 'src/a.cpp,**/foo.cs') "Authorised edits become resources.write (bare names as **/name)"
+Check ((@($j904.resources.read) -join ',') -eq 'src/common.h') "Read-only paths become resources.read"
+Check ((@(($jobs | Where-Object { $_.id -eq 'ww-903' }).resources.write) -join ',') -eq '**') "a card without Authorised edits writes **"
+$verifyJob = $jobs | Where-Object { $_.id -eq 'ww-verify' }
+Check ($verifyJob -and $verifyJob.command -eq 'build.cmd' -and @($verifyJob.dependsOn).Count -eq 4 -and (@($verifyJob.resources.write) -join ',') -eq '**') "-Verify adds a whole-checkout job after all cards"
+Check ($jobsErr -match '903-dry\.md has no') "cards without Authorised edits are reported"
+Check ($jobsErr -match 'cards 904 and 906 overlap') "overlapping cards are reported"
+Check (-not ($jobsErr -match 'cards 904 and 905 overlap')) "read/read on the same file is not reported"
+Check ($missingCode -eq 1 -and $missingOut -match '999-\*\.md not found') "-Jobs with a missing card exits 1"
+Check (-not (Test-PathPatternOverlap '**/foo.cs' 'src/b.cpp')) "a bare file name does not overlap another file"
+Check ((Test-PathPatternOverlap '**/foo.cs' 'src') -and (Test-PathPatternOverlap '**/foo.cs' 'src/x/foo.cs') -and (Test-PathPatternOverlap '**/foo.cs' 'foo.cs')) "a bare file name overlaps its directories and itself"
+Check ((Test-PathPatternOverlap 'src/**' 'src/a.cpp') -and (Test-PathPatternOverlap '**' 'x/y.cpp') -and -not (Test-PathPatternOverlap 'doc/**' 'src/a.cpp')) "** under a directory covers only that directory"
+Check ((Test-PathPatternOverlap 'src/**/*.cpp' 'src/x/a.cpp') -and -not (Test-PathPatternOverlap 'src/**/*.cpp' 'src/x/a.h')) "**/*.cpp matches only .cpp files"
+Check ((Get-ConflictHint -Reason "task 901 overlaps this run's paths (** x **)") -match '-Shared.*-Worktree') "a refused main run is told to use -Shared or -Worktree"
+Check ((Get-ConflictHint -Reason "task 901 overlaps this run's paths (src/a.cpp x **)" -Shared -HasEdits $true) -match 'other run locks the whole checkout') "a shared run blocked by a main run is told why"
+Check ((Get-ConflictHint -Reason "task 901 overlaps this run's paths (src/a.cpp x src/a.cpp)" -Shared -HasEdits $true) -match 'overlap') "a shared/shared overlap gets the overlap hint"
+Check (-not (Get-ConflictHint -Reason "task 901 is already running")) "a second run of the same card gets no mode hint"
+$wtJob = New-PcderJob -Task "907" -Root "C:\my proj" -RunCmd "C:\my proj\tools\ww\ww-run.cmd" -Engine agy -Worktree
+Check ($wtJob.command -match '^"C:\\my proj\\tools\\ww\\ww-run\.cmd" 907 -Worktree .*-Root "C:\\my proj"' -and -not $wtJob.PSObject.Properties['resources']) "worktree job quotes paths and declares no resources"
+
 Write-Host "`n== 5. run record lookup (ww-watch.lib) ==" -ForegroundColor Cyan
 $recData = Join-Path $base "records"
 $recRunDir = Join-Path $recData "running"

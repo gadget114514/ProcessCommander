@@ -155,17 +155,36 @@ function Test-SegmentOverlap([string]$A, [string]$B) {
 }
 
 # Do two patterns (ConvertTo-WwPattern) name a common file? A directory covers everything below
-# it, a '**' segment covers anything from there on. When unsure the answer is "overlap".
+# it, a '**' segment matches any number of segments. When unsure the answer is "overlap", with one
+# exception so bare file names stay usable: when a '**' has swallowed the rest of the other
+# pattern and that pattern ends in a file name (`b.cpp`), it is not taken as a directory, so
+# `**/foo.cs` does not overlap `src/b.cpp` (it still overlaps `src` and `src/foo.cs`).
 function Test-PathPatternOverlap([string]$A, [string]$B) {
     if (-not $A -or -not $B) { return $false }
-    $sa = $A -split '/'
-    $sb = $B -split '/'
-    $n = [math]::Min($sa.Count, $sb.Count)
-    for ($i = 0; $i -lt $n; $i++) {
-        if ($sa[$i] -like '*`*`**' -or $sb[$i] -like '*`*`**') { return $true }
-        if (-not (Test-SegmentOverlap $sa[$i] $sb[$i])) { return $false }
+    return Test-SegmentsOverlap @($A -split '/') 0 @($B -split '/') 0 $false
+}
+
+function Test-SegmentsOverlap($Sa, [int]$I, $Sb, [int]$J, [bool]$Swallowed) {
+    if ($I -ge $Sa.Count -and $J -ge $Sb.Count) { return $true }
+    if ($I -ge $Sa.Count -or $J -ge $Sb.Count) {
+        # One side is used up: it is an ancestor directory of the other, unless it names a file
+        # that a '**' ran over, or the other side has only '**' left.
+        $rest = if ($I -ge $Sa.Count) { @($Sb[$J..($Sb.Count - 1)]) } else { @($Sa[$I..($Sa.Count - 1)]) }
+        if (@($rest | Where-Object { $_ -ne '**' }).Count -eq 0) { return $true }
+        $done = if ($I -ge $Sa.Count) { $Sa } else { $Sb }
+        if ($Swallowed -and $done.Count -gt 0 -and $done[$done.Count - 1] -match '\.[a-z0-9]+$') { return $false }
+        return $true
     }
-    return $true
+    if ($Sa[$I] -eq '**') {
+        if ($I + 1 -ge $Sa.Count) { return $true }
+        for ($k = $J; $k -le $Sb.Count; $k++) {
+            if (Test-SegmentsOverlap $Sa ($I + 1) $Sb $k ($Swallowed -or $k -gt $J)) { return $true }
+        }
+        return $false
+    }
+    if ($Sb[$J] -eq '**') { return Test-SegmentsOverlap $Sb $J $Sa $I $Swallowed }
+    if (-not (Test-SegmentOverlap $Sa[$I] $Sb[$J])) { return $false }
+    return Test-SegmentsOverlap $Sa ($I + 1) $Sb ($J + 1) $Swallowed
 }
 
 # Write/read sets conflict on write x write, write x read and read x write; read x read is fine.
@@ -234,6 +253,85 @@ function Test-RunConflict {
         }
     }
     return [pscustomobject]@{ Blocked = $false; Reason = ""; Runs = @() }
+}
+
+# ---------- pcder job definitions (doc/resource-locks.md 3.2) ----------
+# One ProcessCommander task-queue job per card: the card's Authorised edits / Read-only paths
+# become resources.write / resources.read, so pcder never starts two overlapping cards. A card
+# without Authorised edits writes "**" (the whole checkout), the same lock ww-run itself takes.
+# Bare file names become **/name as in ConvertTo-WwPattern. Worktree jobs get no resources:
+# they work in their own checkout.
+function Format-CmdArg([string]$Value) {
+    if ($Value -match '[\s&()^|<>]') { return '"' + $Value + '"' }
+    return $Value
+}
+
+function New-PcderJob {
+    param(
+        [Parameter(Mandatory = $true)][string]$Task,
+        [string]$CardName = "",
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RunCmd,
+        [string]$Engine = "agy",
+        [string]$Model = "",
+        [int]$TimeoutSec = 7200,
+        [switch]$Worktree,
+        $Edits = @(),
+        $Reads = @()
+    )
+    $title = if ($CardName) { [System.IO.Path]::GetFileNameWithoutExtension($CardName) } else { $Task }
+    $parts = @((Format-CmdArg $RunCmd), $Task, $(if ($Worktree) { "-Worktree" } else { "-Shared" }), "-Engine", $Engine)
+    if ($Model) { $parts += @("-Model", (Format-CmdArg $Model)) }
+    $parts += @("-Root", (Format-CmdArg $Root), "-JsonStdout")
+    $job = [ordered]@{
+        id         = "ww-$Task"
+        summary    = "ww card $title"
+        timeoutSec = $TimeoutSec
+        cwd        = $Root
+        command    = ($parts -join ' ')
+    }
+    if (-not $Worktree) {
+        $w = @(@($Edits) | Where-Object { $_ } | ForEach-Object { ConvertTo-WwPattern $_ })
+        $r = @(@($Reads) | Where-Object { $_ } | ForEach-Object { ConvertTo-WwPattern $_ })
+        if ($w.Count -eq 0) { $w = @('**') }
+        $job.resources = [pscustomobject][ordered]@{ write = $w; read = $r }
+    }
+    return [pscustomobject]$job
+}
+
+# The final build/test job: locks the whole checkout and waits until every card job is done.
+function New-PcderVerifyJob {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [string[]]$After = @(),
+        [int]$TimeoutSec = 7200
+    )
+    return [pscustomobject][ordered]@{
+        id         = "ww-verify"
+        summary    = "build + tests after the ww cards"
+        timeoutSec = $TimeoutSec
+        cwd        = $Root
+        resources  = [pscustomobject][ordered]@{ write = @('**'); read = @() }
+        dependsOn  = @($After | ForEach-Object { [pscustomobject][ordered]@{ id = $_; on = "done" } })
+        command    = $Command
+    }
+}
+
+# What to tell the user when Test-RunConflict refuses a run. A second run of the same card gets
+# no hint (no mode helps). An exclusive main run on either side is the usual cause of a refusal:
+# shared mode (declared Authorised edits) or a worktree lets the runs go in parallel.
+function Get-ConflictHint {
+    param([string]$Reason, [switch]$Shared, [switch]$Worktree, [bool]$HasEdits = $false)
+    if ($Worktree -or $Reason -match 'is already running') { return "" }
+    $theyLockAll = $Reason -match 'x \*\*\)$' -or $Reason -match '^another main-checkout run'
+    if (-not $Shared -or -not $HasEdits) {
+        return "this run locks the whole checkout (main mode). To run in parallel, list the card's files under '## Authorised edits' and run with -Shared, or use -Worktree."
+    }
+    if ($theyLockAll) {
+        return "the other run locks the whole checkout (main mode). Start such cards with -Shared (with '## Authorised edits') or -Worktree so they can run in parallel."
+    }
+    return "the declared paths overlap. Wait for that run, narrow the card's Authorised edits, or use -Worktree."
 }
 
 # Run records (ww-data\running\<id>.json) of active runs, keyed by task id.

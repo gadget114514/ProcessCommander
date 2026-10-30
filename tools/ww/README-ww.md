@@ -140,9 +140,35 @@ do not overlap (design: [doc/resource-locks.md](../../doc/resource-locks.md)):
   (listed under "Verification pending"), do not commit. Run the build/tests afterwards on their own.
 - After the run, edits outside the Authorised edits (from the event log, `ww-data` excluded) are
   written to the log and to `EditViolations` in `<id>.last.json`, with a warning.
+- **Shared is the default** when the card has `## Authorised edits`; `-Main` forces an exclusive
+  run (the agent may then build/test). A card without Authorised edits runs as main.
+- A bare file name (`Foo.cs`, read as `**/Foo.cs`) overlaps directories above it and the same name,
+  but not another file such as `src/b.cpp`.
+- When a run is refused because it or the other run locks the whole checkout, ww-run prints a
+  `HINT:` to use `-Shared` (with Authorised edits) or `-Worktree`, and appends the refusal to
+  `ww-data\logs\refused.log`.
 
-With ProcessCommander, give each job the same paths as `resources`, so pcder never starts
-overlapping cards (on by default; Settings checkbox):
+`ww-run.cmd -Help` prints all options and the steps for a supervisor LLM.
+
+#### Generating the pcder jobs (`-Jobs`)
+
+`-Jobs` writes the task-queue jobs for several cards (runs nothing): each card becomes `ww-<id>`
+running `ww-run.cmd <id> -Shared ...` with its Authorised edits as `resources.write` and its
+Read-only paths as `resources.read`. Cards without Authorised edits and cards that overlap each
+other are reported on stderr.
+
+```powershell
+# print the JSON
+tools\ww\ww-run.cmd -Jobs 012,013 -Engine claude
+# write it, add a final build/test job, and add everything to pcder queue "ww" (pcder from PCDER or PATH)
+tools\ww\ww-run.cmd -Jobs 012,013,014 -Engine claude -Verify "C:\path\to\project\build.cmd" -Queue ww -Concurrency 3
+pcder.exe taskqueue wait ww
+```
+
+`-Out <file>` writes the file without adding it (default with `-Queue`: `ww-data\jobs\`),
+`-TimeoutSec` sets every job's timeout (7200), `-Worktree` makes worktree jobs without resources.
+The hand-written equivalent; pcder never starts jobs whose `resources` overlap (on by default;
+Settings checkbox):
 
 ```json
 [
