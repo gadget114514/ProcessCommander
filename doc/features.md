@@ -9,12 +9,13 @@
   - **Bottom Row (Tasks)**: Real-time metrics for Total Tasks, Active Running, Waiting/Pending, Succeeded, Failed, **Shortest Remaining Time** (live countdown of nearest active task timeout), and Active Queues / Concurrency summary.
   - Hover over any card for detailed tooltips and breakdown counts.
 - **Two-Row Stacked Layout with Draggable Splitter**:
-  - View both the **Process Summary Table** (top) and **Task Queue Table** (bottom) simultaneously in a dual-row view.
+  - View both the **Process Summary Table** (top) and **Task Queue Table** (bottom) simultaneously in a dual-row view. Each list has a caption bar ("PROCESSES" / "TASK QUEUE") so it is clear which is which.
   - Interactive **draggable horizontal splitter bar** between the two tables allows smooth resizing of their relative heights.
   - **View Mode Cycling (`Ctrl+T` / View Toggle Button)**: Cycle between **Two Rows** (Processes + Tasks), **Processes Only**, and **Tasks Only** at any time.
 - **Sortable Process Summary Table (Newest on Top)**:
   - Newly launched processes are automatically added to the **top of the list** (`ID ▼` descending by default).
-  - Click **any column header** (`ID`, `Agent / Name`, `Status`, `Start Time`, `End Time`, `Uptime`, `PID (Tree)`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`) to toggle **Ascending (`▲`) / Descending (`▼`)** sort order.
+  - Click **any column header** (`ID`, `Windows PID`, `Agent / Name`, `Status`, `Start Time`, `End Time`, `Uptime`, `Tree Procs`, `Memory`, `CPU Time`, `Idle`, `Latest Output Preview`, `Command Line`, `Job`) to toggle **Ascending (`▲`) / Descending (`▼`)** sort order.
+  - `ID` is ProcessCommander's internal number; `Windows PID` is the root process's OS PID, so you can find it immediately in Task Manager.
   - **CPU-Aware Idle Detection**: While a process's CPU time keeps increasing, it stays `RUNNING` instead of being shown as `IDLE / WAITING`, and it is not killed by `--idle-timeout`. CPU time includes all processes in the Win32 Job Object tree.
 - **Tab-Switched Full-Size Direct2D Terminal (`>= 80x25`)**:
   - Embedded hardware-accelerated Direct2D / DirectWrite / IME / Sixel VT terminal emulator (`TerminalView` + `ConPtySession`).
@@ -43,6 +44,14 @@
   - Native streaming event capture for major AI coding agents (`claude`, `agy`, `opencode`, `codex`).
   - Automatically captures structured event streams into `<logfile>.stream.jsonl` in addition to raw console logs.
   - The Task Details dialog features an embedded **JSON Tree Viewer** (powered by `nlohmann/json`): expand, collapse, and inspect hierarchical JSON payloads, tool inputs/outputs, thought blocks, and token usage without having to manually read raw JSONL streams.
+- **Execution Monitor Pane**:
+  - A pane below the process and task lists that **follows the selected process**. Show or hide it with the `{}` toolbar button or the right-click item "Show JSON Stream in Bottom Pane"; drag the bar above it to change its height. Visibility and height are saved in `logs/config.json`.
+  - **Goal**: the process's goal (or the task queue job's summary when a job started the process).
+  - **Now**: what the agent is doing, with elapsed time (e.g. `✏️ Editing file src/a.cpp (1m20s)`).
+  - **Ends**: the agent's own TODO progress (`3/7 done: ...`), the job's success condition, the current attempt, the time limit with time left, and the no-output limit.
+  - **Activity history**: one plain-language row per step instead of raw JSON events — start time, duration, what it was doing, and the file or command. The running row's time updates every second, and selecting a row shows the raw JSON.
+  - Activity types (read file, edit file, search, run command, web, subagent, update plan, other tool, thinking, writing a reply, waiting for the model) are colour-coded with icons. The running row and long steps are highlighted. A setting turns colour and icons off together.
+  - JSON-streaming processes are marked `{}` in the process list, and the preview column also shows what the agent is doing with elapsed time.
 
 ## 4. System Tray Integration
 - Click **`[⤓]`** (Tray icon button), minimize the window, or press the window close button (`[X]`) to hide ProcessCommander into the **Windows System Tray** while keeping all background ConPTY processes and IPC/MCP services running.
@@ -60,7 +69,7 @@
 - Click **`[Settings]`** to open the settings dialog.
 - **Language**: switch between **Japanese / English / Español** buttons; the dashboard, dialogs, menus, and status bar update immediately.
 - **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, or **High Contrast**. Buttons, list headers (both process list and job queue list), scrollbars, and tab labels follow the active theme colors.
-- **`[Shell Config...]`**, **`[Reset Process IDs]`**, **`[Clear Ended]`**, and **Hide Ended Processes** checkbox are available here (keeping the toolbar clean and focused).
+- **`[Shell Config...]`**, **`[Reset Process IDs]`**, **`[Clear Ended]`**, and the **Hide Ended Processes** and **Execution monitor pane: colour rows and show icons** checkboxes are available here (keeping the toolbar clean and focused).
 - Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
 
 ![Settings Dialog](images/settings_dialog.png)

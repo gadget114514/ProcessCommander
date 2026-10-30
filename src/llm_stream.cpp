@@ -9,7 +9,9 @@
 #include <cstdlib>
 #include <fstream>
 #include <regex>
+#include <chrono>
 #include <ctime>
+#include <iterator>
 #include <sstream>
 
 namespace pc {
@@ -746,6 +748,103 @@ std::string LlmEventUsageText(const LlmStreamEvent& ev) {
     return o.str();
 }
 
+static std::string ActivityKindForTool(const std::string& toolName) {
+    std::string n = ToLowerStr(toolName);
+    auto has = [&](const char* w) { return n.find(w) != std::string::npos; };
+    if (has("web") || has("fetch") || has("browser") || has("url")) return "web";
+    if (n == "task" || has("agent")) return "subagent";
+    if (has("todo") || has("plan")) return "plan";
+    if (has("edit") || has("write") || has("patch") || has("replace") || has("create_file") || has("insert")) return "edit";
+    if (has("grep") || has("glob") || has("search") || has("find") || n == "ls" || has("list_dir") || has("list_files")) return "search";
+    if (has("read") || has("view") || has("open_file") || n == "cat") return "read";
+    if (has("bash") || has("shell") || has("powershell") || has("command") || has("exec") || has("terminal") || n == "run") return "command";
+    return "tool";
+}
+
+static std::string ActivityTargetFromInput(const std::string& kind, const std::string& input) {
+    if (input.empty()) return "";
+    auto j = nlohmann::json::parse(input, nullptr, false);
+    if (!j.is_object()) return input;
+    static const char* const kFileKeys[] = {"file_path", "filePath", "path", "AbsolutePath", "TargetFile", "file", "filename", "notebook_path"};
+    static const char* const kCommandKeys[] = {"command", "CommandLine", "cmd", "script"};
+    static const char* const kSearchKeys[] = {"pattern", "query", "Query", "regex", "glob", "path", "SearchPath"};
+    static const char* const kWebKeys[] = {"url", "Url", "query", "Query"};
+    static const char* const kAgentKeys[] = {"description", "prompt", "subagent_type"};
+    auto first = [&](const char* const* keys, size_t count) -> std::string {
+        for (size_t i = 0; i < count; ++i) {
+            auto it = j.find(keys[i]);
+            if (it != j.end() && it->is_string() && !it->get<std::string>().empty()) return it->get<std::string>();
+        }
+        return "";
+    };
+    std::string t;
+    if (kind == "plan") {
+        // Claude TodoWrite: {"todos":[{"content":..,"status":"pending|in_progress|completed"}]}
+        auto todos = j.find("todos");
+        if (todos != j.end() && todos->is_array()) {
+            int done = 0;
+            std::string current;
+            auto str = [](const nlohmann::json& o, const char* key) -> std::string {
+                auto it = o.find(key);
+                return (it != o.end() && it->is_string()) ? it->get<std::string>() : std::string();
+            };
+            for (const auto& td : *todos) {
+                if (!td.is_object()) continue;
+                std::string st = str(td, "status");
+                if (st == "completed") ++done;
+                else if (st == "in_progress" && current.empty()) {
+                    current = str(td, "activeForm");
+                    if (current.empty()) current = str(td, "content");
+                }
+            }
+            t = std::to_string(done) + "/" + std::to_string(todos->size()) + " done";
+            if (!current.empty()) t += ": " + current;
+            return t;
+        }
+    }
+    if (kind == "command") t = first(kCommandKeys, std::size(kCommandKeys));
+    else if (kind == "search") t = first(kSearchKeys, std::size(kSearchKeys));
+    else if (kind == "web") t = first(kWebKeys, std::size(kWebKeys));
+    else if (kind == "subagent") t = first(kAgentKeys, std::size(kAgentKeys));
+    else t = first(kFileKeys, std::size(kFileKeys));
+    if (t.empty()) {
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            if (it->is_string() && !it->get<std::string>().empty()) { t = it->get<std::string>(); break; }
+        }
+    }
+    return t;
+}
+
+bool DescribeLlmActivity(const LlmStreamEvent& ev, std::string& kind, std::string& target) {
+    kind.clear();
+    target.clear();
+    if (ev.type == "tool_call") {
+        kind = ActivityKindForTool(ev.toolName);
+        target = ActivityTargetFromInput(kind, ev.toolInput);
+        if (kind == "tool") target = ev.toolName + (target.empty() ? "" : " " + target);
+    } else if (ev.type == "tool_result") {
+        kind = "waiting_model";  // the tool is done; the model works on its result
+    } else if (ev.type == "thinking") {
+        kind = "thinking";
+        target = ev.content;
+    } else if (ev.type == "message") {
+        kind = "replying";
+        target = ev.content;
+    } else if (ev.type == "error") {
+        kind = "error";
+        target = ev.content;
+    } else if (ev.type == "result") {
+        kind = "done";
+    } else {
+        return false;
+    }
+    for (char& c : target) {
+        if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+    }
+    target = Utf8Prefix(target, 300);
+    return true;
+}
+
 std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state) {
     nlohmann::json root;
     root["ok"] = true;
@@ -754,6 +853,9 @@ std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const Llm
     root["status"] = state.status;
     root["current_tool"] = state.currentTool;
     root["current_tool_action"] = state.currentToolAction;
+    root["activity"] = state.activity;
+    root["activity_target"] = state.activityTarget;
+    root["activity_since_epoch_ms"] = state.activitySinceEpochMs;
     root["last_thought"] = state.lastThought;
     root["last_message"] = state.lastMessage;
     root["step_count"] = state.stepCount;
@@ -926,6 +1028,8 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
 
     ev.seq = nextSeq_++;
     ev.timestamp = GetCurrentTimestampStr();
+    ev.recvEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
     if (ev.agentType.empty() || ev.agentType == "generic") {
         if (!agentType_.empty()) ev.agentType = agentType_;
     }
@@ -1073,6 +1177,15 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
         state_.lastError = ev.content;
     } else if (ev.type == "result") {
         state_.status = "completed";
+    }
+
+    std::string actKind, actTarget;
+    if (DescribeLlmActivity(ev, actKind, actTarget)) {
+        // Streamed thinking / reply chunks continue one activity; anything else starts a new one.
+        bool continues = actKind == state_.activity && (actKind == "thinking" || actKind == "replying");
+        if (!continues) state_.activitySinceEpochMs = ev.recvEpochMs;
+        state_.activity = actKind;
+        state_.activityTarget = actTarget;
     }
 
     events_.push_back(ev);

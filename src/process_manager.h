@@ -77,6 +77,9 @@ struct ProcessSnapshot {
     std::string currentToolAction;
     std::string lastThought;
     std::string lastMessage;
+    std::string activity;          // LlmAgentState::activity
+    std::string activityTarget;
+    int64_t activitySinceEpochMs = 0;
     int stepCount = 0;
     int streamEventCount = 0;
     std::string streamFilePath;

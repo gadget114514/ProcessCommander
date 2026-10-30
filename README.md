@@ -17,6 +17,8 @@
 ![ProcessCommander Dashboard](doc/images/dashboardgraph.jpg)
 ![ProcessCommander Dashboard](doc/images/dashboard.jpg)
 
+The dashboard has an **execution monitor pane** below the process and task lists. It follows the selected process and shows its goal, what it is doing now, its TODO progress, job success condition, attempts and time limits, plus a plain-language activity history with elapsed times. JSON-streaming processes are marked `{}` in the process list. See [Key Features](doc/features.md) for details.
+
 ![Architecture](doc/images/archimage.jpg)
 
 ---

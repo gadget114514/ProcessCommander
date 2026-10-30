@@ -23,6 +23,7 @@ struct LlmStreamEvent {
     std::string content;       // thinking reasoning or assistant message text
     std::string status;        // "thinking", "calling_tool", "generating", "idle", "completed", "error"
     std::string messageId;     // Claude message.id; usage is per message, not cumulative
+    int64_t recvEpochMs = 0;   // wall clock when the line was received (for activity durations)
     int stepIndex = 0;
     uint64_t totalTokens = 0;
     uint64_t inputTokens = 0;
@@ -43,6 +44,11 @@ struct LlmAgentState {
     std::string lastThought;
     std::string lastMessage;
     std::string lastError;
+    // What the agent is doing now, in plain terms (see DescribeLlmActivity).
+    std::string activity;          // "read", "edit", "search", "command", "web", "subagent", "plan", "tool",
+                                   // "thinking", "replying", "waiting_model", "done", "error", or empty
+    std::string activityTarget;    // file, command, pattern, URL, ...
+    int64_t activitySinceEpochMs = 0;
     int stepCount = 0;
     int eventCount = 0;
     uint64_t totalTokens = 0;
@@ -63,6 +69,11 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
 // Format events as JSON array or human-readable summary
 std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state);
 std::string LlmEventsToSummary(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state);
+
+// Classify an event into a plain activity kind (see LlmAgentState::activity) and its target
+// (file path, command line, search pattern, URL, ...). Returns false for events that do not
+// start an activity (usage, status, step, other).
+bool DescribeLlmActivity(const LlmStreamEvent& ev, std::string& kind, std::string& target);
 
 // Human-readable usage summary (tokens / cache / cost) for one event. Empty if no usage data.
 std::string LlmEventUsageText(const LlmStreamEvent& ev);

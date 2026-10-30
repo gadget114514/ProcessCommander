@@ -1105,6 +1105,9 @@ ProcessSnapshot ProcessManager::BuildSnapshot(ProcessManager::ManagedProcess& p,
         snap.currentToolAction = ast.currentToolAction;
         snap.lastThought = ast.lastThought;
         snap.lastMessage = ast.lastMessage;
+        snap.activity = ast.activity;
+        snap.activityTarget = ast.activityTarget;
+        snap.activitySinceEpochMs = ast.activitySinceEpochMs;
         snap.stepCount = ast.stepCount;
         snap.streamEventCount = ast.eventCount;
         snap.streamFilePath = ast.streamFilePath;
