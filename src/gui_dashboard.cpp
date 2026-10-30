@@ -3569,9 +3569,13 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
 }
 
 static std::wstring TokenCountText(uint64_t n) {
-    if (n < 1000) return std::to_wstring(n);
     wchar_t buf[32] = {};
-    swprintf_s(buf, L"%.1fk", static_cast<double>(n) / 1000.0);
+    if (n < 1000) return std::to_wstring(n);
+    if (n < 1000000) {
+        swprintf_s(buf, L"%.1fk", static_cast<double>(n) / 1000.0);
+    } else {
+        swprintf_s(buf, L"%.1fM", static_cast<double>(n) / 1000000.0);
+    }
     return buf;
 }
 
@@ -3821,6 +3825,7 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
             ListView_SetItemText(ds->hwndList, i, 5, TokenCellText(r.tokOut).data());
             ListView_SetItemText(ds->hwndList, i, 6, TokenCellText(r.tokCache).data());
             ListView_SetItemText(ds->hwndList, i, 7, TokenCellText(r.tokThink).data());
+            ListView_SetItemText(ds->hwndList, i, 8, TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink).data());
         }
         SendMessageW(ds->hwndList, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(ds->hwndList, nullptr, FALSE);
@@ -4006,10 +4011,11 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 L"i",
                 L"o",
                 L"c",
-                L"t"
+                L"t",
+                L"a"
             };
-            const int monWidths[] = {60, 60, 150, 170, 44, 44, 44, 44};
-            int colCount = ds->embedded ? 8 : 7;
+            const int monWidths[] = {60, 60, 150, 170, 44, 44, 44, 44, 52};
+            int colCount = ds->embedded ? 9 : 7;
             for (int i = 0; i < colCount; ++i) {
                 if (ds->embedded) {
                     LVCOLUMNW lvc = {};
