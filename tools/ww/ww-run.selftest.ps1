@@ -229,6 +229,9 @@ Check (-not (Test-PathPatternOverlap '**/foo.cs' 'src/b.cpp')) "a bare file name
 Check ((Test-PathPatternOverlap '**/foo.cs' 'src') -and (Test-PathPatternOverlap '**/foo.cs' 'src/x/foo.cs') -and (Test-PathPatternOverlap '**/foo.cs' 'foo.cs')) "a bare file name overlaps its directories and itself"
 Check ((Test-PathPatternOverlap 'src/**' 'src/a.cpp') -and (Test-PathPatternOverlap '**' 'x/y.cpp') -and -not (Test-PathPatternOverlap 'doc/**' 'src/a.cpp')) "** under a directory covers only that directory"
 Check ((Test-PathPatternOverlap 'src/**/*.cpp' 'src/x/a.cpp') -and -not (Test-PathPatternOverlap 'src/**/*.cpp' 'src/x/a.h')) "**/*.cpp matches only .cpp files"
+Check ($WwExitRefused -eq 75) "a refused run exits 75 (EX_TEMPFAIL), not 1"
+$runSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "ww-run.ps1") -Raw
+Check (([regex]::Matches($runSource, 'exit \$WwExitRefused')).Count -eq 2) "ww-run exits with WwExitRefused on refusal and on a refusing -DryRun"
 Check ((Get-ConflictHint -Reason "task 901 overlaps this run's paths (** x **)") -match '-Shared.*-Worktree') "a refused main run is told to use -Shared or -Worktree"
 Check ((Get-ConflictHint -Reason "task 901 overlaps this run's paths (src/a.cpp x **)" -Shared -HasEdits $true) -match 'other run locks the whole checkout') "a shared run blocked by a main run is told why"
 Check ((Get-ConflictHint -Reason "task 901 overlaps this run's paths (src/a.cpp x src/a.cpp)" -Shared -HasEdits $true) -match 'overlap') "a shared/shared overlap gets the overlap hint"

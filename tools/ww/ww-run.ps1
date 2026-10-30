@@ -98,6 +98,13 @@ SUPERVISOR LLM: run cards in parallel with -Shared
   Do not build or test while card jobs run; ww-verify does that last. Check a card's plan
   with: ww-run.cmd <id> -DryRun
 
+EXIT CODES
+  0    the engine finished with 0 (-DryRun: the run would start)
+  75   refused: the same card is running, or another run holds overlapping paths. Nothing
+       ran; try again later (the reason is in the output and ww-data\logs\refused.log)
+  1    setup error: bad options, card not found, worktree pre-flight or creation failed
+  else the engine's exit code
+
 STATUS
   ww-status.cmd shows running and last runs; logs are in ww-data\logs.
 "@ | Write-Output
@@ -234,7 +241,7 @@ if ($conflict.Blocked) {
                 $(if ($hint) { " HINT: $hint" } else { "" })
             Add-Content -Encoding UTF8 -LiteralPath (Join-Path $logDir "refused.log") -Value $entry
         } catch {}
-        exit 1
+        exit $WwExitRefused
     }
     Write-Host "[ww-run] DRYRUN: a real run would refuse to start." -ForegroundColor Yellow
 }
@@ -322,7 +329,7 @@ if ($DryRun) {
     Write-Host "  log         : $logDir\$Task-<stamp>.log"
     Write-Host "  duplicate   : $(if ($conflict.Blocked) { 'WOULD REFUSE: ' + $conflict.Reason } else { 'ok' })"
     Write-Host "  pre-flight  : $(if ($untracked.Count) { 'WOULD REFUSE: ' + ($untracked -join ', ') } else { 'ok' })"
-    if ($conflict.Blocked -or $untracked.Count) { exit 1 } else { exit 0 }
+    if ($conflict.Blocked) { exit $WwExitRefused } elseif ($untracked.Count) { exit 1 } else { exit 0 }
 }
 
 # 5. Record what is running (one record per task; running.json/last_run.json stay main-only).

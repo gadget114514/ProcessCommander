@@ -121,7 +121,8 @@ A false positive only serializes more; it never breaks anything.
   A plain main run counts as `Edits = ["**"]` (the whole checkout).
 - Pre-flight (`Test-RunConflict`): the same card is always refused; main/shared runs are compared
   by their declarations. A run whose declaration is unknown (no record, no `Edits`) counts as the
-  whole checkout.
+  whole checkout. A refused run exits with **75** (EX_TEMPFAIL: nothing ran, try again later),
+  distinct from setup errors (1) and engine failures.
 - A card without `Authorised edits` locks the whole checkout even with `-Shared` (same as main).
 - Paths in the card's `## Read-only` (or `## Reads`) section are **read-only**: runs that only
   read the same file run together; only an edit of it by another run conflicts.
@@ -142,7 +143,7 @@ the same rule (bare names, overlap test), so both layers agree.
   the declaration then comes from one place.
 - A job that runs ww-run as a **main** run (`-Main`, or a card without `Authorised edits`) must
   declare `"write": ["**"]`, the lock ww-run itself takes. Without it ProcessCommander starts it
-  next to other runs, ww-run refuses with exit code 1, and the task queue counts a failed attempt
+  next to other runs, ww-run refuses with exit code 75, and the task queue counts a failed attempt
   (retried, then `failed`). `-Jobs` writes `**` for such cards.
 - Worktree jobs declare no path resources (see section 1).
 

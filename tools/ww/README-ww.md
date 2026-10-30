@@ -147,6 +147,8 @@ do not overlap (design: [doc/resource-locks.md](../../doc/resource-locks.md)):
 - When a run is refused because it or the other run locks the whole checkout, ww-run prints a
   `HINT:` to use `-Shared` (with Authorised edits) or `-Worktree`, and appends the refusal to
   `ww-data\logs\refused.log`.
+- A refused run exits with **75** (nothing ran, try again later), so a caller can tell it from a
+  setup error (1) or an engine failure. `-DryRun` also exits 75 when the run would be refused.
 
 `ww-run.cmd -Help` prints all options and the steps for a supervisor LLM.
 
@@ -282,6 +284,7 @@ Tools\ww\ww-watch.cmd <card-id> [-Engine agy|opencode|claude|codex] [-Model <mod
 | 2 | Any other failure |
 | 3 | **Human decision required** — an unsplittable card stalled after `MaxRetries` re-runs |
 | 4 | **Split required** — a splittable card stalled; decompose it before re-running |
+| 75 | ww-run refused the card (passed through): it is already running or overlaps another run's paths |
 
 ## Policy
 

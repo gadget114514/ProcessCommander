@@ -215,6 +215,11 @@ function Get-RunLocks {
     return [pscustomobject]@{ Edits = @('**'); Reads = @() }
 }
 
+# Exit code of a run refused by Test-RunConflict (75 = EX_TEMPFAIL: try again later). It differs
+# from 1 (setup error) and from engine failures, so a caller such as a pcder task queue can tell
+# "another run holds these paths" from "the card failed".
+$WwExitRefused = 75
+
 # Duplicate rule (card 170, extended for shared runs):
 #   * the same task card never runs twice, in any mode;
 #   * main-checkout runs are compared by their declared paths: a plain main run locks the whole
