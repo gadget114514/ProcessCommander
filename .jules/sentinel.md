@@ -11,3 +11,8 @@
 **Vulnerability:** `ShellExecuteW` was used to open URIs from OSC 8 hyperlinks without any validation of the URI scheme, leading to potential Arbitrary Code Execution.
 **Learning:** Untrusted URIs executed via `ShellExecuteW` must have their scheme validated against an explicitly safe allowlist (like `http://`, `https://`, `mailto:`, `file://`) before any execution or custom command substitution logic.
 **Prevention:** Always validate the URI scheme before executing untrusted inputs using `ShellExecuteW`.
+
+## 2026-10-31 - [Command Injection in PowerShell Auto-Spawn]
+**Vulnerability:** The application constructed a PowerShell command using string interpolation to execute `Invoke-CimMethod`, failing to safely escape `DataDirectory` and `guiExePath` arguments. An attacker controlling the `PROCESS_COMMANDER_LOG_DIR` environment variable could inject shell metacharacters to execute arbitrary commands.
+**Learning:** This vulnerability existed because the application attempted to dynamically build a complex PowerShell command line by concatenating strings instead of using safe parameter binding or encoding. String escaping for command shells is notoriously error-prone.
+**Prevention:** When invoking PowerShell from a compiled application, never use string concatenation to build commands with untrusted input. Always use `powershell.exe -EncodedCommand` with a Base64 encoded UTF-16LE payload (e.g., using `CryptBinaryToStringW`) to completely eliminate the command-line parsing injection surface.

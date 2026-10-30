@@ -1,5 +1,7 @@
 #include "ipc_client.h"
 #include "common.h"
+#include <wincrypt.h>
+#pragma comment(lib, "crypt32.lib")
 
 namespace pc {
 
@@ -69,6 +71,11 @@ bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::s
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
 
+        std::wstring guiCmdLine = L"\"" + guiExePath + L"\" gui";
+        if (HasCustomDataDirectory()) {
+            guiCmdLine += L" --data-dir \"" + GetEffectiveDataDirectoryWide() + L"\"";
+        }
+
         auto EscapeSingleQuotes = [](const std::wstring& in) {
             std::wstring outText = in;
             size_t pos = 0;
@@ -78,9 +85,16 @@ bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::s
             }
             return outText;
         };
-        std::wstring guiCmdLine = L"\\\"" + EscapeSingleQuotes(guiExePath) + L"\\\" gui";
-        if (HasCustomDataDirectory()) {
-            guiCmdLine += L" --data-dir \\\"" + EscapeSingleQuotes(GetEffectiveDataDirectoryWide()) + L"\\\"";
+
+        std::wstring psScript = L"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='" + EscapeSingleQuotes(guiCmdLine) + L"'} | Out-Null";
+
+        DWORD b64Len = 0;
+        CryptBinaryToStringW((const BYTE*)psScript.data(), (DWORD)(psScript.size() * sizeof(wchar_t)), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &b64Len);
+        std::wstring encodedCmd(b64Len, L'\0');
+        CryptBinaryToStringW((const BYTE*)psScript.data(), (DWORD)(psScript.size() * sizeof(wchar_t)), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, &encodedCmd[0], &b64Len);
+
+        if (!encodedCmd.empty() && encodedCmd.back() == L'\0') {
+            encodedCmd.pop_back();
         }
 
         wchar_t psPath[MAX_PATH] = {};
@@ -88,10 +102,9 @@ bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::s
                                   psPath, MAX_PATH);
 
         std::wstring wmiCmd = psPath;
-        wmiCmd += L" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "
-                  L"\"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='";
-        wmiCmd += guiCmdLine;
-        wmiCmd += L"'} | Out-Null\"";
+        wmiCmd += L" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ";
+        wmiCmd += encodedCmd;
+
         std::vector<wchar_t> wmiBuf(wmiCmd.begin(), wmiCmd.end());
         wmiBuf.push_back(L'\0');
 
