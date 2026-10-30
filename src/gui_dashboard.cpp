@@ -3236,7 +3236,33 @@ struct UsageBar {
     uint64_t cacheTokens = 0;
 };
 
-static std::vector<UsageBar> BuildUsageBars(const RECT& rc, const std::vector<LlmStreamEvent>& events) {
+// The run's time window. The usage graph and the time-by-kind chart both map this window onto
+// the same horizontal axis, so their x positions line up.
+struct TimeSpan {
+    int64_t startMs = 0;
+    int64_t lengthMs = 1000;
+};
+
+static TimeSpan ComputeRunSpan(const LlmStreamDlgState* ds) {
+    TimeSpan span;
+    int64_t start = ds->snap.startEpochSec > 0 ? ds->snap.startEpochSec * 1000
+                  : (ds->events.empty() ? 0 : ds->events.front().recvEpochMs);
+    int64_t end = start;
+    if (ds->snap.state == ProcState::Running) end = NowEpochMs();
+    else if (ds->snap.endEpochSec > 0) end = ds->snap.endEpochSec * 1000;
+    else if (!ds->events.empty()) end = ds->events.back().recvEpochMs;
+    span.startMs = start;
+    span.lengthMs = (std::max<int64_t>)(end - start, 1000);
+    return span;
+}
+
+// Horizontal extent shared by the usage graph and the time-by-kind chart (labels sit left of it).
+static void TimeAxisExtent(const RECT& rc, int& left, int& right) {
+    left = rc.left + 56;
+    right = rc.right - 8;
+}
+
+static std::vector<UsageBar> BuildUsageBars(const RECT& rc, const std::vector<LlmStreamEvent>& events, const TimeSpan& span) {
     std::vector<UsageBar> bars;
     if (rc.right <= rc.left || rc.bottom <= rc.top) return bars;
 
@@ -3263,21 +3289,23 @@ static std::vector<UsageBar> BuildUsageBars(const RECT& rc, const std::vector<Ll
     }
     if (vals.empty() || maxVal == 0) return bars;
 
-    int left = rc.left + 4;
-    int right = rc.right - 4;
+    int left = 0;
+    int right = 0;
+    TimeAxisExtent(rc, left, right);
     int top = rc.top + 18;
     int bottom = rc.bottom - 4;
     int plotW = right - left;
     int plotH = bottom - top;
     if (plotW <= 0 || plotH <= 0) return bars;
 
-    int n = static_cast<int>(vals.size());
-    int slot = plotW / n;
-    if (slot < 1) slot = 1;
-    for (int k = 0; k < n; ++k) {
-        int x0 = left + k * slot;
-        int x1 = (k == n - 1) ? right : left + (k + 1) * slot;
-        if (x1 <= x0) x1 = x0 + 1;
+    // Each bar sits at the time its event arrived, so the x axis is the run's elapsed time.
+    const int barW = 6;
+    for (int k = 0; k < static_cast<int>(vals.size()); ++k) {
+        int64_t offset = events[vals[k].index].recvEpochMs - span.startMs;
+        int cx = left + static_cast<int>(plotW * offset / span.lengthMs);
+        cx = (std::clamp)(cx, left, right);
+        int x0 = (std::clamp)(cx - barW / 2, left, right - barW);
+        int x1 = x0 + barW;
         UsageBar b;
         b.rc = {x0, top, x1, bottom};
         b.eventIndex = vals[k].index;
@@ -3298,7 +3326,7 @@ static COLORREF BlendColor(COLORREF from, COLORREF to, int percentTo) {
 }
 
 static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamEvent>& events,
-                           const LlmStreamEvent* selected, int selectedIndex) {
+                           const LlmStreamEvent* selected, int selectedIndex, const TimeSpan& span) {
     if (rc.right <= rc.left || rc.bottom <= rc.top) return;
     const COLORREF softLine = BlendColor(g_theme.panel, g_theme.border, 60);
 
@@ -3313,7 +3341,7 @@ static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamE
     SelectObject(hdc, oldPen);
     DeleteObject(frame);
 
-    auto bars = BuildUsageBars(rc, events);
+    auto bars = BuildUsageBars(rc, events, span);
     SetBkMode(hdc, TRANSPARENT);
     RECT titleRc = {rc.left + 8, rc.top + 4, rc.right - 8, rc.top + 18};
     SetTextColor(hdc, g_theme.muted);
@@ -3356,17 +3384,26 @@ static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamE
     // Faint guide lines at half scale and full scale, then a solid baseline.
     HPEN guide = CreatePen(PS_DOT, 1, softLine);
     HGDIOBJ prevPen = SelectObject(hdc, guide);
+    int axisLeft = 0;
+    int axisRight = 0;
+    TimeAxisExtent(rc, axisLeft, axisRight);
     for (int y : {plotTop, plotTop + plotH / 2}) {
-        MoveToEx(hdc, rc.left + 8, y, nullptr);
-        LineTo(hdc, rc.right - 8, y);
+        MoveToEx(hdc, axisLeft, y, nullptr);
+        LineTo(hdc, axisRight, y);
+    }
+    // Time guides at 0, half and full run length, matching the time-by-kind chart's ticks.
+    for (int i = 0; i <= 2; ++i) {
+        int x = axisLeft + (axisRight - axisLeft) * i / 2;
+        MoveToEx(hdc, x, plotTop, nullptr);
+        LineTo(hdc, x, plotBottom);
     }
     SelectObject(hdc, prevPen);
     DeleteObject(guide);
 
     HPEN baseline = CreatePen(PS_SOLID, 1, softLine);
     prevPen = SelectObject(hdc, baseline);
-    MoveToEx(hdc, rc.left + 8, plotBottom, nullptr);
-    LineTo(hdc, rc.right - 8, plotBottom);
+    MoveToEx(hdc, axisLeft, plotBottom, nullptr);
+    LineTo(hdc, axisRight, plotBottom);
     SelectObject(hdc, prevPen);
     DeleteObject(baseline);
 
@@ -3407,7 +3444,7 @@ static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamE
 }
 
 // Where the time went, by kind of step: read, write, tool, and everything else.
-static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow>& rows) {
+static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow>& rows, const TimeSpan& span) {
     if (rc.right <= rc.left || rc.bottom <= rc.top) return;
     const COLORREF softLine = BlendColor(g_theme.panel, g_theme.border, 60);
 
@@ -3441,8 +3478,7 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
         else if (r.kind == "tool" || r.kind == "command" || r.kind == "subagent") idx = 2;
         kinds[idx].ms += r.endMs - r.startMs;
     }
-    int64_t maxMs = 1000;  // at least one second, so the axis always has a scale
-    for (const auto& k : kinds) maxMs = (std::max)(maxMs, k.ms);
+    int64_t maxMs = span.lengthMs;  // the full axis is the run's elapsed time, shared with the usage graph
 
     SetBkMode(hdc, TRANSPARENT);
     HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT)));
@@ -3450,10 +3486,10 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
     SetTextColor(hdc, g_theme.muted);
     DrawTextW(hdc, L"Time", -1, &titleRc, DT_LEFT | DT_SINGLELINE);
 
-    const int labelW = 48;
     const int axisH = 16;
-    int plotLeft = rc.left + 8 + labelW;
-    int plotRight = rc.right - 56;  // room after the longest bar for its value
+    int plotLeft = 0;
+    int plotRight = 0;
+    TimeAxisExtent(rc, plotLeft, plotRight);
     int plotW = plotRight - plotLeft;
     int plotTop = rc.top + 22;
     int plotBottom = rc.bottom - axisH - 4;
@@ -3485,15 +3521,21 @@ static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow
         DrawTextW(hdc, kinds[i].label, -1, &labelRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         if (kinds[i].ms <= 0) continue;
         int barRight = plotLeft + static_cast<int>(plotW * kinds[i].ms / maxMs);
-        if (barRight <= plotLeft) barRight = plotLeft + 1;
+        barRight = (std::clamp)(barRight, plotLeft + 1, plotRight);
         HBRUSH br = CreateSolidBrush(kinds[i].color);
         RECT barRc = {plotLeft, top + barPad, barRight, top + rowH - barPad};
         FillRect(hdc, &barRc, br);
         DeleteObject(br);
         std::wstring value = FormatElapsed(kinds[i].ms);
-        RECT valRc = {barRight + 4, top, rc.right - 4, top + rowH};
         SetTextColor(hdc, g_theme.text);
-        DrawTextW(hdc, value.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        if (barRight + 64 <= rc.right) {
+            RECT valRc = {barRight + 4, top, rc.right - 4, top + rowH};
+            DrawTextW(hdc, value.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            // No room after the bar: write the value inside it, at its right end.
+            RECT valRc = {plotLeft + 4, top, barRight - 4, top + rowH};
+            DrawTextW(hdc, value.c_str(), -1, &valRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
     }
     SelectObject(hdc, oldFont);
 }
@@ -3607,35 +3649,9 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
     if (goal.empty() && !s.jobKey.empty()) goal = ds->goalJobSummary;
 
     std::wstringstream hdr;
-    hdr << Tr(L"目標: ", L"Goal: ", L"Objetivo: ");
-    if (!goal.empty()) hdr << Utf8ToWide(goal);
-    else hdr << Tr(L"(未設定: pcder agent info <id> --goal で設定、タスクキューのジョブは summary)",
-                   L"(not set: pcder agent info <id> --goal, or a task queue job's summary)",
-                   L"(sin definir: pcder agent info <id> --goal)");
-    hdr << L"\r\n";
-    if (!s.jobKey.empty()) {
-        hdr << Tr(L"リソース: ", L"Resources: ", L"Recursos: ") << ds->goalJobResources << L"\r\n";
-    }
-
-    hdr << Tr(L"現状: ", L"Now: ", L"Ahora: ");
-    std::wstring now = ActivityLine(ds->agentState.activity, ds->agentState.activityTarget,
-                                    ds->agentState.activitySinceEpochMs, running);
-    if (!running) {
-        hdr << StateLabelWide(s.state, false);
-        if (s.exitCode != STILL_ACTIVE) hdr << L" (exit " << s.exitCode << L")";
-        if (!now.empty()) hdr << Tr(L"  — 最後: ", L"  — last: ", L"  — último: ") << now;
-    } else if (!now.empty()) {
-        hdr << now;
-    } else if (ds->events.empty() && !s.jsonStream) {
-        hdr << StateLabelWide(s.state, s.idleMs >= 10000)
-            << Tr(L"  (JSON ストリームなし: 最終行) ", L"  (no JSON stream: last line) ", L"  (sin flujo JSON) ")
-            << Utf8ToWide(s.lastLinePreview);
-    } else {
-        hdr << Tr(L"開始待ち", L"Starting", L"Iniciando");
-    }
-    hdr << L"\r\n";
 
     // How it ends: the agent's own TODO list, the job's success check, attempts and time limits.
+    // This is the first line of the pane; the goal follows it.
     std::vector<std::wstring> ends;
     for (auto it = ds->events.rbegin(); it != ds->events.rend(); ++it) {
         std::string kind, target;
@@ -3670,6 +3686,34 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
         hdr << Tr(L"プロセスが終了したとき (制限なし)", L"when the process exits (no limit)", L"cuando el proceso termine (sin límite)");
     } else {
         for (size_t i = 0; i < ends.size(); ++i) hdr << (i ? L"  ·  " : L"") << ends[i];
+    }
+    hdr << L"\r\n";
+
+    hdr << Tr(L"目標: ", L"Goal: ", L"Objetivo: ");
+    if (!goal.empty()) hdr << Utf8ToWide(goal);
+    else hdr << Tr(L"(未設定: pcder agent info <id> --goal で設定、タスクキューのジョブは summary)",
+                   L"(not set: pcder agent info <id> --goal, or a task queue job's summary)",
+                   L"(sin definir: pcder agent info <id> --goal)");
+    hdr << L"\r\n";
+    if (!s.jobKey.empty()) {
+        hdr << Tr(L"リソース: ", L"Resources: ", L"Recursos: ") << ds->goalJobResources << L"\r\n";
+    }
+
+    hdr << Tr(L"現状: ", L"Now: ", L"Ahora: ");
+    std::wstring now = ActivityLine(ds->agentState.activity, ds->agentState.activityTarget,
+                                    ds->agentState.activitySinceEpochMs, running);
+    if (!running) {
+        hdr << StateLabelWide(s.state, false);
+        if (s.exitCode != STILL_ACTIVE) hdr << L" (exit " << s.exitCode << L")";
+        if (!now.empty()) hdr << Tr(L"  — 最後: ", L"  — last: ", L"  — último: ") << now;
+    } else if (!now.empty()) {
+        hdr << now;
+    } else if (ds->events.empty() && !s.jsonStream) {
+        hdr << StateLabelWide(s.state, s.idleMs >= 10000)
+            << Tr(L"  (JSON ストリームなし: 最終行) ", L"  (no JSON stream: last line) ", L"  (sin flujo JSON) ")
+            << Utf8ToWide(s.lastLinePreview);
+    } else {
+        hdr << Tr(L"開始待ち", L"Starting", L"Iniciando");
     }
     hdr << L"\r\n";
 
@@ -3898,7 +3942,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             const wchar_t* monTitles[] = {
                 Tr(L"開始", L"Start", L"Inicio"),
                 Tr(L"所要", L"Took", L"Duración"),
-                Tr(L"何をしているか", L"What", L"Qué"),
+                Tr(L"実行中", L"Running", L"En curso"),
                 Tr(L"対象", L"Target", L"Objetivo")
             };
             const int monWidths[] = {70, 70, 190, 420};
@@ -4109,8 +4153,9 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 }
                 const LlmStreamEvent* sel = (selIdx >= 0 && selIdx < static_cast<int>(ds->events.size()))
                     ? &ds->events[selIdx] : nullptr;
-                DrawUsageGraph(hdc, ds->rcUsageGraph, ds->events, sel, selIdx);
-                DrawKindChart(hdc, ds->rcKindChart, ds->rows);
+                TimeSpan span = ComputeRunSpan(ds);
+                DrawUsageGraph(hdc, ds->rcUsageGraph, ds->events, sel, selIdx, span);
+                DrawKindChart(hdc, ds->rcKindChart, ds->rows, span);
             }
             EndPaint(hwnd, &ps);
             return 0;
@@ -4119,7 +4164,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (!ds) break;
             POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             if (PtInRect(&ds->rcUsageGraph, pt)) {
-                auto bars = BuildUsageBars(ds->rcUsageGraph, ds->events);
+                auto bars = BuildUsageBars(ds->rcUsageGraph, ds->events, ComputeRunSpan(ds));
                 for (const auto& b : bars) {
                     if (!PtInRect(&b.rc, pt)) continue;
                     int idx = b.eventIndex;
