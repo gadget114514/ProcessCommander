@@ -14,9 +14,11 @@ task declares what it touches, and only tasks whose declarations overlap are ser
 | git / worktree | **does not know**; it does not care whether a job's `cwd` is a worktree | all of it |
 
 - ProcessCommander does not know ww. ww runs on its own without ProcessCommander.
-- Worktrees are a ww feature; ProcessCommander gets no worktree-specific feature. A worktree job
-  just has the worktree as its `cwd`; relative resource paths resolve against `cwd`, so it never
-  conflicts with jobs on the main checkout.
+- Worktrees are a ww feature; ProcessCommander gets no worktree-specific feature. Relative
+  resource paths resolve against the job's `cwd`. A job started with `ww-run -Worktree` still has
+  the main checkout as its `cwd` (ww-run creates the worktree itself, after the job started), so
+  its path resources would conflict with main-checkout jobs: **declare no path resources for
+  worktree jobs** (named locks such as `@build` are fine). `ww-run -Jobs -Worktree` does this.
 
 ## 2. ProcessCommander: the job's `resources`
 
@@ -35,6 +37,7 @@ task declares what it touches, and only tasks whose declarations overlap are ser
 |---|---|
 | `@name` (`@build`, `@git`) | Named lock. Exact, case-insensitive match. Shared globally, independent of `cwd`. |
 | Path (`src/a.cpp`, `C:\proj\src`) | File or directory; a directory covers everything below it. Relative paths are made absolute against the job's `cwd` (kept relative when `cwd` is empty). |
+| Bare file name (`Foo.cs`, `*.md`) | No `/`: the name anywhere below `cwd`, i.e. `**/Foo.cs` (same as ww). `**` alone is the whole `cwd`. |
 | Glob (`src/**/*.cpp`, `doc/*`) | `*` (within one segment), `**` (across segments), `?`. |
 
 Paths are normalized before comparison: `\` -> `/`, ASCII lower case, `.` / `..` resolved,
@@ -48,12 +51,15 @@ Jobs A and B conflict when any of these overlap (read/read never conflicts):
 - A.write x B.read
 - A.read x B.write
 
-Overlap test (conservative: when unsure, it overlaps):
+Overlap test, segment by segment (conservative: when unsure, it overlaps). It is the same rule
+as `Test-PathPatternOverlap` in `tools/ww/ww-run.lib.ps1`, so ProcessCommander and ww-run agree:
 
-- literal x literal: same path, or one is an ancestor directory of the other.
-- literal x glob: the glob matches the path or one of its ancestors, or the glob's literal part
-  (before the first wildcard) lies below the path.
-- glob x glob: one literal part is a string prefix of the other.
+- Two literal segments must be equal; a glob segment (`*.cpp`) must match the literal one; two
+  glob segments are taken as overlapping.
+- `**` matches any number of segments.
+- When one side runs out first, it is an ancestor directory of the other (`src` covers
+  `src/a.cpp`), except when a `**` ran over part of it and it ends in a file name: `**/foo.cs`
+  does not overlap `src/b.cpp`, but it overlaps `src`, `src/foo.cs` and `**/foo.cs`.
 
 A false positive only serializes more; it never breaks anything.
 
@@ -105,8 +111,8 @@ A false positive only serializes more; it never breaks anything.
 
 | Mode | Flag | Runs in parallel when | Pros | Cons |
 |---|---|---|---|---|
-| main (existing) | none | only one main run | nothing to declare | no parallelism |
-| **shared** (new) | `-Shared` | its `Authorised edits` do not overlap other main/shared runs | shared build cache, no merge | relies on accurate declarations; no build/test while parallel |
+| main | `-Main`, or a card without `Authorised edits` | only one main run | nothing to declare; may build/test | no parallelism |
+| **shared** | `-Shared`, the default for a card with `Authorised edits` | its `Authorised edits` do not overlap other main/shared runs | shared build cache, no merge | relies on accurate declarations; no build/test while parallel |
 | worktree (existing) | `-Worktree` | always | full isolation | merge and build-cache cost |
 
 ### 3.1 Shared-mode rules
@@ -128,8 +134,17 @@ A false positive only serializes more; it never breaks anything.
 
 ### 3.2 With ProcessCommander
 
-Use the card's `Authorised edits` as `resources.write`. ProcessCommander never starts overlapping
-cards, and ww-run's pre-flight applies the same rule, so both layers agree.
+Use the card's `Authorised edits` as `resources.write` and its `Read-only` paths as
+`resources.read`. ProcessCommander never starts overlapping cards, and ww-run's pre-flight applies
+the same rule (bare names, overlap test), so both layers agree.
+
+- Let `ww-run.cmd -Jobs 012,013 ...` write the jobs from the cards instead of copying paths by hand;
+  the declaration then comes from one place.
+- A job that runs ww-run as a **main** run (`-Main`, or a card without `Authorised edits`) must
+  declare `"write": ["**"]`, the lock ww-run itself takes. Without it ProcessCommander starts it
+  next to other runs, ww-run refuses with exit code 1, and the task queue counts a failed attempt
+  (retried, then `failed`). `-Jobs` writes `**` for such cards.
+- Worktree jobs declare no path resources (see section 1).
 
 ```json
 { "id": "ww-012", "summary": "card 012", "timeoutSec": 7200, "cwd": "C:\\proj",

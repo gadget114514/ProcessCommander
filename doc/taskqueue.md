@@ -35,7 +35,7 @@ pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
 | `maxAttempts`, `retryDelaySec` | Automatic retries (default 2) and delay between attempts. |
 | `success` | `exitCode` (default 0) AND `filesNewer` (exist and newer than the attempt start) AND `outputRegex` (last 200 log lines). |
 | `cwd`, `env`, `killExclude`, `priority` | Working directory, extra environment, image names excluded from tree kill, scheduling priority. |
-| `resources` | `{ "write": [...], "read": [...] }`: paths/globs (relative to `cwd`) or `@name` locks. Jobs whose sets overlap (write/write, write/read) never run together, across all queues; read/read may. On by default (Settings checkbox). See [resource-locks.md](resource-locks.md). |
+| `resources` | `{ "write": [...], "read": [...] }`: paths/globs (relative to `cwd`; a bare file name `Foo.cs` means `**/Foo.cs`) or `@name` locks. Jobs whose sets overlap (write/write, write/read) never run together, across all queues; read/read may. On by default (Settings checkbox). See [resource-locks.md](resource-locks.md). |
 | `instructionsFile` / `instructionsText` | Optional instructions captured into the job and materialized per revision. |
 
 **States**

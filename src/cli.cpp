@@ -317,7 +317,8 @@ TASK QUEUE:
       killExclude, resources {write,read}, priority, instructionsFile/instructionsText.
       resources: jobs whose write/read sets overlap (write/write, write/read) never
       run together, across all queues; read/read may. Paths/globs resolve against
-      cwd; "@name" is a named lock. Disable with Settings / config.json resource_locks.
+      cwd; a bare file name (Foo.cs) means **/Foo.cs; "@name" is a named lock.
+      Disable with Settings / config.json resource_locks.
 
   taskqueue list [<name>] [--state <state>]
       List jobs with state, queue, summary and blockedBy.

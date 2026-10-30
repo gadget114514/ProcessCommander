@@ -35,7 +35,7 @@ pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
 | `maxAttempts`, `retryDelaySec` | 自動再実行（既定 2）と試行間の待ち。 |
 | `success` | `exitCode`（既定 0）AND `filesNewer`（存在し、試行開始より新しい）AND `outputRegex`（ログ末尾 200 行）。 |
 | `cwd`, `env`, `killExclude`, `priority` | 作業ディレクトリ、追加環境変数、ツリー kill 除外イメージ名、優先度。 |
-| `resources` | `{ "write": [...], "read": [...] }`。パス/glob（`cwd` 基準）または `@name` ロック。集合が重なる（write/write、write/read）ジョブはキューをまたいでも同時に実行しない。read 同士は並列可。デフォルトはオン（設定画面のチェックボックス）。[resource-locks-ja.md](resource-locks-ja.md) を参照。 |
+| `resources` | `{ "write": [...], "read": [...] }`。パス/glob（`cwd` 基準。ファイル名だけの `Foo.cs` は `**/Foo.cs`）または `@name` ロック。集合が重なる（write/write、write/read）ジョブはキューをまたいでも同時に実行しない。read 同士は並列可。デフォルトはオン（設定画面のチェックボックス）。[resource-locks-ja.md](resource-locks-ja.md) を参照。 |
 | `instructionsFile` / `instructionsText` | 任意の指示書。ジョブに複製され、版ごとに実体化される。 |
 
 **状態**

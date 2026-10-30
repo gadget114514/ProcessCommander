@@ -865,15 +865,11 @@ static bool IsAbsoluteResourcePath(const std::string& s) {
     return (s.size() >= 2 && s[1] == ':') || (!s.empty() && s[0] == '/');
 }
 
-std::string NormalizeResource(const std::string& resource, const std::string& cwd) {
-    std::string s = TrimJsonStr(resource);
+// '\' -> '/', ASCII lower case, '.' / '..' resolved, no trailing '/'.
+static std::string NormalizeResourcePath(std::string s) {
     for (auto& c : s) {
         if (c == '\\') c = '/';
         else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    if (!s.empty() && s[0] == '@') return s;
-    if (!IsAbsoluteResourcePath(s) && !cwd.empty()) {
-        s = NormalizeResource(cwd, "") + "/" + s;
     }
     std::string prefix;
     if (s.compare(0, 2, "//") == 0) prefix = "//";
@@ -900,42 +896,105 @@ std::string NormalizeResource(const std::string& resource, const std::string& cw
     return out;
 }
 
+std::string NormalizeResource(const std::string& resource, const std::string& cwd) {
+    std::string s = TrimJsonStr(resource);
+    for (auto& c : s) {
+        if (c == '\\') c = '/';
+        else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (!s.empty() && s[0] == '@') return s;
+    // A bare file name (no '/') can live anywhere below cwd, as tools/ww reads it: Foo.cs -> **/foo.cs.
+    if (!s.empty() && s.find('/') == std::string::npos && s != "**" && s != "." && s != ".." &&
+        !IsAbsoluteResourcePath(s)) {
+        s = "**/" + s;
+    }
+    if (!IsAbsoluteResourcePath(s) && !cwd.empty()) {
+        s = NormalizeResourcePath(TrimJsonStr(cwd)) + "/" + s;
+    }
+    return NormalizeResourcePath(s);
+}
+
 static bool HasWildcard(const std::string& s) {
     return s.find_first_of("*?") != std::string::npos;
 }
 
-static std::string GlobLiteralPrefix(const std::string& s) {
-    size_t p = s.find_first_of("*?");
-    return p == std::string::npos ? s : s.substr(0, p);
-}
-
-// Glob match: '*' stays within a segment, '**' crosses segments ("**/" may match nothing), '?'
-// is one non-'/' character. With extend, a text that ends where the pattern continues with '/'
-// also matches (the pattern can match something below the text).
-static bool GlobMatchAt(const std::string& p, size_t pi, const std::string& t, size_t ti, bool extend) {
+// One glob segment against a literal segment: '*' is any run of characters, '?' one character.
+static bool SegmentGlobMatch(const std::string& p, size_t pi, const std::string& t, size_t ti) {
     while (pi < p.size()) {
         if (p[pi] == '*') {
-            bool dbl = pi + 1 < p.size() && p[pi + 1] == '*';
-            size_t next = pi + (dbl ? 2 : 1);
-            if (dbl && next < p.size() && p[next] == '/' && GlobMatchAt(p, next + 1, t, ti, extend)) return true;
-            for (size_t k = ti;; ++k) {
-                if (GlobMatchAt(p, next, t, k, extend)) return true;
-                if (k >= t.size()) break;
-                if (!dbl && t[k] == '/') break;
+            for (size_t k = ti; k <= t.size(); ++k) {
+                if (SegmentGlobMatch(p, pi + 1, t, k)) return true;
             }
             return false;
         }
-        if (ti >= t.size()) return extend && p[pi] == '/';
-        if (p[pi] == '?' ? t[ti] == '/' : p[pi] != t[ti]) return false;
+        if (ti >= t.size() || (p[pi] != '?' && p[pi] != t[ti])) return false;
         ++pi;
         ++ti;
     }
     return ti == t.size();
 }
 
-static bool IsAncestorPath(const std::string& anc, const std::string& path) {
-    return path.size() > anc.size() && path.compare(0, anc.size(), anc) == 0 &&
-           (path[anc.size()] == '/' || (!anc.empty() && anc.back() == '/'));
+// Two wildcard segments are assumed to overlap (conservative).
+static bool SegmentOverlap(const std::string& a, const std::string& b) {
+    bool globA = HasWildcard(a);
+    bool globB = HasWildcard(b);
+    if (!globA && !globB) return a == b;
+    if (globA && globB) return true;
+    return globA ? SegmentGlobMatch(a, 0, b, 0) : SegmentGlobMatch(b, 0, a, 0);
+}
+
+// "b.cpp" names a file, "src" may be a directory.
+static bool SegmentLooksLikeFile(const std::string& s) {
+    size_t dot = s.rfind('.');
+    if (dot == std::string::npos || dot + 1 >= s.size()) return false;
+    for (size_t i = dot + 1; i < s.size(); ++i) {
+        if (!std::isalnum(static_cast<unsigned char>(s[i]))) return false;
+    }
+    return true;
+}
+
+// The same rule as Test-SegmentsOverlap in tools/ww/ww-run.lib.ps1, so ww-run and the task
+// queue agree. A directory covers everything below it and a "**" segment matches any number of
+// segments. When one side is used up it is taken as an ancestor directory of the other, except
+// when a "**" has run over part of it and it ends in a file name: **/foo.cs does not overlap
+// src/b.cpp (it still overlaps src and src/foo.cs).
+static bool SegmentsOverlap(const std::vector<std::string>& a, size_t i,
+                            const std::vector<std::string>& b, size_t j, bool swallowed) {
+    if (i >= a.size() && j >= b.size()) return true;
+    if (i >= a.size() || j >= b.size()) {
+        const auto& restSide = i >= a.size() ? b : a;
+        size_t restFrom = i >= a.size() ? j : i;
+        bool onlyGlobstars = true;
+        for (size_t k = restFrom; k < restSide.size(); ++k) {
+            if (restSide[k] != "**") { onlyGlobstars = false; break; }
+        }
+        if (onlyGlobstars) return true;
+        const auto& done = i >= a.size() ? a : b;
+        if (swallowed && !done.empty() && SegmentLooksLikeFile(done.back())) return false;
+        return true;
+    }
+    if (a[i] == "**") {
+        if (i + 1 >= a.size()) return true;
+        for (size_t k = j; k <= b.size(); ++k) {
+            if (SegmentsOverlap(a, i + 1, b, k, swallowed || k > j)) return true;
+        }
+        return false;
+    }
+    if (b[j] == "**") return SegmentsOverlap(b, j, a, i, swallowed);
+    if (!SegmentOverlap(a[i], b[j])) return false;
+    return SegmentsOverlap(a, i + 1, b, j + 1, swallowed);
+}
+
+static std::vector<std::string> SplitResourcePath(const std::string& s) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (true) {
+        size_t e = s.find('/', i);
+        out.push_back(s.substr(i, e == std::string::npos ? std::string::npos : e - i));
+        if (e == std::string::npos) break;
+        i = e + 1;
+    }
+    return out;
 }
 
 bool ResourcesOverlap(const std::string& a, const std::string& b) {
@@ -943,22 +1002,7 @@ bool ResourcesOverlap(const std::string& a, const std::string& b) {
     bool namedA = a[0] == '@';
     bool namedB = b[0] == '@';
     if (namedA || namedB) return namedA && namedB && a == b;
-    bool globA = HasWildcard(a);
-    bool globB = HasWildcard(b);
-    if (!globA && !globB) return a == b || IsAncestorPath(a, b) || IsAncestorPath(b, a);
-    if (globA && globB) {
-        std::string pa = GlobLiteralPrefix(a);
-        std::string pb = GlobLiteralPrefix(b);
-        return pa.compare(0, pb.size(), pb) == 0 || pb.compare(0, pa.size(), pa) == 0;
-    }
-    const std::string& glob = globA ? a : b;
-    const std::string& lit = globA ? b : a;
-    // The glob matches the path itself, something below it, or a directory above it.
-    if (GlobMatchAt(glob, 0, lit, 0, true)) return true;
-    for (size_t p = lit.find('/'); p != std::string::npos; p = lit.find('/', p + 1)) {
-        if (p > 0 && GlobMatchAt(glob, 0, lit.substr(0, p), 0, false)) return true;
-    }
-    return false;
+    return SegmentsOverlap(SplitResourcePath(a), 0, SplitResourcePath(b), 0, false);
 }
 
 bool FindResourceConflict(const TaskQueueResources& a, const std::string& cwdA,
