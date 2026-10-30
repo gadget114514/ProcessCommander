@@ -1,7 +1,9 @@
 #include "../src/taskqueue.h"
 #include "../src/chain_guard.h"
 #include "../src/common.h"
+#include "../src/llm_stream.h"
 #include <windows.h>
+#include <ctime>
 #include <cstdio>
 #include <string>
 
@@ -185,6 +187,34 @@ int main() {
         Check(GetState(restarted, "R1") == "pending", "interrupted running job returns to pending after restart");
         Check(GetState(restarted, "R2") == "pending", "dependent of interrupted job stays pending after restart");
         restarted.ShutdownTaskQueueManager();
+    }
+
+    {
+        // agy reports usage per step; totals must be the sum, not the high-water mark.
+        SetUsageHistoryPersistence(true);
+        int64_t since = static_cast<int64_t>(time(nullptr)) - 5;
+        LlmStreamTracker tr;
+        tr.Init(9001, "agy", "");
+        std::string lines =
+            "{\"event\":\"init\",\"init\":{\"conversation_id\":\"smoke-no-transcript\"}}\n"
+            "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"smoke-no-transcript\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"agent_response\","
+            "\"usage\":{\"input_tokens\":7422,\"output_tokens\":677,\"thinking_tokens\":249,\"cache_read_tokens\":0,\"total_tokens\":8099}}}\n"
+            "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"smoke-no-transcript\",\"step_index\":2,\"state\":\"DONE\",\"step_type\":\"agent_response\","
+            "\"usage\":{\"input_tokens\":2675,\"output_tokens\":122,\"thinking_tokens\":48,\"cache_read_tokens\":128496,\"total_tokens\":2797}}}\n"
+            "{\"event\":\"result\",\"result\":{\"conversation_id\":\"smoke-no-transcript\",\"status\":\"SUCCESS\",\"response\":\"ok\","
+            "\"usage\":{\"input_tokens\":10097,\"output_tokens\":799,\"thinking_tokens\":297,\"cache_read_tokens\":128496,\"total_tokens\":10896}}}\n";
+        tr.IngestChunk(lines.data(), lines.size());
+        Check(tr.GetState().totalTokens == 10896, "agy per-step usage sums into state total");
+        uint64_t histTotal = 0;
+        for (const auto& p : GetLlmUsageHistory(since)) {
+            if (p.agentType == "agy") histTotal += p.totalTokens;
+        }
+        Check(histTotal == 10896, "agy per-step usage recorded once per step in usage history");
+        std::string hist = ReadFileUtf8Wide(dir + L"\\usage_history.jsonl");
+        size_t nl = 0;
+        for (char c : hist) if (c == '\n') nl++;
+        Check(nl == 2 && hist.find("\\n") == std::string::npos, "usage_history.jsonl written in logs dir, one line per point");
+        SetUsageHistoryPersistence(false);
     }
 
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASSED" : "FAILURES", g_failures);

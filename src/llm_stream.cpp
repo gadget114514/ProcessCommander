@@ -49,7 +49,7 @@ static uint64_t g_recordCalls = 0;
 static std::string g_lastSkipReason;
 
 static std::wstring UsageHistoryPathWide() {
-    return GetLogsDirectoryWide() + L"\usage_history.jsonl";
+    return GetLogsDirectoryWide() + L"\\usage_history.jsonl";
 }
 
 static void LoadUsageHistoryLocked() {
@@ -118,7 +118,7 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
         j["costUsd"] = p.costUsd;
         j["agentType"] = p.agentType;
         j["model"] = p.model;
-        out << j.dump() << "\\n";
+        out << j.dump() << "\n";
         }
     }
 }
@@ -866,13 +866,31 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
         }
     }
 
-    // Usage values in streams are usually cumulative; keep the high-water mark so
-    // totals do not double-count per-response deltas.
-    if (ev.totalTokens > state_.totalTokens) state_.totalTokens = ev.totalTokens;
-    if (ev.costUsd > state_.costUsd) state_.costUsd = ev.costUsd;
     uint64_t eventTokens = ev.totalTokens;
     if (eventTokens == 0) eventTokens = ev.inputTokens + ev.outputTokens + ev.thinkingTokens + ev.cacheReadTokens + ev.cacheWriteTokens;
-    if (eventTokens > 0 || ev.costUsd > 0.0) {
+    // agy reports usage per step (each DONE agent_response carries only that step's
+    // tokens), so every event is already a delta and totals are their sum.
+    const bool perStepUsage = (ev.agentType == "agy" || agentType_ == "agy");
+    if (perStepUsage && (eventTokens > 0 || ev.costUsd > 0.0)) {
+        state_.totalTokens += eventTokens;
+        state_.costUsd += ev.costUsd;
+        LlmUsagePoint pt;
+        pt.inputTokens = ev.inputTokens;
+        pt.outputTokens = ev.outputTokens;
+        pt.thinkingTokens = ev.thinkingTokens;
+        pt.cacheReadTokens = ev.cacheReadTokens;
+        pt.cacheWriteTokens = ev.cacheWriteTokens;
+        pt.totalTokens = eventTokens;
+        pt.costUsd = ev.costUsd;
+        pt.agentType = "agy";
+        pt.model = ev.model.empty() ? state_.model : ev.model;
+        RecordLlmUsagePoint(static_cast<int64_t>(time(nullptr)), pt);
+    }
+    // Other agents' usage values are usually cumulative; keep the high-water mark so
+    // totals do not double-count per-response deltas.
+    if (!perStepUsage && ev.totalTokens > state_.totalTokens) state_.totalTokens = ev.totalTokens;
+    if (!perStepUsage && ev.costUsd > state_.costUsd) state_.costUsd = ev.costUsd;
+    if (!perStepUsage && (eventTokens > 0 || ev.costUsd > 0.0)) {
         uint64_t deltaInput = (ev.inputTokens >= lastInput_) ? (ev.inputTokens - lastInput_) : ev.inputTokens;
         uint64_t deltaOutput = (ev.outputTokens >= lastOutput_) ? (ev.outputTokens - lastOutput_) : ev.outputTokens;
         uint64_t deltaThinking = (ev.thinkingTokens >= lastThinking_) ? (ev.thinkingTokens - lastThinking_) : ev.thinkingTokens;
