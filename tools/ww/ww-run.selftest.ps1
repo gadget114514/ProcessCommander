@@ -57,6 +57,56 @@ Check ((Test-RunConflict -Runs @($mainAgy901) -Task "901" -Worktree).Blocked) "s
 Check ((Test-RunConflict -Runs @($mainAgy901) -Task "902").Blocked) "a second main run is blocked by an active agy main run"
 Check (-not (Test-RunConflict -Runs @($wtAgy902) -Task "901").Blocked) "an agy worktree run does not block the main run"
 
+Write-Host "`n== 2b. shared runs: declared paths decide (doc/resource-locks.md) ==" -ForegroundColor Cyan
+Check (Test-PathPatternOverlap (ConvertTo-WwPattern 'src/') (ConvertTo-WwPattern 'src/a.cpp')) "directory covers its files"
+Check (-not (Test-PathPatternOverlap (ConvertTo-WwPattern 'src/a.cpp') (ConvertTo-WwPattern 'src/b.cpp'))) "different files do not overlap"
+Check (-not (Test-PathPatternOverlap (ConvertTo-WwPattern 'src/') (ConvertTo-WwPattern 'src2/a.cpp'))) "sibling with common prefix does not overlap"
+Check (Test-PathPatternOverlap (ConvertTo-WwPattern 'src/*.cpp') (ConvertTo-WwPattern 'SRC\A.cpp')) "glob matches; case and slashes normalised"
+Check (-not (Test-PathPatternOverlap (ConvertTo-WwPattern 'src/*.cpp') (ConvertTo-WwPattern 'src/a.h'))) "glob does not match other extension"
+Check (Test-PathPatternOverlap (ConvertTo-WwPattern 'Foo.cs') (ConvertTo-WwPattern 'Assets/X/Foo.cs')) "bare file name matches anywhere"
+Check (Test-PathPatternOverlap (ConvertTo-WwPattern 'src/**') (ConvertTo-WwPattern 'src/x/y/z.cpp')) "** covers nested files"
+Check ($null -eq (Find-PathConflict -Reads @('src/a.h') -OtherReads @('src/a.h'))) "read x read does not conflict"
+Check ($null -ne (Find-PathConflict -Reads @('src/a.h') -OtherEdits @('src/a.h'))) "read x write conflicts"
+Check ($null -ne (Find-PathConflict -Edits @('src/a.h') -OtherReads @('src/a.h'))) "write x read conflicts"
+
+$sh901 = New-FakeRun 31 'claude -p "Execute C:/repo/ww-data/tasks/901-alpha.md. Read AGENTS.md first. SHARED RUN: other runs edit this checkout in parallel."'
+$records = @{
+    '901' = [pscustomobject]@{ Task = '901'; Shared = $true; Edits = @('src/a.cpp'); Reads = @('src/common.h') }
+}
+Check (-not (Test-RunConflict -Runs @($sh901) -Task "902" -Shared -Edits @('src/b.cpp') -Records $records).Blocked) "shared runs with disjoint edits run together"
+Check ((Test-RunConflict -Runs @($sh901) -Task "902" -Shared -Edits @('src/a.cpp') -Records $records).Blocked) "shared runs editing the same file are blocked"
+Check ((Test-RunConflict -Runs @($sh901) -Task "902" -Shared -Edits @('src/common.h') -Records $records).Blocked) "editing a file another run reads is blocked"
+Check (-not (Test-RunConflict -Runs @($sh901) -Task "902" -Shared -Edits @('src/b.cpp') -Reads @('src/common.h') -Records $records).Blocked) "two runs reading the same file run together"
+Check ((Test-RunConflict -Runs @($sh901) -Task "902" -Edits @('src/b.cpp') -Records $records).Blocked) "a plain main run locks the whole checkout"
+Check ((Test-RunConflict -Runs @($sh901) -Task "902" -Shared -Records $records).Blocked) "a shared run without Authorised edits locks the whole checkout"
+Check ((Test-RunConflict -Runs @($main902) -Task "901" -Shared -Edits @('src/b.cpp') -Records @{}).Blocked) "a run without a record locks the whole checkout"
+Check ((Test-RunConflict -Runs @($sh901) -Task "901" -Shared -Edits @('src/zzz.cpp') -Records $records).Blocked) "same card is still refused in shared mode"
+
+$readCard = Join-Path $base "904-card.md"
+@'
+# 904
+
+## Authorised edits
+`src/b.cpp`
+
+## Read-only
+`src/common.h`, `doc/**`
+'@ | Set-Content -LiteralPath $readCard -Encoding UTF8
+$readPaths = @(Get-CardReadPaths -CardPath $readCard)
+Check ($readPaths.Count -eq 2 -and $readPaths[0] -eq 'src/common.h') "Read-only section parsed"
+Check (@(Get-AuthorisedEditPaths -CardPath $readCard).Count -eq 1) "Read-only paths are not edits"
+
+$eventsFile = Join-Path $base "violations.events.jsonl"
+@(
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"C:\\repo\\src\\b.cpp"}}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"C:\\repo\\src\\other.cpp"}}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"C:\\repo\\src\\read.cpp"}}]}}',
+    '{"type":"tool_use","part":{"tool":"write","state":{"input":{"filePath":"C:/repo/ww-data/reports/904.md"}}}}',
+    '{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"C:\\repo\\README.md"}]}}'
+) | Set-Content -LiteralPath $eventsFile -Encoding UTF8
+$viol = @(Get-EditViolations -EventsFile $eventsFile -WorkDir 'C:\repo' -Edits @('src/b.cpp'))
+Check ($viol.Count -eq 2 -and $viol -contains 'src/other.cpp' -and $viol -contains 'readme.md') "edits outside Authorised edits are reported (reads and ww-data are not)"
+
 Write-Host "`n== 3. authorisation parsing and untracked-path pre-flight ==" -ForegroundColor Cyan
 $gitRepo = Join-Path $base "gitrepo"
 New-Item -ItemType Directory -Force (Join-Path $gitRepo "Assets\Tracked"), (Join-Path $gitRepo "Assets\Untracked") | Out-Null

@@ -8,10 +8,13 @@
 #         Tools\ww\ww-run.cmd 012 -Worktree            (parallel run in .claude\worktrees\ww-012)
 #         Tools\ww\ww-run.cmd 012 -Worktree -Base main
 #         Tools\ww\ww-run.cmd 012 -Worktree -DryRun    (print the plan, change nothing)
+#         Tools\ww\ww-run.cmd 012 -Shared              (main checkout, in parallel with runs whose
+#                                                     Authorised edits / Read-only paths do not overlap)
 param(
     [Parameter(Mandatory = $true)][string]$Task,
     [string]$Extra = "",
     [switch]$Worktree,
+    [switch]$Shared,
     [string]$Base = "main",
     [ValidateSet("agy", "opencode", "claude", "codex")][string]$Engine = $(if ($env:WW_ENGINE) { $env:WW_ENGINE } else { "agy" }),
     [string]$Model = $env:WW_MODEL,
@@ -35,6 +38,11 @@ $taskRunFile = Join-Path $runDir "$Task.json"
 $taskLastFile = Join-Path $runDir "$Task.last.json"
 Set-Location $root
 
+if ($Worktree -and $Shared) {
+    Write-Host "[ww-run] -Shared and -Worktree cannot be combined" -ForegroundColor Red
+    exit 1
+}
+
 # 1. Resolve the task card. -DryRun still prints a plan when the card is missing.
 $card = Get-ChildItem (Join-Path $data "tasks") -Filter "$Task-*.md" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $card -and -not $DryRun) {
@@ -55,12 +63,20 @@ if ($Worktree) {
         $(if ($DryRun) { "DRYRUN" } else { "planned" }), $plan.Path, $plan.Branch, $plan.Base) -ForegroundColor Cyan
 }
 
+# Declared paths (doc/resource-locks.md): Authorised edits are written, Read-only paths are read.
+$edits = @(if ($card) { Get-AuthorisedEditPaths -CardPath $card.FullName })
+$reads = @(if ($card) { Get-CardReadPaths -CardPath $card.FullName })
+if ($Shared -and $edits.Count -eq 0) {
+    Write-Host "[ww-run] -Shared: the card has no Authorised edits paths; locking the whole checkout" -ForegroundColor Yellow
+}
+
 # 3. Pre-flight: per-task duplicate check and (for -Worktree) tracked-files check.
 $runs = @(Get-WorkerRuns)
 # Remove stale per-task records before the duplicate check (a dead run must not block a new one).
 # -DryRun stays free of side effects, so it neither cleans nor creates anything.
 if (-not $DryRun) { $null = Clear-DeadRunRecords -DataDir $data -ScriptName "ww-run" -Runs $runs }
-$conflict = Test-RunConflict -Runs $runs -Task $Task -Worktree:$Worktree
+$conflict = Test-RunConflict -Runs $runs -Task $Task -Worktree:$Worktree -Shared:$Shared -Edits $edits -Reads $reads `
+    -Records (Get-ActiveRunRecords -DataDir $data)
 if ($conflict.Blocked) {
     Write-Host "[ww-run] not starting: $($conflict.Reason)." -ForegroundColor Red
     $conflict.Runs | ForEach-Object { Write-Host ("  PID {0}: {1}" -f $_.ProcessId, $_.CommandLine) }
@@ -125,6 +141,9 @@ if ($Worktree) {
 }
 $prompt = "Execute $promptCard. Read AGENTS.md first. $Extra".Trim()
 $workDir = $root
+if ($Shared) {
+    $prompt += " SHARED RUN: other runs edit this checkout in parallel. Edit only the files listed under Authorised edits. Skip compile/tests; list them under 'Verification pending' in the report. Do not commit."
+}
 if ($Worktree) {
     $workDir = $plan.Path
     $prompt += " WORKTREE RUN: work only inside the worktree $($plan.Path). Skip compile/tests; list them under 'Verification pending' in the report. Write the report to $($paths.RelUrl)/reports/$Task.md inside the worktree and commit it with git add -f; do not merge to main. The copied task card is for reading only; do not commit it."
@@ -138,14 +157,16 @@ if ($DryRun) {
     Write-Host "  model       : $(if ($Model) { $Model } elseif ($Engine -eq 'agy') { 'gemini-3.8-flash-medium (default)' } else { '(engine default)' })"
     Write-Host "  command     : $(Get-EngineCommand -Engine $Engine -Model $Model)"
     Write-Host "  data dir    : $data"
-    Write-Host "  mode        : $(if ($Worktree) { 'worktree' } else { 'main' })"
+    Write-Host "  mode        : $(if ($Worktree) { 'worktree' } elseif ($Shared) { 'shared' } else { 'main' })"
+    Write-Host "  edits       : $(if ($Worktree) { 'n/a (worktree)' } elseif ($Shared -and $edits.Count) { $edits -join ', ' } else { '** (whole checkout)' })"
+    Write-Host "  reads       : $(if ($Shared -and $reads.Count) { $reads -join ', ' } else { '-' })"
     Write-Host "  card        : $cardDisplay"
     Write-Host "  working dir : $workDir"
     Write-Host "  branch      : $(if ($Worktree) { "$($plan.Branch) from $($plan.Base)" } else { 'n/a (main checkout)' })"
     Write-Host "  run record  : $taskRunFile"
     Write-Host "  last record : $taskLastFile$(if ($Worktree) { ' (main last_run.json is not touched)' } else { ", $lastFile" })"
     Write-Host "  log         : $logDir\$Task-<stamp>.log"
-    Write-Host "  duplicate   : $(if ($conflict.Blocked) { 'WOULD REFUSE' } else { 'ok' })"
+    Write-Host "  duplicate   : $(if ($conflict.Blocked) { 'WOULD REFUSE: ' + $conflict.Reason } else { 'ok' })"
     Write-Host "  pre-flight  : $(if ($untracked.Count) { 'WOULD REFUSE: ' + ($untracked -join ', ') } else { 'ok' })"
     if ($conflict.Blocked -or $untracked.Count) { exit 1 } else { exit 0 }
 }
@@ -167,6 +188,9 @@ $record = @{
     Started     = $start.ToString("s")
     Host        = $PID
     Worktree    = $(if ($Worktree) { $plan.Path } else { $null })
+    Shared      = [bool]$Shared
+    Edits       = @($edits)
+    Reads       = @($reads)
     Engine      = $Engine
     WorkerPid   = $null
     OpencodePid = $null
@@ -248,6 +272,14 @@ try {
     $end = Get-Date
     $mins = [math]::Round(($end - $start).TotalMinutes, 1)
     $reports = @(Get-ReportsWritten -ReportsDir $reportsDir -Started $start -Task $Task)
+    $violations = @()
+    if ($edits.Count -gt 0) {
+        try { $violations = @(Get-EditViolations -EventsFile $events -WorkDir $workDir -Edits $edits -RelData $paths.RelData) } catch {}
+        if ($violations.Count -gt 0) {
+            Write-Host "[ww-run] WARNING: edited outside Authorised edits: $($violations -join ', ')" -ForegroundColor Yellow
+            "edit violations: $($violations -join ', ')" | Add-Content -Encoding UTF8 $log
+        }
+    }
     $last = @{
         Task           = $Task
         Card           = $card.Name
@@ -257,6 +289,8 @@ try {
         Minutes        = $mins
         ExitCode       = $exit
         ReportsWritten = @($reports)
+        EditViolations = @($violations)
+        Shared         = [bool]$Shared
         Worktree       = $(if ($Worktree) { $plan.Path } else { $null })
         Engine         = $Engine
     }

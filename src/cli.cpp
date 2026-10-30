@@ -571,7 +571,7 @@ void PrintCliUsageJson() {
         {"name": "cancel", "usage": "pcder taskqueue cancel <id>", "description": "Cancel a job; a running attempt is killed and is not retried."},
         {"name": "pause", "usage": "pcder taskqueue pause <name>", "description": "Stop starting new jobs in the queue; running jobs continue."},
         {"name": "resume", "usage": "pcder taskqueue resume <name>", "description": "Resume starting jobs in the queue."},
-        {"name": "graph", "usage": "pcder taskqueue graph [<name>] [--root <id>]", "description": "Dependency graph with ready, waiting_for, blocked and dependents."},
+        {"name": "graph", "usage": "pcder taskqueue graph [<name>] [--root <id>]", "description": "Dependency graph with ready, waiting_for, resource_wait, blocked and dependents."},
         {"name": "wait", "usage": "pcder taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]", "description": "Long-poll until the queue version changes."},
         {"name": "purge", "usage": "pcder taskqueue purge <name> [--states succeeded,failed,cancelled]", "description": "Remove finished jobs."}
       ],
@@ -719,7 +719,7 @@ void PrintCliUsageJson() {
     },
     "taskqueue_job": {
       "required": ["id", "command", "summary", "timeoutSec"],
-      "optional": ["cwd", "env", "dependsOn", "idle", "maxAttempts", "retryDelaySec", "success", "killExclude", "priority", "instructionsFile", "instructionsText"],
+      "optional": ["cwd", "env", "dependsOn", "idle", "maxAttempts", "retryDelaySec", "success", "killExclude", "resources", "priority", "instructionsFile", "instructionsText"],
       "summary": "One line, max 200 chars; exported as PC_JOB_SUMMARY and substituted for {summary}.",
       "timeoutSec": "Per job; > 0 and <= queue maxTimeoutSec (default 7200). Never summed.",
       "success": "exitCode (default 0) AND filesNewer (exist and newer than the attempt start) AND outputRegex (last 200 log lines).",

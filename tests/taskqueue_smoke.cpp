@@ -167,6 +167,72 @@ int main() {
         tqm.TaskQueueCancel("S3", err);
     }
 
+    {
+        // Scheduler: W1/W2 write the same file -> serialized; R1/R2 only read it -> parallel.
+        std::wstring resDir = dir + L"\\res";
+        CreateDirectoryW(resDir.c_str(), nullptr);
+        std::string resCwd = JsonEscape(WideToUtf8(resDir));
+        std::string jobsW = "["
+            "{\"id\":\"W1\",\"command\":\"ping -n 4 127.0.0.1\",\"summary\":\"W1\",\"timeoutSec\":30,\"cwd\":\"" + resCwd + "\","
+            "\"resources\":{\"write\":[\"shared.txt\"]}},"
+            "{\"id\":\"W2\",\"command\":\"ping -n 4 127.0.0.1\",\"summary\":\"W2\",\"timeoutSec\":30,\"cwd\":\"" + resCwd + "\","
+            "\"resources\":{\"write\":[\"shared.txt\"]}}"
+            "]";
+        Check(JsonGetBool(tqm.TaskQueueAdd("resw", jobsW, 4, "", err), "ok", false), "resource writers added: " + err);
+        Check(WaitForState(tqm, "W1", "running", 5000), "W1 starts");
+        Sleep(800);
+        Check(GetState(tqm, "W2") == "pending", "W2 waits while W1 holds shared.txt");
+        std::string g = tqm.TaskQueueGraph("resw", "", err);
+        Check(g.find("\"resource_wait\":\"W1: shared.txt\"") != std::string::npos, "graph shows resource_wait for W2");
+        Check(WaitForState(tqm, "W1", "succeeded", 20000), "W1 succeeded");
+        Check(WaitForState(tqm, "W2", "succeeded", 20000), "W2 runs after W1 releases shared.txt");
+
+        std::string jobsR = "["
+            "{\"id\":\"RD1\",\"command\":\"ping -n 4 127.0.0.1\",\"summary\":\"RD1\",\"timeoutSec\":30,\"cwd\":\"" + resCwd + "\","
+            "\"resources\":{\"read\":[\"shared.txt\"]}},"
+            "{\"id\":\"RD2\",\"command\":\"ping -n 4 127.0.0.1\",\"summary\":\"RD2\",\"timeoutSec\":30,\"cwd\":\"" + resCwd + "\","
+            "\"resources\":{\"read\":[\"shared.txt\"]}}"
+            "]";
+        Check(JsonGetBool(tqm.TaskQueueAdd("resr", jobsR, 4, "", err), "ok", false), "resource readers added: " + err);
+        Check(WaitForState(tqm, "RD1", "running", 5000) && WaitForState(tqm, "RD2", "running", 5000), "readers run in parallel");
+        Check(WaitForState(tqm, "RD2", "succeeded", 20000), "reader RD2 succeeded");
+
+        // Order across queues: a writer queued behind a running reader is not overtaken by a
+        // reader registered later in another queue (no writer starvation).
+        auto one = [&](const std::string& id, const std::string& mode) {
+            return "[{\"id\":\"" + id + "\",\"command\":\"ping -n 4 127.0.0.1\",\"summary\":\"" + id +
+                   "\",\"timeoutSec\":30,\"cwd\":\"" + resCwd + "\",\"resources\":{\"" + mode + "\":[\"order.txt\"]}}]";
+        };
+        Check(JsonGetBool(tqm.TaskQueueAdd("ordq1", one("OA", "read"), 2, "", err), "ok", false), "OA added: " + err);
+        Check(WaitForState(tqm, "OA", "running", 5000), "reader OA starts");
+        Check(JsonGetBool(tqm.TaskQueueAdd("ordq2", one("OW", "write"), 2, "", err), "ok", false), "OW added: " + err);
+        Check(JsonGetBool(tqm.TaskQueueAdd("ordq3", one("OB", "read"), 2, "", err), "ok", false), "OB added: " + err);
+        Sleep(800);
+        Check(GetState(tqm, "OW") == "pending", "writer OW waits for reader OA");
+        Check(GetState(tqm, "OB") == "pending", "later reader OB in another queue waits behind writer OW");
+        std::string og = tqm.TaskQueueGraph("ordq3", "", err);
+        Check(og.find("OW (queued ahead): order.txt") != std::string::npos, "graph shows OB queued behind OW");
+        Check(WaitForState(tqm, "OW", "running", 20000), "OW starts after OA");
+        Check(GetState(tqm, "OB") == "pending", "OB still waits while OW writes");
+        Check(WaitForState(tqm, "OB", "succeeded", 30000), "OB runs after OW");
+
+        // Locks off (settings checkbox): conflicting writers run together.
+        tqm.SetResourceLocksEnabled(false);
+        Check(JsonGetBool(tqm.TaskQueueAdd("resoff1", one("OFF1", "write"), 2, "", err), "ok", false), "OFF1 added: " + err);
+        Check(JsonGetBool(tqm.TaskQueueAdd("resoff2", one("OFF2", "write"), 2, "", err), "ok", false), "OFF2 added: " + err);
+        Check(WaitForState(tqm, "OFF1", "running", 5000) && WaitForState(tqm, "OFF2", "running", 5000),
+              "with resource locks off, conflicting writers run in parallel");
+        Check(tqm.TaskQueueGraph("resoff1", "", err).find("\"resource_locks\":false") != std::string::npos,
+              "graph reports resource_locks off");
+        tqm.SetResourceLocksEnabled(true);
+        Check(WaitForState(tqm, "OFF2", "succeeded", 20000), "lock-off writer finished");
+
+        std::string bad = "[{\"id\":\"RB\",\"command\":\"cmd /c exit 0\",\"summary\":\"bad\",\"timeoutSec\":10,\"resources\":[\"x\"]}]";
+        Check(!JsonGetBool(tqm.TaskQueueAdd("resw", bad, 0, "", err), "ok", false), "resources must be an object");
+        std::string got = tqm.TaskQueueGet("W1", false, 0, err);
+        Check(got.find("\"resources\":{\"write\":[\"shared.txt\"],\"read\":[]}") != std::string::npos, "resources returned by get");
+    }
+
     pm.SetProcessFinishedCallback(nullptr);
     tqm.ShutdownTaskQueueManager();
 
@@ -215,6 +281,35 @@ int main() {
         for (char c : hist) if (c == '\n') nl++;
         Check(nl == 2 && hist.find("\\n") == std::string::npos, "usage_history.jsonl written in logs dir, one line per point");
         SetUsageHistoryPersistence(false);
+    }
+
+    {
+        // Resource overlap rules (doc/resource-locks.md).
+        Check(NormalizeResource("src\\A.cpp", "C:\\Proj\\") == "c:/proj/src/a.cpp", "relative resource resolves against cwd");
+        Check(NormalizeResource("./src/../doc/x.md", "c:/p") == "c:/p/doc/x.md", "resource . and .. are resolved");
+        Check(NormalizeResource("@Build", "c:/p") == "@build", "named lock is not resolved against cwd");
+        Check(ResourcesOverlap("c:/p/src", "c:/p/src/a.cpp"), "directory covers its files");
+        Check(!ResourcesOverlap("c:/p/src", "c:/p/src2/a.cpp"), "sibling with common prefix does not overlap");
+        Check(ResourcesOverlap("c:/p/src/**/*.cpp", "c:/p/src/x/y.cpp"), "** glob matches nested file");
+        Check(!ResourcesOverlap("c:/p/src/*.cpp", "c:/p/src/a.h"), "* glob does not match other extension");
+        Check(!ResourcesOverlap("c:/p/src/*.cpp", "c:/p/src/x/a.cpp"), "* glob does not cross /");
+        Check(ResourcesOverlap("c:/p/**/foo.cs", "c:/p/src"), "glob that can match below a directory overlaps it");
+        Check(ResourcesOverlap("c:/p/src/*", "c:/p/src/x/a.cpp"), "glob matching an ancestor directory overlaps");
+        Check(ResourcesOverlap("c:/p/doc/**", "c:/p/doc/*.md"), "glob x glob with nested literal prefixes overlaps");
+        Check(!ResourcesOverlap("c:/p/doc/**", "c:/p/src/*.md"), "glob x glob with disjoint prefixes does not overlap");
+        Check(!ResourcesOverlap("@build", "c:/p/build"), "named lock never overlaps a path");
+
+        TaskQueueResources w1, w2, r1, r2;
+        w1.write = {"src/a.cpp"};
+        w2.write = {"src/**"};
+        r1.read = {"src/a.cpp"};
+        r2.read = {"src/**"};
+        std::string res;
+        Check(FindResourceConflict(w1, "c:/p", w2, "c:/p", res), "write x write conflicts");
+        Check(FindResourceConflict(w1, "c:/p", r2, "c:/p", res), "write x read conflicts");
+        Check(FindResourceConflict(r1, "c:/p", w2, "c:/p", res), "read x write conflicts");
+        Check(!FindResourceConflict(r1, "c:/p", r2, "c:/p", res), "read x read does not conflict");
+        Check(!FindResourceConflict(w1, "c:/p", w2, "c:/p/.claude/worktrees/x", res), "same relative path in another cwd does not conflict");
     }
 
     std::printf("%s (%d failures)\n", g_failures == 0 ? "ALL PASSED" : "FAILURES", g_failures);

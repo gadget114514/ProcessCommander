@@ -377,6 +377,39 @@ static std::string SuccessToJson(const TaskQueueSuccess& s) {
     return oss.str();
 }
 
+static std::string ResourcesToJson(const TaskQueueResources& r) {
+    return "{\"write\":" + StrArrayToJson(r.write) + ",\"read\":" + StrArrayToJson(r.read) + "}";
+}
+
+static TaskQueueResources ParseResources(const std::string& obj) {
+    TaskQueueResources r;
+    r.write = JsonFieldStrArray(obj, "write");
+    r.read = JsonFieldStrArray(obj, "read");
+    return r;
+}
+
+// "resources" as given by a caller (add/update): an object with optional string arrays
+// "write" and "read". Returns false with a message on a malformed value.
+static bool ParseResourcesChecked(const std::string& json, TaskQueueResources& out, std::string& err) {
+    out = TaskQueueResources();
+    if (!HasJsonKey(json, "resources")) return true;
+    std::string obj = JsonFieldObj(json, "resources", "");
+    if (obj.empty()) {
+        err = "resources must be an object like {\"write\":[...],\"read\":[...]}";
+        return false;
+    }
+    out = ParseResources(obj);
+    for (const auto* list : { &out.write, &out.read }) {
+        for (const auto& r : *list) {
+            if (r == "@") {
+                err = "resources: '@' needs a name (e.g. @build)";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 static TaskQueueAttempt ParseAttempt(const std::string& j) {
     TaskQueueAttempt a;
     a.n = static_cast<int>(JsonFieldInt(j, "n", 1));
@@ -481,6 +514,7 @@ static TaskQueueJob ParseJob(const std::string& j) {
     job.success.filesNewer = JsonFieldStrArray(successObj, "files_newer");
     job.success.outputRegex = JsonFieldStr(successObj, "output_regex", "");
     job.killExclude = JsonFieldStrArray(j, "kill_exclude");
+    job.resources = ParseResources(JsonFieldObj(j, "resources"));
     job.priority = static_cast<int>(JsonFieldInt(j, "priority", 0));
     job.state = JsonFieldStr(j, "state", "pending");
     for (const auto& attJson : JsonFieldObjArray(j, "attempts")) {
@@ -779,6 +813,7 @@ std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeIns
         << ",\"retry_delay_sec\":" << job.retryDelaySec
         << ",\"success\":" << SuccessToJson(job.success)
         << ",\"kill_exclude\":" << StrArrayToJson(job.killExclude)
+        << ",\"resources\":" << ResourcesToJson(job.resources)
         << ",\"priority\":" << job.priority
         << ",\"state\":\"" << JsonEscape(job.state) << "\""
         << ",\"attempts\":" << AttemptsToJson(job.attempts)
@@ -820,6 +855,188 @@ bool TaskQueueManager::IsDepSatisfied(const TaskQueueJob& dep, const std::string
         return dep.state == "succeeded" || dep.state == "failed" || dep.state == "cancelled";
     }
     return dep.state == "succeeded";
+}
+
+// ---------------------------------------------------------------------------
+// Resource locks (doc/resource-locks.md)
+// ---------------------------------------------------------------------------
+
+static bool IsAbsoluteResourcePath(const std::string& s) {
+    return (s.size() >= 2 && s[1] == ':') || (!s.empty() && s[0] == '/');
+}
+
+std::string NormalizeResource(const std::string& resource, const std::string& cwd) {
+    std::string s = TrimJsonStr(resource);
+    for (auto& c : s) {
+        if (c == '\\') c = '/';
+        else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (!s.empty() && s[0] == '@') return s;
+    if (!IsAbsoluteResourcePath(s) && !cwd.empty()) {
+        s = NormalizeResource(cwd, "") + "/" + s;
+    }
+    std::string prefix;
+    if (s.compare(0, 2, "//") == 0) prefix = "//";
+    else if (!s.empty() && s[0] == '/') prefix = "/";
+    std::vector<std::string> segs;
+    size_t i = prefix.size();
+    while (i <= s.size()) {
+        size_t e = s.find('/', i);
+        if (e == std::string::npos) e = s.size();
+        std::string seg = s.substr(i, e - i);
+        if (seg == "..") {
+            if (!segs.empty() && segs.back() != ".." && segs.back().find(':') == std::string::npos) segs.pop_back();
+            else if (segs.empty()) segs.push_back(seg);
+        } else if (!seg.empty() && seg != ".") {
+            segs.push_back(seg);
+        }
+        i = e + 1;
+    }
+    std::string out = prefix;
+    for (size_t k = 0; k < segs.size(); ++k) {
+        if (k > 0) out += "/";
+        out += segs[k];
+    }
+    return out;
+}
+
+static bool HasWildcard(const std::string& s) {
+    return s.find_first_of("*?") != std::string::npos;
+}
+
+static std::string GlobLiteralPrefix(const std::string& s) {
+    size_t p = s.find_first_of("*?");
+    return p == std::string::npos ? s : s.substr(0, p);
+}
+
+// Glob match: '*' stays within a segment, '**' crosses segments ("**/" may match nothing), '?'
+// is one non-'/' character. With extend, a text that ends where the pattern continues with '/'
+// also matches (the pattern can match something below the text).
+static bool GlobMatchAt(const std::string& p, size_t pi, const std::string& t, size_t ti, bool extend) {
+    while (pi < p.size()) {
+        if (p[pi] == '*') {
+            bool dbl = pi + 1 < p.size() && p[pi + 1] == '*';
+            size_t next = pi + (dbl ? 2 : 1);
+            if (dbl && next < p.size() && p[next] == '/' && GlobMatchAt(p, next + 1, t, ti, extend)) return true;
+            for (size_t k = ti;; ++k) {
+                if (GlobMatchAt(p, next, t, k, extend)) return true;
+                if (k >= t.size()) break;
+                if (!dbl && t[k] == '/') break;
+            }
+            return false;
+        }
+        if (ti >= t.size()) return extend && p[pi] == '/';
+        if (p[pi] == '?' ? t[ti] == '/' : p[pi] != t[ti]) return false;
+        ++pi;
+        ++ti;
+    }
+    return ti == t.size();
+}
+
+static bool IsAncestorPath(const std::string& anc, const std::string& path) {
+    return path.size() > anc.size() && path.compare(0, anc.size(), anc) == 0 &&
+           (path[anc.size()] == '/' || (!anc.empty() && anc.back() == '/'));
+}
+
+bool ResourcesOverlap(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return false;
+    bool namedA = a[0] == '@';
+    bool namedB = b[0] == '@';
+    if (namedA || namedB) return namedA && namedB && a == b;
+    bool globA = HasWildcard(a);
+    bool globB = HasWildcard(b);
+    if (!globA && !globB) return a == b || IsAncestorPath(a, b) || IsAncestorPath(b, a);
+    if (globA && globB) {
+        std::string pa = GlobLiteralPrefix(a);
+        std::string pb = GlobLiteralPrefix(b);
+        return pa.compare(0, pb.size(), pb) == 0 || pb.compare(0, pa.size(), pa) == 0;
+    }
+    const std::string& glob = globA ? a : b;
+    const std::string& lit = globA ? b : a;
+    // The glob matches the path itself, something below it, or a directory above it.
+    if (GlobMatchAt(glob, 0, lit, 0, true)) return true;
+    for (size_t p = lit.find('/'); p != std::string::npos; p = lit.find('/', p + 1)) {
+        if (p > 0 && GlobMatchAt(glob, 0, lit.substr(0, p), 0, false)) return true;
+    }
+    return false;
+}
+
+bool FindResourceConflict(const TaskQueueResources& a, const std::string& cwdA,
+                          const TaskQueueResources& b, const std::string& cwdB,
+                          std::string& outResource) {
+    if (a.empty() || b.empty()) return false;
+    auto norm = [](const std::vector<std::string>& v, const std::string& cwd) {
+        std::vector<std::string> out;
+        for (const auto& r : v) out.push_back(NormalizeResource(r, cwd));
+        return out;
+    };
+    std::vector<std::string> aw = norm(a.write, cwdA), ar = norm(a.read, cwdA);
+    std::vector<std::string> bw = norm(b.write, cwdB), br = norm(b.read, cwdB);
+    auto check = [&](const std::vector<std::string>& x, const std::vector<std::string>& xRaw,
+                     const std::vector<std::string>& y) {
+        for (size_t i = 0; i < x.size(); ++i) {
+            for (const auto& r : y) {
+                if (ResourcesOverlap(x[i], r)) { outResource = xRaw[i]; return true; }
+            }
+        }
+        return false;
+    };
+    return check(aw, a.write, bw) || check(aw, a.write, br) || check(ar, a.read, bw);
+}
+
+void TaskQueueManager::SetResourceLocksEnabled(bool enabled) {
+    resourceLocksEnabled_.store(enabled);
+    RequestSchedulerTick();
+}
+
+bool TaskQueueManager::IsReadyLocked(const TaskQueueJob& job, int64_t nowMs) const {
+    if (job.state != "pending" || job.retryAtMs > nowMs) return false;
+    for (const auto& d : job.dependsOn) {
+        const TaskQueueJob* dep = FindJobConst(d.id);
+        if (!dep || !IsDepSatisfied(*dep, d.on)) return false;
+    }
+    return true;
+}
+
+// Global start order: higher priority first, then earlier registration, then queue and id.
+bool TaskQueueManager::RunsBefore(const TaskQueueJob& a, const TaskQueueJob& b) {
+    if (a.priority != b.priority) return a.priority > b.priority;
+    if (a.createdAt != b.createdAt) return a.createdAt < b.createdAt;
+    if (a.taskqueue != b.taskqueue) return a.taskqueue < b.taskqueue;
+    return a.num < b.num;
+}
+
+bool TaskQueueManager::FindQueuedResourceConflictLocked(const TaskQueueJob& job, int64_t nowMs,
+                                                        std::string& outHolder, std::string& outResource) const {
+    if (!resourceLocksEnabled_.load() || job.resources.empty()) return false;
+    for (const auto& [name, tq] : queues_) {
+        (void)name;
+        if (tq.paused) continue;
+        for (const auto& other : tq.jobs) {
+            if (other.id == job.id || !RunsBefore(other, job) || !IsReadyLocked(other, nowMs)) continue;
+            if (FindResourceConflict(job.resources, job.cwd, other.resources, other.cwd, outResource)) {
+                outHolder = other.id;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool TaskQueueManager::FindRunningResourceConflictLocked(const TaskQueueJob& job, std::string& outHolder,
+                                                         std::string& outResource) const {
+    if (!resourceLocksEnabled_.load() || job.resources.empty()) return false;
+    for (const auto& [name, tq] : queues_) {
+        (void)name;
+        for (const auto& other : tq.jobs) {
+            if (other.state != "running" || other.id == job.id) continue;
+            if (FindResourceConflict(job.resources, job.cwd, other.resources, other.cwd, outResource)) {
+                outHolder = other.id;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool TaskQueueManager::HasDependencyCycle(const TaskQueue& tq, const std::string& jobId,
@@ -1041,6 +1258,11 @@ static bool ParseNewJob(const std::string& rawJson, const std::string& taskqueue
     job.success.filesNewer = JsonFieldStrArray(successObj, "files_newer");
     job.success.outputRegex = JsonFieldStr(successObj, "output_regex", "");
     job.killExclude = JsonFieldStrArray(j, "kill_exclude");
+    std::string resErr;
+    if (!ParseResourcesChecked(j, job.resources, resErr)) {
+        err = "job '" + job.id + "': " + resErr;
+        return false;
+    }
     job.priority = static_cast<int>(JsonFieldInt(j, "priority", 0));
     job.env = ParseJsonStringMap(JsonFieldObj(j, "env"));
     {
@@ -1395,6 +1617,15 @@ std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::
     }
     if (HasJsonKey(patchJson, "priority")) job->priority = static_cast<int>(JsonFieldInt(patchJson, "priority", job->priority));
     if (HasJsonKey(patchJson, "kill_exclude")) job->killExclude = JsonFieldStrArray(patchJson, "kill_exclude");
+    if (HasJsonKey(patchJson, "resources")) {
+        TaskQueueResources res;
+        std::string resErr;
+        if (!ParseResourcesChecked(patchJson, res, resErr)) {
+            outError = resErr;
+            return BuildError(outError);
+        }
+        job->resources = res;
+    }
     if (HasJsonKey(patchJson, "env")) job->env = ParseJsonStringMap(JsonFieldObj(patchJson, "env"));
     if (HasJsonKey(patchJson, "success")) {
         std::string successObj = JsonFieldObj(patchJson, "success");
@@ -1788,7 +2019,7 @@ std::string TaskQueueManager::TaskQueueGraph(const std::string& taskqueue, const
     }
 
     std::ostringstream oss;
-    oss << "{\"ok\":true,\"jobs\":[";
+    oss << "{\"ok\":true,\"resource_locks\":" << (resourceLocksEnabled_.load() ? "true" : "false") << ",\"jobs\":[";
     bool first = true;
     int64_t now = static_cast<int64_t>(GetNowTickMs());
     for (const auto& [name, tq] : queues_) {
@@ -1806,6 +2037,13 @@ std::string TaskQueueManager::TaskQueueGraph(const std::string& taskqueue, const
                 }
             }
             bool ready = (job.state == "pending") && allSat && job.retryAtMs <= now;
+            std::string resourceWait;
+            if (job.state == "pending") {
+                std::string holder, resource;
+                if (FindRunningResourceConflictLocked(job, holder, resource)) resourceWait = holder + ": " + resource;
+                else if (allSat && FindQueuedResourceConflictLocked(job, now, holder, resource))
+                    resourceWait = holder + " (queued ahead): " + resource;
+            }
             std::vector<std::string> dependents;
             for (const auto& [n2, tq2] : queues_) {
                 (void)n2;
@@ -1822,7 +2060,10 @@ std::string TaskQueueManager::TaskQueueGraph(const std::string& taskqueue, const
             first = false;
             oss << jj << ",\"ready\":" << (ready ? "true" : "false")
                 << ",\"waiting_for\":" << StrArrayToJson(waiting)
-                << ",\"dependents\":" << StrArrayToJson(dependents) << "}";
+                << ",\"resource_wait\":";
+            if (resourceWait.empty()) oss << "null";
+            else oss << "\"" << JsonEscape(resourceWait) << "\"";
+            oss << ",\"dependents\":" << StrArrayToJson(dependents) << "}";
         }
     }
     oss << "]}";
@@ -2053,60 +2294,68 @@ void TaskQueueManager::ProcessSchedulerTick() {
     if (!pm_) return;
     int64_t now = static_cast<int64_t>(GetNowTickMs());
 
+    // Ready jobs of all queues in one global order (priority, then registration order), so jobs
+    // that share a resource start in that order even when they live in different queues.
+    struct Candidate { TaskQueue* tq; TaskQueueJob* job; };
+    std::vector<Candidate> ready;
+    std::map<std::string, int> running;
     for (auto& [name, tq] : queues_) {
-        (void)name;
-        if (tq.paused) continue;
-        int running = 0;
+        int r = 0;
         for (const auto& j : tq.jobs) {
-            if (j.state == "running") running++;
+            if (j.state == "running") r++;
         }
-        if (running >= tq.concurrency) continue;
-
-        std::vector<size_t> ready;
-        for (size_t i = 0; i < tq.jobs.size(); ++i) {
-            TaskQueueJob& j = tq.jobs[i];
-            if (j.state != "pending" || j.retryAtMs > now) continue;
-            bool allSat = true;
-            for (const auto& d : j.dependsOn) {
-                const TaskQueueJob* dep = FindJobConst(d.id);
-                if (!dep || !IsDepSatisfied(*dep, d.on)) { allSat = false; break; }
-            }
-            if (allSat) ready.push_back(i);
+        running[name] = r;
+        if (tq.paused) continue;
+        for (auto& j : tq.jobs) {
+            if (IsReadyLocked(j, now)) ready.push_back({ &tq, &j });
         }
-        std::stable_sort(ready.begin(), ready.end(), [&](size_t a, size_t b) {
-            if (tq.jobs[a].priority != tq.jobs[b].priority) return tq.jobs[a].priority > tq.jobs[b].priority;
-            return tq.jobs[a].createdAt < tq.jobs[b].createdAt;
-        });
-
-        bool changed = false;
-        for (size_t idx : ready) {
-            if (running >= tq.concurrency) break;
-            TaskQueueJob& job = tq.jobs[idx];
-            int n = static_cast<int>(job.attempts.size()) + 1;
-            LaunchItem item;
-            BuildLaunchRequest(tq, job, n, item);
-            TaskQueueAttempt a;
-            a.n = n;
-            a.start = GetCurrentTimestampStr();
-            a.instructionsRev = job.instructions.rev;
-            a.startFiletime = NowFiletime();
-            job.attempts.push_back(a);
-            job.state = "running";
-            job.updatedAt = a.start;
-            EmitEventLocked(tq, "jobStarted", job.id, n);
-
-            std::string err;
-            int pid = pm_->StartProcess(item.req, err);
-            if (pid > 0) {
-                job.attempts.back().processId = pid;
-                running++;
-            } else {
-                ApplyAttemptOutcome(tq, job, false, "launchFailed", -1, err);
-            }
-            changed = true;
-        }
-        if (changed) SaveAllLocked();
     }
+    std::stable_sort(ready.begin(), ready.end(), [](const Candidate& a, const Candidate& b) {
+        return RunsBefore(*a.job, *b.job);
+    });
+
+    // A job that has to wait (full queue or a running conflict) keeps its place: later jobs that
+    // conflict with it wait behind it instead of overtaking it.
+    std::vector<const TaskQueueJob*> waiters;
+    bool locks = resourceLocksEnabled_.load();
+    bool changed = false;
+    for (const auto& c : ready) {
+        TaskQueue& tq = *c.tq;
+        TaskQueueJob& job = *c.job;
+        std::string holder, resource;
+        bool wait = running[tq.name] >= tq.concurrency ||
+                    FindRunningResourceConflictLocked(job, holder, resource);
+        for (size_t w = 0; !wait && locks && w < waiters.size(); ++w) {
+            wait = FindResourceConflict(job.resources, job.cwd, waiters[w]->resources, waiters[w]->cwd, resource);
+        }
+        if (wait) {
+            if (!job.resources.empty()) waiters.push_back(&job);
+            continue;
+        }
+        int n = static_cast<int>(job.attempts.size()) + 1;
+        LaunchItem item;
+        BuildLaunchRequest(tq, job, n, item);
+        TaskQueueAttempt a;
+        a.n = n;
+        a.start = GetCurrentTimestampStr();
+        a.instructionsRev = job.instructions.rev;
+        a.startFiletime = NowFiletime();
+        job.attempts.push_back(a);
+        job.state = "running";
+        job.updatedAt = a.start;
+        EmitEventLocked(tq, "jobStarted", job.id, n);
+
+        std::string err;
+        int pid = pm_->StartProcess(item.req, err);
+        if (pid > 0) {
+            job.attempts.back().processId = pid;
+            running[tq.name]++;
+        } else {
+            ApplyAttemptOutcome(tq, job, false, "launchFailed", -1, err);
+        }
+        changed = true;
+    }
+    if (changed) SaveAllLocked();
 }
 
 void TaskQueueManager::SchedulerLoop() {

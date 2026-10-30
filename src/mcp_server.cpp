@@ -245,7 +245,7 @@ int RunMcpServer() {
                 << "\"description\":\"Register one or more jobs in a task queue. ProcessCommander decides execution order, timeouts, success checks and automatic retries. Each job must have a one-line summary and its own timeoutSec. Use dependsOn to chain jobs instead of shell '&&'.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Task queue name, e.g. 'main'\"},"
-                << "\"jobs\":{\"type\":\"array\",\"description\":\"Job objects: id, command, summary, timeoutSec (required); cwd, env, dependsOn (['id'] or [{id,on}]), idle {outputSec,cpuSec}, maxAttempts, retryDelaySec, success {exitCode,filesNewer,outputRegex}, killExclude, priority, instructionsFile or instructionsText\",\"items\":{\"type\":\"object\"}},"
+                << "\"jobs\":{\"type\":\"array\",\"description\":\"Job objects: id, command, summary, timeoutSec (required); cwd, env, dependsOn (['id'] or [{id,on}]), idle {outputSec,cpuSec}, maxAttempts, retryDelaySec, success {exitCode,filesNewer,outputRegex}, killExclude, resources {write:[...],read:[...]} (paths/globs relative to cwd or @name locks; jobs with overlapping write/write or write/read never run together, read/read may), priority, instructionsFile or instructionsText\",\"items\":{\"type\":\"object\"}},"
                 << "\"concurrency\":{\"type\":\"integer\",\"description\":\"Max jobs running at the same time for this queue (default 1)\"},"
                 << "\"notifyFile\":{\"type\":\"string\",\"description\":\"Optional file updated on jobFailed / taskqueueStalled / taskqueueDrained\"}"
                 << "},\"required\":[\"taskqueue\",\"jobs\"]}"

@@ -430,6 +430,7 @@ enum ControlId {
     IDC_SET_KPI_SAT = 6034,
     IDC_SET_USAGE_GRAPH_MODE = 6035,
     IDC_SET_RESTORE_USAGE_GRAPH = 6036,
+    IDC_SET_RESOURCE_LOCKS = 6037,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -486,6 +487,7 @@ struct DashboardState {
     int usageRangeIndex = 1;
     int usageGraphMode = 0; // 0: token kinds (default), 1: by provider/model
     bool restoreUsageGraph = false;
+    bool resourceLocks = true; // task queue resource locks (doc/resource-locks.md)
     RECT rcUsagePanel = {};
     RECT rcUsageSplitter = {};
     bool usageSplitterDragging = false;
@@ -3610,6 +3612,8 @@ static void LoadShellConfig(DashboardState* st) {
     st->usageGraphMode = graphMode;
     st->restoreUsageGraph = JsonGetBool(content, "restore_usage_graph", false);
     SetUsageHistoryPersistence(st->restoreUsageGraph);
+    st->resourceLocks = JsonGetBool(content, "resource_locks", true);
+    if (st->tqm) st->tqm->SetResourceLocksEnabled(st->resourceLocks);
     ApplyTheme();
 }
 
@@ -3637,7 +3641,8 @@ static void SaveShellConfig(const DashboardState* st) {
         << "  \"theme\": \"" << ThemeCode(g_uiTheme) << "\",\n"
         << "  \"kpi_saturation\": " << static_cast<int>(g_kpiSaturation * 100 + 0.5f) << ",\n"
         << "  \"usage_graph_mode\": " << st->usageGraphMode << ",\n"
-        << "  \"restore_usage_graph\": " << (st->restoreUsageGraph ? "true" : "false") << "\n"
+        << "  \"restore_usage_graph\": " << (st->restoreUsageGraph ? "true" : "false") << ",\n"
+        << "  \"resource_locks\": " << (st->resourceLocks ? "true" : "false") << "\n"
         << "}\n";
 
     WriteFileAtomicWide(GetConfigFilePathWide(), ss.str());
@@ -4156,6 +4161,7 @@ struct SettingsDlgState {
      HWND chkHideEnded = nullptr;
      HWND chkUsageGraph = nullptr;
      HWND chkRestoreUsageGraph = nullptr;
+     HWND chkResourceLocks = nullptr;
 };
 
 static void CommitSoundSettings(SettingsDlgState* ds) {
@@ -4186,6 +4192,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->chkHideEnded, Tr(L"終了履歴を非表示", L"Hide ended processes", L"Ocultar finalizados"));
     SetWindowTextW(ds->chkUsageGraph, Tr(L"Usageグラフを provider/model 積み上げ表示", L"Usage graph: stack by provider/model", L"Gráfico de uso: apilar por proveedor/modelo"));
     SetWindowTextW(ds->chkRestoreUsageGraph, Tr(L"終了後もUsageグラフを復元する", L"Restore usage graph after exit", L"Restaurar gráfico de uso tras salir"));
+    SetWindowTextW(ds->chkResourceLocks, Tr(L"タスクキュー: リソースが競合するジョブを同時に実行しない", L"Task queue: never run jobs with conflicting resources together", L"Cola de tareas: no ejecutar a la vez trabajos con recursos en conflicto"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
@@ -4310,9 +4317,15 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SendMessageW(ds->chkRestoreUsageGraph, BM_SETCHECK,
                 ds->dash->restoreUsageGraph ? BST_CHECKED : BST_UNCHECKED, 0);
 
+            ds->chkResourceLocks = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                18, 436, 520, 24, hwnd, (HMENU)IDC_SET_RESOURCE_LOCKS, hInst, nullptr);
+            SendMessageW(ds->chkResourceLocks, BM_SETCHECK,
+                ds->dash->resourceLocks ? BST_CHECKED : BST_UNCHECKED, 0);
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
-                             ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph };
+                             ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
+                             ds->chkResourceLocks };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
@@ -4345,6 +4358,13 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 ds->dash->restoreUsageGraph =
                     (SendMessageW(ds->chkRestoreUsageGraph, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 SetUsageHistoryPersistence(ds->dash->restoreUsageGraph);
+                SaveShellConfig(ds->dash);
+                return 0;
+            }
+            if (id == IDC_SET_RESOURCE_LOCKS) {
+                ds->dash->resourceLocks =
+                    (SendMessageW(ds->chkResourceLocks, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                if (ds->dash->tqm) ds->dash->tqm->SetResourceLocksEnabled(ds->dash->resourceLocks);
                 SaveShellConfig(ds->dash);
                 return 0;
             }
@@ -4553,7 +4573,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 450;
+    int dlgH = 510;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 

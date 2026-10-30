@@ -129,15 +129,88 @@ function Get-WorktreePlan {
     }
 }
 
-# Duplicate rule (card 170):
+# ---------- declared paths (doc/resource-locks.md) ----------
+# A card path as a comparable pattern relative to the checkout: forward slashes, lower case,
+# no leading "./" or trailing "/". A bare file name (`Foo.cs`) can live anywhere: **/foo.cs.
+function ConvertTo-WwPattern([string]$Path) {
+    $p = ([string]$Path -replace '\\', '/').Trim().ToLowerInvariant()
+    while ($p.StartsWith('./')) { $p = $p.Substring(2) }
+    $bare = $p -notmatch '/'
+    $p = $p.TrimEnd('/')
+    if ($p -and $bare -and $p -ne '**') { $p = "**/$p" }
+    return $p
+}
+
+# One path segment against another; '*' and '?' never cross '/'. Two wildcard segments are
+# assumed to overlap (conservative).
+function Test-SegmentOverlap([string]$A, [string]$B) {
+    $globA = $A -match '[*?]'
+    $globB = $B -match '[*?]'
+    if (-not $globA -and -not $globB) { return $A -eq $B }
+    if ($globA -and $globB) { return $true }
+    $glob = if ($globA) { $A } else { $B }
+    $lit = if ($globA) { $B } else { $A }
+    $rx = '^' + ([regex]::Escape($glob) -replace '\\\*', '[^/]*' -replace '\\\?', '[^/]') + '$'
+    return [bool]($lit -match $rx)
+}
+
+# Do two patterns (ConvertTo-WwPattern) name a common file? A directory covers everything below
+# it, a '**' segment covers anything from there on. When unsure the answer is "overlap".
+function Test-PathPatternOverlap([string]$A, [string]$B) {
+    if (-not $A -or -not $B) { return $false }
+    $sa = $A -split '/'
+    $sb = $B -split '/'
+    $n = [math]::Min($sa.Count, $sb.Count)
+    for ($i = 0; $i -lt $n; $i++) {
+        if ($sa[$i] -like '*`*`**' -or $sb[$i] -like '*`*`**') { return $true }
+        if (-not (Test-SegmentOverlap $sa[$i] $sb[$i])) { return $false }
+    }
+    return $true
+}
+
+# Write/read sets conflict on write x write, write x read and read x write; read x read is fine.
+# Returns the first conflicting pair as "<mine> x <theirs>", or $null.
+function Find-PathConflict {
+    param($Edits, $Reads, $OtherEdits, $OtherReads)
+    $e = @(@($Edits) | Where-Object { $_ } | ForEach-Object { ConvertTo-WwPattern $_ })
+    $r = @(@($Reads) | Where-Object { $_ } | ForEach-Object { ConvertTo-WwPattern $_ })
+    $oe = @(@($OtherEdits) | Where-Object { $_ } | ForEach-Object { ConvertTo-WwPattern $_ })
+    $or = @(@($OtherReads) | Where-Object { $_ } | ForEach-Object { ConvertTo-WwPattern $_ })
+    foreach ($pair in @(@($e, ($oe + $or)), @($r, $oe))) {
+        foreach ($x in @($pair[0])) {
+            foreach ($y in @($pair[1])) {
+                if (Test-PathPatternOverlap $x $y) { return "$x x $y" }
+            }
+        }
+    }
+    return $null
+}
+
+# What a run locks in the checkout. A plain main run, a run without Authorised edits, or a run
+# whose record is unknown locks the whole checkout ("**").
+function Get-RunLocks {
+    param($Record)
+    if ($Record -and $Record.Shared -and @($Record.Edits | Where-Object { $_ }).Count -gt 0) {
+        return [pscustomobject]@{ Edits = @($Record.Edits); Reads = @($Record.Reads | Where-Object { $_ }) }
+    }
+    return [pscustomobject]@{ Edits = @('**'); Reads = @() }
+}
+
+# Duplicate rule (card 170, extended for shared runs):
 #   * the same task card never runs twice, in any mode;
-#   * a second MAIN (non-worktree) run is refused, because two agents would edit the same checkout;
+#   * main-checkout runs are compared by their declared paths: a plain main run locks the whole
+#     checkout, a -Shared run locks its Authorised edits (write) and Read-only paths (read);
 #   * a worktree run never blocks the main run and a main run never blocks a worktree run.
+# Records maps task id -> run record (ww-data\running\<id>.json) of the active runs.
 function Test-RunConflict {
     param(
         $Runs,
         [Parameter(Mandatory = $true)][string]$Task,
-        [switch]$Worktree
+        [switch]$Worktree,
+        [switch]$Shared,
+        $Edits = @(),
+        $Reads = @(),
+        [hashtable]$Records = @{}
     )
     $active = @(@($Runs) | Where-Object { $_ })
     $sameTask = @($active | Where-Object { Test-CommandLineHasTask -CommandLine $_.CommandLine -Task $Task })
@@ -145,12 +218,98 @@ function Test-RunConflict {
         return [pscustomobject]@{ Blocked = $true; Reason = "task $Task is already running"; Runs = $sameTask }
     }
     if (-not $Worktree) {
+        $mine = Get-RunLocks ([pscustomobject]@{ Shared = [bool]$Shared; Edits = @($Edits); Reads = @($Reads) })
         $mainRuns = @($active | Where-Object { -not (Test-WorktreeCommandLine $_.CommandLine) })
-        if ($mainRuns.Count -gt 0) {
-            return [pscustomobject]@{ Blocked = $true; Reason = "another main-checkout run is active"; Runs = $mainRuns }
+        foreach ($run in $mainRuns) {
+            $record = $null
+            foreach ($t in $Records.Keys) {
+                if (Test-CommandLineHasTask -CommandLine $run.CommandLine -Task $t) { $record = $Records[$t]; break }
+            }
+            $theirs = Get-RunLocks $record
+            $hit = Find-PathConflict -Edits $mine.Edits -Reads $mine.Reads -OtherEdits $theirs.Edits -OtherReads $theirs.Reads
+            if ($hit) {
+                $who = if ($record) { "task $($record.Task)" } else { "another main-checkout run" }
+                return [pscustomobject]@{ Blocked = $true; Reason = "$who overlaps this run's paths ($hit)"; Runs = @($run) }
+            }
         }
     }
     return [pscustomobject]@{ Blocked = $false; Reason = ""; Runs = @() }
+}
+
+# Run records (ww-data\running\<id>.json) of active runs, keyed by task id.
+function Get-ActiveRunRecords {
+    param([Parameter(Mandatory = $true)][string]$DataDir)
+    $out = @{}
+    $runDir = Join-Path $DataDir "running"
+    if (-not (Test-Path -LiteralPath $runDir)) { return $out }
+    foreach ($file in @(Get-ChildItem -LiteralPath $runDir -Filter "*.json" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notlike "*.last.json" })) {
+        try { $r = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json } catch { continue }
+        if ($r -and $r.Task) { $out[[string]$r.Task] = $r }
+    }
+    return $out
+}
+
+# Files an engine edited, from one event line (claude, opencode, agy, codex formats).
+function Get-EventEditPaths {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return @() }
+    try { $evt = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return @() }
+    if ($null -eq $evt) { return @() }
+    $editTools = @('edit', 'write', 'multiedit', 'notebookedit', 'edit_file', 'write_file', 'write_to_file',
+        'replace_file_content', 'multi_replace_file_content', 'create_file', 'apply_patch')
+    $fromInput = {
+        param($tool, $in)
+        if (-not $tool -or -not $in -or ([string]$tool).ToLowerInvariant() -notin $editTools) { return }
+        foreach ($name in @('file_path', 'filePath', 'notebook_path', 'TargetFile', 'path', 'Path')) {
+            if ($in.$name) { [string]$in.$name; return }
+        }
+    }
+    $out = New-Object System.Collections.Generic.List[string]
+    if ($evt.type -eq 'assistant') {
+        foreach ($b in @($evt.message.content)) {
+            if ($b -and $b.type -eq 'tool_use') { & $fromInput $b.name $b.input | ForEach-Object { $out.Add($_) } }
+        }
+    } elseif ($evt.type -eq 'tool_use' -and $evt.part) {
+        $in = if ($evt.part.state -and $evt.part.state.input) { $evt.part.state.input } else { $evt.part.input }
+        & $fromInput $evt.part.tool $in | ForEach-Object { $out.Add($_) }
+    } elseif ($evt.event -eq 'step_update' -and $evt.step_update) {
+        $s = $evt.step_update
+        $tool = if ($s.tool_name) { $s.tool_name } elseif ($s.tool_info) { $s.tool_info.name } else { $s.tool }
+        $in = if ($s.tool_info -and $s.tool_info.parameters) { $s.tool_info.parameters } elseif ($s.parameters) { $s.parameters } else { $s.input }
+        & $fromInput $tool $in | ForEach-Object { $out.Add($_) }
+    } elseif ($evt.type -eq 'item.completed' -and $evt.item -and $evt.item.type -eq 'file_change') {
+        foreach ($c in @($evt.item.changes)) { if ($c -and $c.path) { $out.Add([string]$c.path) } }
+    }
+    return @($out)
+}
+
+# Edited files outside the declared Authorised edits (paths under the data folder are allowed).
+# Edited paths are made relative to WorkDir; those outside it are reported as they are.
+function Get-EditViolations {
+    param(
+        [Parameter(Mandatory = $true)][string]$EventsFile,
+        [Parameter(Mandatory = $true)][string]$WorkDir,
+        $Edits = @(),
+        [string]$RelData = "ww-data"
+    )
+    if (-not (Test-Path -LiteralPath $EventsFile)) { return @() }
+    $allowed = @(@($Edits) | Where-Object { $_ } | ForEach-Object { ConvertTo-WwPattern $_ })
+    $allowed += (ConvertTo-WwPattern "$RelData/**")
+    $base = (($WorkDir -replace '\\', '/').TrimEnd('/') + '/').ToLowerInvariant()
+    $seen = New-Object System.Collections.Generic.List[string]
+    foreach ($line in [System.IO.File]::ReadAllLines($EventsFile)) {
+        foreach ($p in @(Get-EventEditPaths -Line $line)) {
+            $n = ($p -replace '\\', '/').ToLowerInvariant()
+            if ($n.StartsWith($base)) { $n = $n.Substring($base.Length) }
+            $n = $n.Trim().TrimEnd('/')
+            if ($seen.Contains($n)) { continue }
+            $ok = $false
+            foreach ($a in $allowed) { if (Test-PathPatternOverlap $a $n) { $ok = $true; break } }
+            if (-not $ok) { $seen.Add($n) }
+        }
+    }
+    return @($seen)
 }
 
 # Paths named (in backticks) in the card's "Authorised edits" section. Single .cs file names
@@ -158,11 +317,23 @@ function Test-RunConflict {
 # relative to the checkout, so only fully qualified paths are actually pre-flighted.
 function Get-AuthorisedEditPaths {
     param([Parameter(Mandatory = $true)][string]$CardPath)
+    return @(Get-CardSectionPaths -CardPath $CardPath -Heading 'Authori[sz]ed edits')
+}
+
+# Paths in the card's "Read-only" (or "Reads") section: files the run reads but never edits.
+# Shared runs may read the same files at the same time; only an edit of them conflicts.
+function Get-CardReadPaths {
+    param([Parameter(Mandatory = $true)][string]$CardPath)
+    return @(Get-CardSectionPaths -CardPath $CardPath -Heading '(Read-only|Reads)')
+}
+
+function Get-CardSectionPaths {
+    param([Parameter(Mandatory = $true)][string]$CardPath, [Parameter(Mandatory = $true)][string]$Heading)
     $paths = New-Object System.Collections.Generic.List[string]
     if (-not (Test-Path -LiteralPath $CardPath)) { return @() }
     $inSection = $false
     foreach ($line in Get-Content -LiteralPath $CardPath) {
-        if ($line -match '^##\s+Authori[sz]ed edits\s*$') { $inSection = $true; continue }
+        if ($line -match "^##\s+$Heading\s*$") { $inSection = $true; continue }
         if ($inSection -and $line -match '^##\s') { break }
         if (-not $inSection) { continue }
         foreach ($m in [regex]::Matches($line, '`([^`]+)`')) {

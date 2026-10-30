@@ -55,8 +55,8 @@ function Show-Status {
     Clear-Host
     Write-Host ("=== ww status  {0} ===" -f (Get-Date -Format "HH:mm:ss")) -ForegroundColor Cyan
 
-    # worker processes (agy, opencode, claude or codex). A worktree run is expected to coexist with the main run, so only a
-    # second main-checkout run is a duplicate warning.
+    # worker processes (agy, opencode, claude or codex). Worktree and -Shared runs are expected to coexist with other
+    # runs, so only a second plain main-checkout run is a duplicate warning.
     $procs = @(Get-WorkerRuns)
     # Auto-clean dead run records on every refresh: host gone and no worker names the card.
     $null = Clear-DeadRunRecords -DataDir $data -ScriptName "ww-status" -Runs $procs
@@ -65,10 +65,11 @@ function Show-Status {
     if (-not $procs) {
         Write-Host "worker   : NOT RUNNING" -ForegroundColor Yellow
     } else {
-        $mainProcs = @($procs | Where-Object { -not ($_.CommandLine -match 'WORKTREE RUN' -or $_.CommandLine -match '\.claude[\\/]worktrees[\\/]') })
+        $mainProcs = @($procs | Where-Object { -not ($_.CommandLine -match 'WORKTREE RUN|SHARED RUN' -or $_.CommandLine -match '\.claude[\\/]worktrees[\\/]') })
         if ($mainProcs.Count -gt 1) { Write-Host "worker   : WARNING $($mainProcs.Count) main runs at once (duplicate?)" -ForegroundColor Red }
         foreach ($p in $procs) {
-            $mode = if ($p.CommandLine -match 'WORKTREE RUN' -or $p.CommandLine -match '\.claude[\\/]worktrees[\\/]') { "worktree" } else { "main" }
+            $mode = if ($p.CommandLine -match 'WORKTREE RUN' -or $p.CommandLine -match '\.claude[\\/]worktrees[\\/]') { "worktree" }
+                    elseif ($p.CommandLine -match 'SHARED RUN') { "shared" } else { "main" }
             $gp = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
             $elapsed = if ($gp) { [math]::Round(((Get-Date) - $gp.StartTime).TotalMinutes, 1) } else { "?" }
             $cpu = if ($gp) { [math]::Round($gp.CPU, 0) } else { "?" }
@@ -100,7 +101,8 @@ function Show-Status {
     # main-only running.json as a fallback for older runs.
     if ($records.Count -gt 0) {
         foreach ($r in $records) {
-            $mode = if ($r.Worktree) { "worktree $($r.Worktree)" } else { "main" }
+            $mode = if ($r.Worktree) { "worktree $($r.Worktree)" }
+                    elseif ($r.Shared) { "shared (edits: $(@($r.Edits) -join ', '))" } else { "main" }
             $started = $null
             try { $started = [datetime]::Parse($r.Started) } catch {}
             $mins = if ($started) { [math]::Round(((Get-Date) - $started).TotalMinutes, 1) } else { "?" }

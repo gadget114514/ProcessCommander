@@ -125,8 +125,43 @@ pcder.exe taskqueue add --file ww-jobs.json --taskqueue ww --concurrency 1
 pcder.exe taskqueue graph ww
 ```
 
-Keep `--concurrency 1` for main-checkout runs: ww-run refuses a second main run anyway. Cards run
-with `-Worktree` can run in parallel.
+Keep `--concurrency 1` for plain main-checkout runs: ww-run refuses a second main run anyway.
+Cards run with `-Worktree` can run in parallel.
+
+### Parallel runs on the main checkout (`-Shared`)
+
+`-Shared` runs a card on the main checkout next to other runs, as long as the paths they declare
+do not overlap (design: [doc/resource-locks.md](../../doc/resource-locks.md)):
+
+- `## Authorised edits` paths are **written**, `## Read-only` (or `## Reads`) paths are **read**.
+  Two runs that only read the same file can run together; an edit of a file another run edits or
+  reads is refused. A plain main run, or a card without Authorised edits, locks the whole checkout.
+- The agent is told it shares the checkout: edit only the Authorised edits, skip compile/tests
+  (listed under "Verification pending"), do not commit. Run the build/tests afterwards on their own.
+- After the run, edits outside the Authorised edits (from the event log, `ww-data` excluded) are
+  written to the log and to `EditViolations` in `<id>.last.json`, with a warning.
+
+With ProcessCommander, give each job the same paths as `resources`, so pcder never starts
+overlapping cards (on by default; Settings checkbox):
+
+```json
+[
+  {"id": "ww-012", "summary": "card 012", "timeoutSec": 7200, "cwd": "C:\\path\\to\\project",
+   "resources": {"write": ["src/a.cpp"], "read": ["src/common.h"]},
+   "command": "C:\\path\\to\\project\\tools\\ww\\ww-run.cmd 012 -Shared -Engine claude -Root C:\\path\\to\\project"},
+  {"id": "ww-013", "summary": "card 013", "timeoutSec": 7200, "cwd": "C:\\path\\to\\project",
+   "resources": {"write": ["src/b.cpp"], "read": ["src/common.h"]},
+   "command": "C:\\path\\to\\project\\tools\\ww\\ww-run.cmd 013 -Shared -Engine claude -Root C:\\path\\to\\project"},
+  {"id": "verify", "summary": "build + tests", "timeoutSec": 3600, "cwd": "C:\\path\\to\\project",
+   "resources": {"write": ["**"]}, "dependsOn": [{"id": "ww-012", "on": "done"}, {"id": "ww-013", "on": "done"}],
+   "command": "C:\\path\\to\\project\\build.cmd"}
+]
+```
+
+```powershell
+pcder.exe taskqueue add --file ww-jobs.json --taskqueue ww --concurrency 3
+pcder.exe taskqueue graph ww    # resource_wait shows who holds what
+```
 
 From an LLM agent through MCP, call `start_process` with the same command, `cwd`,
 `open_stdin: false` and a `timeout`, then `wait_process` / `get_process_output`.
@@ -140,7 +175,9 @@ From an LLM agent through MCP, call `start_process` with the same command, `cwd`
 Pros:
 
 - **One task card per run, no duplicates.** The same card never runs twice, and only one
-  main-checkout run is allowed at a time.
+  plain main-checkout run is allowed at a time.
+- **Parallel runs on the main checkout.** `-Shared` runs cards together when their declared
+  Authorised edits / Read-only paths do not overlap, and reports edits outside the declaration.
 - **Parallel runs in worktrees.** `-Worktree` runs a card in `.claude\worktrees\ww-<id>` on its
   own branch, so it can run next to the main run.
 - **Stall detection and retry.** `ww-watch` notices when a run stops making progress and retries

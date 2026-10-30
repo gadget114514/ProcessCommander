@@ -112,7 +112,9 @@ MCP SERVER SETUP:
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
     - Required taskqueue job fields: id, command, summary, timeoutSec.
       Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
-      killExclude, priority, instructionsFile / instructionsText.
+      killExclude, resources {write,read}, priority, instructionsFile / instructionsText.
+    - resources: jobs whose write/read sets overlap never run together (read/read is
+      fine). Paths/globs resolve against cwd; "@name" is a named lock.
     - Success is verified: exit code AND optional filesNewer / outputRegex.
     - States: waiting = queued and ready; pending = dependencies not satisfied;
       blocked = a dependency failed; running; succeeded; failed; cancelled.

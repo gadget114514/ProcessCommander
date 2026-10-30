@@ -68,6 +68,22 @@ struct TaskQueueDependency {
     std::string on;
 };
 
+// Declared resources (doc/resource-locks.md). "@name" is a named lock; anything else is a
+// path or glob, resolved against the job's cwd when relative. Jobs whose resources conflict
+// (write/write or write/read) never run at the same time.
+struct TaskQueueResources {
+    std::vector<std::string> write;
+    std::vector<std::string> read;
+    bool empty() const { return write.empty() && read.empty(); }
+};
+
+// Resource helpers, exposed for tests.
+std::string NormalizeResource(const std::string& resource, const std::string& cwd);
+bool ResourcesOverlap(const std::string& a, const std::string& b); // both normalized
+bool FindResourceConflict(const TaskQueueResources& a, const std::string& cwdA,
+                          const TaskQueueResources& b, const std::string& cwdB,
+                          std::string& outResource);
+
 struct TaskQueueAttempt {
     int n = 1;
     int processId = 0;
@@ -99,6 +115,7 @@ struct TaskQueueJob {
     int retryDelaySec = 0;
     TaskQueueSuccess success;
     std::vector<std::string> killExclude;
+    TaskQueueResources resources;
     int priority = 0;
     std::string state;
     std::vector<TaskQueueAttempt> attempts;
@@ -158,6 +175,11 @@ public:
 
     int64_t GetTaskQueueVersion(const std::string& taskqueue) const;
 
+    // Resource locks (doc/resource-locks.md). On by default; when off, declared resources are
+    // kept but ignored by the scheduler.
+    void SetResourceLocksEnabled(bool enabled);
+    bool GetResourceLocksEnabled() const { return resourceLocksEnabled_.load(); }
+
     TaskQueueCounts GetJobCounts() const;
 
     // Returns true and fills outJobId when an unfinished job (pending/running/
@@ -198,6 +220,14 @@ private:
     void CheckQueueNotices(TaskQueue& tq);
 
     static bool IsDepSatisfied(const TaskQueueJob& dep, const std::string& on);
+    // A running job (any queue) whose resources conflict with job's; fills holder and resource.
+    bool FindRunningResourceConflictLocked(const TaskQueueJob& job, std::string& outHolder,
+                                           std::string& outResource) const;
+    // A ready job that starts before job (RunsBefore) and conflicts with it: job waits behind it.
+    bool FindQueuedResourceConflictLocked(const TaskQueueJob& job, int64_t nowMs, std::string& outHolder,
+                                          std::string& outResource) const;
+    bool IsReadyLocked(const TaskQueueJob& job, int64_t nowMs) const;
+    static bool RunsBefore(const TaskQueueJob& a, const TaskQueueJob& b);
     bool HasDependencyCycle(const TaskQueue& tq, const std::string& jobId,
                             const std::vector<TaskQueueDependency>& deps,
                             const std::string& ignoreDependency);
@@ -218,6 +248,7 @@ private:
     std::map<std::string, std::string> lastNotice_; // taskqueue -> last emitted notice type
     int nextJobNum_ = 1;
     std::atomic<bool> schedulerRunning_{false};
+    std::atomic<bool> resourceLocksEnabled_{true};
     std::thread schedulerThread_;
 };
 
