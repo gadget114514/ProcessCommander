@@ -2007,6 +2007,14 @@ static void RefreshTaskQueueData(DashboardState* st) {
                 endStr = FormatRemainingTime(timeoutSec);
             }
         }
+        // Follow a newly started task: the monitor pane watches the job's process.
+        if (state == "running") {
+            auto attemptsSel = SplitJsonObjectArray(j, "attempts");
+            if (!attemptsSel.empty()) {
+                int64_t pidSel = JsonGetInt(attemptsSel.back(), "process_id", 0);
+                if (pidSel > 0) st->selectedProcId = static_cast<int>(pidSel);
+            }
+        }
         std::wstring depsStr = TaskQueueDepsDisplay(j);
         std::string blockedBy = JsonGetString(j, "blocked_by", "");
         if (!blockedBy.empty()) {
