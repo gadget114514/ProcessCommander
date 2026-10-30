@@ -1521,14 +1521,14 @@ static void UpdateListHeaderSortIndicator(DashboardState* st) {
 }
 
 static const wchar_t* TaskColumnTitle(int index) {
-    static const wchar_t* const ja[8] = {
-        L"ID", L"サマリ", L"状態", L"開始時刻", L"終了 / 残り時間", L"やっていること", L"依存 / 理由", L"キュー"
+    static const wchar_t* const ja[9] = {
+        L"ID", L"サマリ", L"状態", L"開始時刻", L"終了 / 残り時間", L"実行中", L"依存 / 理由", L"キュー", L"リソース"
     };
-    static const wchar_t* const en[8] = {
-        L"ID", L"Summary", L"State", L"Start", L"End / Left", L"Doing", L"Depends / Reason", L"Queue"
+    static const wchar_t* const en[9] = {
+        L"ID", L"Summary", L"State", L"Start", L"End / Left", L"Running", L"Depends / Reason", L"Queue", L"Resources"
     };
-    static const wchar_t* const es[8] = {
-        L"ID", L"Resumen", L"Estado", L"Inicio", L"Fin / Restante", L"Haciendo", L"Dependencias", L"Cola"
+    static const wchar_t* const es[9] = {
+        L"ID", L"Resumen", L"Estado", L"Inicio", L"Fin / Restante", L"En curso", L"Dependencias", L"Cola", L"Recursos"
     };
     if (g_uiLanguage == UiLanguage::Spanish) return es[index];
     if (g_uiLanguage == UiLanguage::English) return en[index];
@@ -1538,7 +1538,7 @@ static const wchar_t* TaskColumnTitle(int index) {
 static void UpdateTaskListHeaders(DashboardState* st) {
     if (!st || !st->hwndTaskList) return;
     HWND hHeader = ListView_GetHeader(st->hwndTaskList);
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 9; ++i) {
         LVCOLUMNW lvc = {};
         lvc.mask = LVCF_TEXT;
         lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
@@ -1740,6 +1740,55 @@ static std::wstring TaskQueueDepsDisplay(const std::string& jobJson) {
         if (!out.empty()) out += L", ";
         out += Utf8ToWide(raw.substr(pos, endQuote - pos));
         pos = endQuote;
+    }
+    return out;
+}
+
+static std::vector<std::string> JsonStringArrayItems(const std::string& json, const std::string& key) {
+    std::vector<std::string> items;
+    std::string raw = ExtractJsonArrayText(json, key);
+    std::string cur;
+    bool inStr = false;
+    bool esc = false;
+    for (char ch : raw) {
+        if (!inStr) {
+            if (ch == '"') { inStr = true; cur.clear(); }
+        } else if (esc) {
+            cur += ch;
+            esc = false;
+        } else if (ch == '\\') {
+            esc = true;
+        } else if (ch == '"') {
+            inStr = false;
+            items.push_back(cur);
+        } else {
+            cur += ch;
+        }
+    }
+    return items;
+}
+
+static std::wstring JoinResourceNames(const std::vector<std::string>& names) {
+    std::wstring out;
+    for (const auto& n : names) {
+        if (!out.empty()) out += L", ";
+        out += Utf8ToWide(n);
+    }
+    return out;
+}
+
+// "write: a, b / read: c" for the job's resources object; empty when none are declared.
+static std::wstring TaskQueueResourcesDisplay(const std::string& jobJson) {
+    size_t keyPos = jobJson.find("\"resources\"");
+    if (keyPos == std::string::npos) return L"";
+    std::string res = jobJson.substr(keyPos);
+    auto writes = JsonStringArrayItems(res, "write");
+    auto reads = JsonStringArrayItems(res, "read");
+    std::wstring out;
+    if (!writes.empty()) out += std::wstring(Tr(L"書込: ", L"Write: ", L"Escritura: ")) + JoinResourceNames(writes);
+    if (!reads.empty()) {
+        if (!out.empty()) out += L" / ";
+        out += std::wstring(Tr(L"読取: ", L"Read: ", L"Lectura: ")) + JoinResourceNames(reads);
     }
     return out;
 }
@@ -1952,9 +2001,8 @@ static void RefreshTaskQueueData(DashboardState* st) {
                 if (pidDoing > 0) {
                     ProcessSnapshot taskSnap;
                     if (st->pm->GetSnapshot(static_cast<int>(pidDoing), taskSnap) && taskSnap.state == ProcState::Running) {
-                        std::wstring actTxt = std::wstring(Tr(L"実行中: ", L"Running: ", L"Ejecutando: ")) + Utf8ToWide(taskSnap.activity);
-                        if (!taskSnap.activityTarget.empty()) actTxt += L" " + Utf8ToWide(taskSnap.activityTarget);
-                        taskDoingStr = actTxt;
+                        taskDoingStr = Utf8ToWide(taskSnap.activity);
+                        if (!taskSnap.activityTarget.empty()) taskDoingStr += L" " + Utf8ToWide(taskSnap.activityTarget);
                     }
                 }
             }
@@ -2022,6 +2070,7 @@ static void RefreshTaskQueueData(DashboardState* st) {
             depsStr += L"<- " + Utf8ToWide(blockedBy);
         }
         std::wstring queueStr = Utf8ToWide(JsonGetString(j, "taskqueue", ""));
+        std::wstring resourcesStr = TaskQueueResourcesDisplay(j);
 
         LVITEMW lvi = {};
         lvi.mask = LVIF_TEXT;
@@ -2036,6 +2085,7 @@ static void RefreshTaskQueueData(DashboardState* st) {
         ListView_SetItemText(st->hwndTaskList, row, 5, taskDoingStr.data());
         ListView_SetItemText(st->hwndTaskList, row, 6, depsStr.data());
         ListView_SetItemText(st->hwndTaskList, row, 7, queueStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 8, resourcesStr.data());
         row++;
     }
     SendMessageW(st->hwndTaskList, WM_SETREDRAW, TRUE, 0);
@@ -2327,29 +2377,26 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
 
     // Summary takes ~half of the visible list width; the other columns share the rest.
     int summaryW = total / 2;
-    const int base[7] = {90, 100, 105, 115, 190, 110, 110}; // ID, State, Start, End, Doing, Depends, Queue
+    // Columns other than Summary: ID, State, Start, End, Running, Depends, Queue, Resources.
+    const int base[8] = {90, 100, 105, 115, 190, 110, 110, 200};
     int baseSum = 0;
-    for (int i = 0; i < 7; ++i) baseSum += base[i];
+    for (int i = 0; i < 8; ++i) baseSum += base[i];
 
+    // The last column (Resources) takes whatever remains so the columns always fill the list.
     int remaining = total - summaryW;
-    int widths[7] = {};
+    int widths[8] = {};
     int assigned = 0;
     for (int i = 0; i < 7; ++i) {
         widths[i] = base[i] * remaining / baseSum;
         if (widths[i] < 60) widths[i] = 60;
         assigned += widths[i];
     }
-    widths[6] = remaining - assigned;
-    if (widths[6] < 60) widths[6] = 60;
+    widths[7] = remaining - assigned;
+    if (widths[7] < 60) widths[7] = 60;
 
     ListView_SetColumnWidth(st->hwndTaskList, 0, widths[0]);
     ListView_SetColumnWidth(st->hwndTaskList, 1, summaryW);
-    ListView_SetColumnWidth(st->hwndTaskList, 2, widths[1]);
-    ListView_SetColumnWidth(st->hwndTaskList, 3, widths[2]);
-    ListView_SetColumnWidth(st->hwndTaskList, 4, widths[3]);
-    ListView_SetColumnWidth(st->hwndTaskList, 5, widths[4]);
-    ListView_SetColumnWidth(st->hwndTaskList, 6, widths[5]);
-    ListView_SetColumnWidth(st->hwndTaskList, 7, widths[6]);
+    for (int i = 1; i < 8; ++i) ListView_SetColumnWidth(st->hwndTaskList, i + 1, widths[i]);
 }
 
 static void LayoutControls(DashboardState* st, int width, int height) {
@@ -3161,6 +3208,7 @@ struct LlmStreamDlgState {
     std::string goalJobKey;            // cache of the task queue job used for the goal / end condition
     std::string goalJobSummary;
     std::wstring goalJobSuccess;       // "exit 0, output /re/ ..."
+    std::wstring goalJobResources;     // "write: ... / read: ..." or "(none)"
     int goalJobMaxAttempts = 0;
     LlmAgentState agentState;
     HFONT hFontUi = nullptr;
@@ -3169,15 +3217,13 @@ struct LlmStreamDlgState {
     HWND hwndHeader = nullptr;
     HWND hwndList = nullptr;
     HWND hwndEditPreview = nullptr;
-    HWND hwndBtnRefresh = nullptr;
-    HWND hwndBtnOpenStream = nullptr;
-    HWND hwndBtnClose = nullptr;
     HWND hwndAgentIcon = nullptr;
     HWND hwndTooltip = nullptr;
     UINT_PTR timerId = 0;
     size_t lastEventCount = 0;
     uint64_t lastEventSeq = 0;
     RECT rcUsageGraph = {};
+    RECT rcKindChart = {};
     bool embedded = false;   // bottom pane of the main window (follows the selected process)
 };
 
@@ -3244,24 +3290,32 @@ static std::vector<UsageBar> BuildUsageBars(const RECT& rc, const std::vector<Ll
     return bars;
 }
 
+// Mix two colours: percentTo = 0 gives `from`, 100 gives `to`.
+static COLORREF BlendColor(COLORREF from, COLORREF to, int percentTo) {
+    auto mix = [&](int a, int b) { return (a * (100 - percentTo) + b * percentTo) / 100; };
+    return RGB(mix(GetRValue(from), GetRValue(to)), mix(GetGValue(from), GetGValue(to)),
+               mix(GetBValue(from), GetBValue(to)));
+}
+
 static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamEvent>& events,
                            const LlmStreamEvent* selected, int selectedIndex) {
     if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+    const COLORREF softLine = BlendColor(g_theme.panel, g_theme.border, 60);
 
     HBRUSH bg = CreateSolidBrush(g_theme.panel);
     FillRect(hdc, &rc, bg);
     DeleteObject(bg);
-    HPEN border = CreatePen(PS_SOLID, 1, g_theme.border);
-    HGDIOBJ oldPen = SelectObject(hdc, border);
+    HPEN frame = CreatePen(PS_SOLID, 1, softLine);
+    HGDIOBJ oldPen = SelectObject(hdc, frame);
     HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 10, 10);
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);
-    DeleteObject(border);
+    DeleteObject(frame);
 
     auto bars = BuildUsageBars(rc, events);
     SetBkMode(hdc, TRANSPARENT);
-    RECT titleRc = {rc.left + 6, rc.top + 2, rc.right - 6, rc.top + 16};
+    RECT titleRc = {rc.left + 8, rc.top + 4, rc.right - 8, rc.top + 18};
     SetTextColor(hdc, g_theme.muted);
     HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT)));
     DrawTextW(hdc, L"Usage", -1, &titleRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -3277,13 +3331,13 @@ static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamE
 
     if (selected && !LlmEventUsageText(*selected).empty()) {
         std::wstring usage = Utf8ToWide(LlmEventUsageText(*selected));
-        RECT valRc = {rc.left + 50, rc.top + 2, rc.right - 6, rc.top + 16};
+        RECT valRc = {rc.left + 50, rc.top + 4, rc.right - 8, rc.top + 18};
         SetTextColor(hdc, g_theme.text);
         DrawTextW(hdc, usage.c_str(), -1, &valRc, DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
-    int plotTop = rc.top + 18;
-    int plotBottom = rc.bottom - 4;
+    int plotTop = rc.top + 24;
+    int plotBottom = rc.bottom - 6;
     int plotH = plotBottom - plotTop;
     uint64_t maxVal = 1;
     for (const auto& b : bars) {
@@ -3291,14 +3345,35 @@ static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamE
         if (s > maxVal) maxVal = s;
     }
 
-    HPEN grid = CreatePen(PS_SOLID, 1, g_theme.border);
-    HGDIOBJ prevPen = SelectObject(hdc, grid);
-    MoveToEx(hdc, rc.left + 4, plotBottom, nullptr);
-    LineTo(hdc, rc.right - 4, plotBottom);
+    // Peak value at the top right, unless the selected event's usage already sits there.
+    if (!(selected && !LlmEventUsageText(*selected).empty())) {
+        std::wstring peakText = maxVal >= 1000 ? std::to_wstring(maxVal / 1000) + L"k" : std::to_wstring(maxVal);
+        RECT peakRc = {rc.left + 50, rc.top + 4, rc.right - 8, rc.top + 18};
+        SetTextColor(hdc, g_theme.muted);
+        DrawTextW(hdc, peakText.c_str(), -1, &peakRc, DT_RIGHT | DT_SINGLELINE);
+    }
+
+    // Faint guide lines at half scale and full scale, then a solid baseline.
+    HPEN guide = CreatePen(PS_DOT, 1, softLine);
+    HGDIOBJ prevPen = SelectObject(hdc, guide);
+    for (int y : {plotTop, plotTop + plotH / 2}) {
+        MoveToEx(hdc, rc.left + 8, y, nullptr);
+        LineTo(hdc, rc.right - 8, y);
+    }
     SelectObject(hdc, prevPen);
-    DeleteObject(grid);
+    DeleteObject(guide);
+
+    HPEN baseline = CreatePen(PS_SOLID, 1, softLine);
+    prevPen = SelectObject(hdc, baseline);
+    MoveToEx(hdc, rc.left + 8, plotBottom, nullptr);
+    LineTo(hdc, rc.right - 8, plotBottom);
+    SelectObject(hdc, prevPen);
+    DeleteObject(baseline);
 
     for (const auto& b : bars) {
+        // A one-pixel gap between neighbouring bars keeps each column readable.
+        int colLeft = static_cast<int>(b.rc.left) + 1;
+        int colRight = (std::max)(colLeft + 1, static_cast<int>(b.rc.right) - 1);
         int h = static_cast<int>((static_cast<double>(b.inputTokens + b.outputTokens + b.thinkingTokens + b.cacheTokens) / maxVal) * plotH);
         if (h < 1) h = 1;
         int totalH = h;
@@ -3307,8 +3382,7 @@ static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamE
             int sh = static_cast<int>((static_cast<double>(v) / (b.inputTokens + b.outputTokens + b.thinkingTokens + b.cacheTokens)) * h);
             if (sh < 1) sh = 1;
             if (sh > totalH) sh = totalH;
-            RECT seg = {b.rc.left, plotBottom - totalH, b.rc.right, plotBottom - totalH + sh};
-            if (seg.right <= seg.left) seg.right = seg.left + 1;
+            RECT seg = {colLeft, plotBottom - totalH, colRight, plotBottom - totalH + sh};
             HBRUSH br = CreateSolidBrush(color);
             FillRect(hdc, &seg, br);
             DeleteObject(br);
@@ -3323,11 +3397,103 @@ static void DrawUsageGraph(HDC hdc, const RECT& rc, const std::vector<LlmStreamE
             HPEN selPen = CreatePen(PS_SOLID, 1, g_theme.accent);
             HGDIOBJ p = SelectObject(hdc, selPen);
             HGDIOBJ br = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            Rectangle(hdc, b.rc.left, plotTop, b.rc.right, plotBottom);
+            RoundRect(hdc, colLeft - 2, plotTop - 2, colRight + 2, plotBottom + 2, 6, 6);
             SelectObject(hdc, br);
             SelectObject(hdc, p);
             DeleteObject(selPen);
         }
+    }
+    SelectObject(hdc, oldFont);
+}
+
+// Where the time went, by kind of step: read, write, tool, and everything else.
+static void DrawKindChart(HDC hdc, const RECT& rc, const std::vector<ActivityRow>& rows) {
+    if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+    const COLORREF softLine = BlendColor(g_theme.panel, g_theme.border, 60);
+
+    HBRUSH bg = CreateSolidBrush(g_theme.panel);
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+    HPEN frame = CreatePen(PS_SOLID, 1, softLine);
+    HGDIOBJ oldPen = SelectObject(hdc, frame);
+    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 10, 10);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(frame);
+
+    struct KindRow {
+        const wchar_t* label;
+        COLORREF color;
+        int64_t ms;
+    };
+    KindRow kinds[4] = {
+        {L"read", RGB(0x4F, 0x8C, 0xFF), 0},
+        {L"write", RGB(0x3D, 0xD5, 0x98), 0},
+        {L"tool", RGB(0xFF, 0xB0, 0x40), 0},
+        {L"other", RGB(0x5C, 0x6C, 0x8C), 0},
+    };
+    for (const auto& r : rows) {
+        if (r.startMs <= 0 || r.endMs < r.startMs) continue;  // events restored from an older session
+        int idx = 3;
+        if (r.kind == "read" || r.kind == "search" || r.kind == "web") idx = 0;
+        else if (r.kind == "edit") idx = 1;
+        else if (r.kind == "tool" || r.kind == "command" || r.kind == "subagent") idx = 2;
+        kinds[idx].ms += r.endMs - r.startMs;
+    }
+    int64_t maxMs = 1000;  // at least one second, so the axis always has a scale
+    for (const auto& k : kinds) maxMs = (std::max)(maxMs, k.ms);
+
+    SetBkMode(hdc, TRANSPARENT);
+    HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT)));
+    RECT titleRc = {rc.left + 8, rc.top + 4, rc.right - 8, rc.top + 18};
+    SetTextColor(hdc, g_theme.muted);
+    DrawTextW(hdc, L"Time", -1, &titleRc, DT_LEFT | DT_SINGLELINE);
+
+    const int labelW = 48;
+    const int axisH = 16;
+    int plotLeft = rc.left + 8 + labelW;
+    int plotRight = rc.right - 56;  // room after the longest bar for its value
+    int plotW = plotRight - plotLeft;
+    int plotTop = rc.top + 22;
+    int plotBottom = rc.bottom - axisH - 4;
+
+    // Guides at 0, half and full scale, labelled along the bottom as the time axis.
+    HPEN guide = CreatePen(PS_DOT, 1, softLine);
+    HGDIOBJ prevPen = SelectObject(hdc, guide);
+    for (int i = 0; i <= 2; ++i) {
+        int x = plotLeft + plotW * i / 2;
+        MoveToEx(hdc, x, plotTop, nullptr);
+        LineTo(hdc, x, plotBottom);
+        std::wstring label = FormatElapsed(maxMs * i / 2);
+        RECT tickRc = {x - 40, plotBottom + 2, x + 40, plotBottom + 2 + axisH};
+        UINT align = DT_CENTER;
+        if (i == 0) { tickRc.left = x; tickRc.right = x + 80; align = DT_LEFT; }
+        if (i == 2) { tickRc.left = x - 80; tickRc.right = x; align = DT_RIGHT; }
+        SetTextColor(hdc, g_theme.muted);
+        DrawTextW(hdc, label.c_str(), -1, &tickRc, align | DT_SINGLELINE);
+    }
+    SelectObject(hdc, prevPen);
+    DeleteObject(guide);
+
+    int rowH = (plotBottom - plotTop) / 4;
+    int barPad = (std::max)(2, rowH / 4);
+    for (int i = 0; i < 4; ++i) {
+        int top = plotTop + i * rowH;
+        RECT labelRc = {rc.left + 8, top, plotLeft - 4, top + rowH};
+        SetTextColor(hdc, g_theme.muted);
+        DrawTextW(hdc, kinds[i].label, -1, &labelRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        if (kinds[i].ms <= 0) continue;
+        int barRight = plotLeft + static_cast<int>(plotW * kinds[i].ms / maxMs);
+        if (barRight <= plotLeft) barRight = plotLeft + 1;
+        HBRUSH br = CreateSolidBrush(kinds[i].color);
+        RECT barRc = {plotLeft, top + barPad, barRight, top + rowH - barPad};
+        FillRect(hdc, &barRc, br);
+        DeleteObject(br);
+        std::wstring value = FormatElapsed(kinds[i].ms);
+        RECT valRc = {barRight + 4, top, rc.right - 4, top + rowH};
+        SetTextColor(hdc, g_theme.text);
+        DrawTextW(hdc, value.c_str(), -1, &valRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
     SelectObject(hdc, oldFont);
 }
@@ -3408,11 +3574,16 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
 
     if (!s.jobKey.empty() && ds->dash->tqm && ds->goalJobKey != s.jobKey) {
         std::string err;
-        auto job = nlohmann::json::parse(ds->dash->tqm->TaskQueueGet(s.jobKey, false, 0, err), nullptr, false);
+        std::string jobResp = ds->dash->tqm->TaskQueueGet(s.jobKey, false, 0, err);
+        auto job = nlohmann::json::parse(jobResp, nullptr, false);
         ds->goalJobKey = s.jobKey;
         ds->goalJobSummary.clear();
         ds->goalJobSuccess.clear();
         ds->goalJobMaxAttempts = 0;
+        {
+            std::wstring declared = TaskQueueResourcesDisplay(jobResp);
+            ds->goalJobResources = declared.empty() ? std::wstring(Tr(L"(なし)", L"(none)", L"(ninguno)")) : declared;
+        }
         if (job.is_object()) {
             if (job.contains("job") && job["job"].is_object()) job = job["job"];
             if (job.contains("summary") && job["summary"].is_string()) ds->goalJobSummary = job["summary"].get<std::string>();
@@ -3442,6 +3613,9 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
                    L"(not set: pcder agent info <id> --goal, or a task queue job's summary)",
                    L"(sin definir: pcder agent info <id> --goal)");
     hdr << L"\r\n";
+    if (!s.jobKey.empty()) {
+        hdr << Tr(L"リソース: ", L"Resources: ", L"Recursos: ") << ds->goalJobResources << L"\r\n";
+    }
 
     hdr << Tr(L"現状: ", L"Now: ", L"Ahora: ");
     std::wstring now = ActivityLine(ds->agentState.activity, ds->agentState.activityTarget,
@@ -3555,6 +3729,7 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
         ListView_SetItemText(ds->hwndList, last, 1, durStr.data());
     }
     if (ds->rcUsageGraph.right > ds->rcUsageGraph.left) InvalidateRect(hwnd, &ds->rcUsageGraph, FALSE);
+    if (ds->rcKindChart.right > ds->rcKindChart.left) InvalidateRect(hwnd, &ds->rcKindChart, FALSE);
 }
 
 static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
@@ -3750,20 +3925,10 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
                 12, 365, 820, 180, hwnd, (HMENU)2102, nullptr, nullptr);
 
-            ds->hwndBtnRefresh = CreateWindowExW(0, L"BUTTON", Tr(L"更新", L"Refresh", L"Actualizar"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 12, 555, 130, 30, hwnd, (HMENU)2103, nullptr, nullptr);
-            ds->hwndBtnOpenStream = CreateWindowExW(0, L"BUTTON", Tr(L"ストリームファイル (jsonl) を開く", L"Open Stream File (jsonl)", L"Abrir jsonl"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 150, 555, 260, 30, hwnd, (HMENU)2104, nullptr, nullptr);
-            ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる", L"Close", L"Cerrar"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 702, 555, 110, 30, hwnd, (HMENU)IDOK, nullptr, nullptr);
-
             if (ds->hFontUi) {
                 SendMessageW(ds->hwndHeader, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 if (ds->hwndAgentIcon) SendMessageW(ds->hwndAgentIcon, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
                 SendMessageW(ds->hwndList, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
-                SendMessageW(ds->hwndBtnRefresh, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
-                SendMessageW(ds->hwndBtnOpenStream, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
-                SendMessageW(ds->hwndBtnClose, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
             }
             if (ds->hFontMono) {
                 SendMessageW(ds->hwndEditPreview, WM_SETFONT, (WPARAM)ds->hFontMono, TRUE);
@@ -3892,28 +4057,26 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             int w = LOWORD(lParam);
             int h = HIWORD(lParam);
             if (ds->embedded) {
-                // Wide and short: header | usage graph | buttons on top, event list | detail below.
+                // Left half: goal text on top, usage graph below. Right half: the subtask list, full height.
                 int pad = 4;
                 // Goal / Now / Ends / process summary need several wrapped lines.
                 int topH = (std::clamp)(h * 52 / 100, 110, 150);
-                int btnW = 150;
                 int availW = (std::max)(300, w - pad * 2);
+                int leftW = availW / 2 - 4;
                 int contentX = pad + 28;
-                int contentW = availW - 28 - btnW - 8;
-                int graphW = (std::max)(160, contentW * 35 / 100);
-                int textW = (std::max)(160, contentW - graphW - 8);
+                int textW = (std::max)(160, leftW - 28);
                 if (ds->hwndAgentIcon) MoveWindow(ds->hwndAgentIcon, pad, pad, 24, 24, TRUE);
                 MoveWindow(ds->hwndHeader, contentX, pad, textW, topH, TRUE);
-                ds->rcUsageGraph = { contentX + textW + 8, pad, contentX + contentW, pad + topH };
-                int btnX = w - pad - btnW;
-                MoveWindow(ds->hwndBtnRefresh, btnX, pad, btnW / 2 - 2, 24, TRUE);
-                MoveWindow(ds->hwndBtnClose, btnX + btnW / 2 + 2, pad, btnW / 2 - 2, 24, TRUE);
-                MoveWindow(ds->hwndBtnOpenStream, btnX, pad + 30, btnW, 24, TRUE);
                 int bodyTop = pad + topH + 4;
                 int bodyH = (std::max)(30, h - bodyTop - pad);
-                int listW = (std::max)(200, availW * 58 / 100);
-                MoveWindow(ds->hwndList, pad, bodyTop, listW, bodyH, TRUE);
-                MoveWindow(ds->hwndEditPreview, pad + listW + 4, bodyTop, (std::max)(100, availW - listW - 4), bodyH, TRUE);
+                // Left column: usage graph above, the time-by-kind chart below it.
+                int graphH = bodyH * 55 / 100;
+                ds->rcUsageGraph = { pad, bodyTop, pad + leftW, bodyTop + graphH };
+                ds->rcKindChart = { pad, bodyTop + graphH + 6, pad + leftW, bodyTop + bodyH };
+                int subX = pad + leftW + 8;
+                int subW = (std::max)(200, w - pad - subX);
+                MoveWindow(ds->hwndList, subX, pad, subW, (std::max)(60, h - pad * 2), TRUE);
+                if (ds->hwndEditPreview) ShowWindow(ds->hwndEditPreview, SW_HIDE);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -3933,9 +4096,6 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             int editH = (std::max)(60, middleH - listH - 6);
             MoveWindow(ds->hwndList, pad, pad + hdrH + 6, availW, listH, TRUE);
             MoveWindow(ds->hwndEditPreview, pad, pad + hdrH + 6 + listH + 6, availW, editH, TRUE);
-            MoveWindow(ds->hwndBtnRefresh, pad, btnY, 130, 30, TRUE);
-            MoveWindow(ds->hwndBtnOpenStream, pad + 140, btnY, 260, 30, TRUE);
-            MoveWindow(ds->hwndBtnClose, (std::max)(pad + 410, w - pad - 110), btnY, 110, 30, TRUE);
             InvalidateRect(hwnd, &ds->rcUsageGraph, FALSE);
             return 0;
         }
@@ -3950,6 +4110,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 const LlmStreamEvent* sel = (selIdx >= 0 && selIdx < static_cast<int>(ds->events.size()))
                     ? &ds->events[selIdx] : nullptr;
                 DrawUsageGraph(hdc, ds->rcUsageGraph, ds->events, sel, selIdx);
+                DrawKindChart(hdc, ds->rcKindChart, ds->rows);
             }
             EndPaint(hwnd, &ps);
             return 0;
@@ -5981,8 +6142,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
             {
-                const int taskWidths[8] = {90, 350, 100, 105, 115, 190, 110, 110};
-                for (int i = 0; i < 8; ++i) {
+                const int taskWidths[9] = {90, 350, 100, 105, 115, 190, 110, 110, 200};
+                for (int i = 0; i < 9; ++i) {
                     LVCOLUMNW lvc = {};
                     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
                     lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
@@ -5993,7 +6154,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             }
             HWND hTaskHeader = ListView_GetHeader(st->hwndTaskList);
             if (hTaskHeader) {
-                for (int i = 0; i < 7; ++i) {
+                for (int i = 0; i < 9; ++i) {
                     HDITEMW hdi = {};
                     hdi.mask = HDI_FORMAT;
                     if (Header_GetItem(hTaskHeader, i, &hdi)) {
