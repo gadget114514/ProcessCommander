@@ -314,11 +314,15 @@ TASK QUEUE:
       Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
       Each job needs id, command, summary, timeoutSec; dependsOn replaces '&&'.
       Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
-      killExclude, resources {write,read}, priority, instructionsFile/instructionsText.
+      killExclude, resources {write,read}, defer, priority, instructionsFile/instructionsText.
       resources: jobs whose write/read sets overlap (write/write, write/read) never
       run together, across all queues; read/read may. Paths/globs resolve against
       cwd; a bare file name (Foo.cs) means **/Foo.cs; "@name" is a named lock.
       Disable with Settings / config.json resource_locks.
+      defer {exitCodes,delaySec,limit} (default [75], 60, 60): an attempt that exits
+      with one of exitCodes ("nothing ran, try again later", e.g. ww-run refusing an
+      overlapping card) goes back to pending after delaySec without using up
+      maxAttempts; after limit deferrals (0 = no limit) it is an ordinary failure.
 
   taskqueue list [<name>] [--state <state>]
       List jobs with state, queue, summary and blockedBy.
@@ -327,7 +331,7 @@ TASK QUEUE:
   taskqueue retry <id>
   taskqueue cancel <id>
   taskqueue pause|resume <name>
-  taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, blocked)
+  taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, retry_in_sec, blocked)
   taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]
   taskqueue purge <name> [--states succeeded,failed,cancelled]
 
@@ -585,7 +589,7 @@ void PrintCliUsageJson() {
         {"name": "cancel", "usage": "pcder taskqueue cancel <id>", "description": "Cancel a job; a running attempt is killed and is not retried."},
         {"name": "pause", "usage": "pcder taskqueue pause <name>", "description": "Stop starting new jobs in the queue; running jobs continue."},
         {"name": "resume", "usage": "pcder taskqueue resume <name>", "description": "Resume starting jobs in the queue."},
-        {"name": "graph", "usage": "pcder taskqueue graph [<name>] [--root <id>]", "description": "Dependency graph with ready, waiting_for, resource_wait, blocked and dependents."},
+        {"name": "graph", "usage": "pcder taskqueue graph [<name>] [--root <id>]", "description": "Dependency graph with ready, waiting_for, resource_wait, retry_in_sec, blocked and dependents."},
         {"name": "wait", "usage": "pcder taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]", "description": "Long-poll until the queue version changes."},
         {"name": "purge", "usage": "pcder taskqueue purge <name> [--states succeeded,failed,cancelled]", "description": "Remove finished jobs."}
       ],
@@ -739,11 +743,12 @@ void PrintCliUsageJson() {
     },
     "taskqueue_job": {
       "required": ["id", "command", "summary", "timeoutSec"],
-      "optional": ["cwd", "env", "dependsOn", "idle", "maxAttempts", "retryDelaySec", "success", "killExclude", "resources", "priority", "instructionsFile", "instructionsText"],
+      "optional": ["cwd", "env", "dependsOn", "idle", "maxAttempts", "retryDelaySec", "defer", "success", "killExclude", "resources", "priority", "instructionsFile", "instructionsText"],
       "summary": "One line, max 200 chars; exported as PC_JOB_SUMMARY and substituted for {summary}.",
       "timeoutSec": "Per job; > 0 and <= queue maxTimeoutSec (default 7200). Never summed.",
       "success": "exitCode (default 0) AND filesNewer (exist and newer than the attempt start) AND outputRegex (last 200 log lines).",
-      "idle": "outputSec and cpuSec must both be set; kill only when output AND CPU are idle."
+      "idle": "outputSec and cpuSec must both be set; kill only when output AND CPU are idle.",
+      "defer": "{exitCodes (default [75]), delaySec (60), limit (60, 0 = no limit)}: exit codes meaning nothing ran; the job is re-run after delaySec without using up maxAttempts. {\"exitCodes\": []} turns it off."
     },
     "states": {
       "waiting": "Queued and ready; waiting for a free slot or the retry delay.",

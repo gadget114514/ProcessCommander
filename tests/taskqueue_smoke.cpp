@@ -35,7 +35,9 @@ int main() {
     SetConsoleOutputCP(CP_UTF8);
     wchar_t tmp[MAX_PATH] = {};
     GetTempPathW(MAX_PATH, tmp);
-    std::wstring dir = std::wstring(tmp) + L"pc_tq_smoke_" + std::to_wstring(GetCurrentProcessId());
+    // PID plus start tick: Windows reuses PIDs, and a reused folder holds the queues of an older run.
+    std::wstring dir = std::wstring(tmp) + L"pc_tq_smoke_" + std::to_wstring(GetCurrentProcessId()) +
+                       L"_" + std::to_wstring(GetNowTickMs());
     CreateDirectoryW(dir.c_str(), nullptr);
     std::wstring env = L"PROCESS_COMMANDER_LOG_DIR=" + dir;
     _wputenv(env.c_str());
@@ -231,6 +233,40 @@ int main() {
         Check(!JsonGetBool(tqm.TaskQueueAdd("resw", bad, 0, "", err), "ok", false), "resources must be an object");
         std::string got = tqm.TaskQueueGet("W1", false, 0, err);
         Check(got.find("\"resources\":{\"write\":[\"shared.txt\"],\"read\":[]}") != std::string::npos, "resources returned by get");
+        Check(got.find("\"defer\":{\"exit_codes\":[75],\"delay_sec\":60,\"limit\":60}") != std::string::npos,
+              "defer defaults to exit code 75, 60 s, 60 times");
+    }
+
+    {
+        // Deferral (exit 75 = try again later): back to pending after delaySec without using up
+        // maxAttempts, until limit deferrals; then the exit code is an ordinary failure.
+        auto count = [](const std::string& s, const std::string& what) {
+            size_t n = 0;
+            for (size_t p = s.find(what); p != std::string::npos; p = s.find(what, p + 1)) n++;
+            return n;
+        };
+        std::string jobsD = R"([
+          {"id":"D1","command":"cmd /c exit 75","summary":"always deferred","timeoutSec":30,"maxAttempts":1,
+           "defer":{"delaySec":2,"limit":2}},
+          {"id":"D2","command":"cmd /c exit 75","summary":"deferral off","timeoutSec":30,"maxAttempts":1,
+           "defer":{"exitCodes":[]}}
+        ])";
+        Check(JsonGetBool(tqm.TaskQueueAdd("deferq", jobsD, 2, "", err), "ok", false), "defer jobs added: " + err);
+        Check(WaitForState(tqm, "D2", "failed", 10000), "with defer.exitCodes [] exit 75 fails at once");
+        Sleep(1000);
+        Check(GetState(tqm, "D1") == "pending", "exit 75 puts the job back to pending (maxAttempts 1 not used up)");
+        Check(tqm.TaskQueueGraph("deferq", "D1", err).find("\"retry_in_sec\":null") == std::string::npos,
+              "graph shows retry_in_sec while a deferred job waits");
+        Check(WaitForState(tqm, "D1", "failed", 20000), "after defer.limit deferrals exit 75 counts as a failure");
+        std::string d1 = tqm.TaskQueueGet("D1", false, 0, err);
+        Check(count(d1, "\"reason\":\"deferred\"") == 2 && count(d1, "\"reason\":\"failed\"") == 1,
+              "two deferred attempts, then one failed attempt");
+        std::string events = ReadFileUtf8Wide(TaskQueueManager::GetTaskEventsFileWide("deferq"));
+        Check(count(events, "\"jobDeferred\"") == 2, "jobDeferred events emitted");
+        Check(events.find("taskqueueStalled") == std::string::npos, "a queue waiting out a deferral is not stalled");
+
+        std::string badDefer = R"([{"id":"D3","command":"cmd /c exit 0","summary":"bad","timeoutSec":10,"defer":{"exitCodes":[0]}}])";
+        Check(!JsonGetBool(tqm.TaskQueueAdd("deferq", badDefer, 0, "", err), "ok", false), "defer.exitCodes may not contain the success code");
     }
 
     pm.SetProcessFinishedCallback(nullptr);

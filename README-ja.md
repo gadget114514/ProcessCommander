@@ -326,11 +326,15 @@ TASK QUEUE:
       Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
       Each job needs id, command, summary, timeoutSec; dependsOn replaces '&&'.
       Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
-      killExclude, resources {write,read}, priority, instructionsFile/instructionsText.
+      killExclude, resources {write,read}, defer, priority, instructionsFile/instructionsText.
       resources: jobs whose write/read sets overlap (write/write, write/read) never
       run together, across all queues; read/read may. Paths/globs resolve against
       cwd; a bare file name (Foo.cs) means **/Foo.cs; "@name" is a named lock.
       Disable with Settings / config.json resource_locks.
+      defer {exitCodes,delaySec,limit} (default [75], 60, 60): an attempt that exits
+      with one of exitCodes ("nothing ran, try again later", e.g. ww-run refusing an
+      overlapping card) goes back to pending after delaySec without using up
+      maxAttempts; after limit deferrals (0 = no limit) it is an ordinary failure.
 
   taskqueue list [<name>] [--state <state>]
       List jobs with state, queue, summary and blockedBy.
@@ -339,7 +343,7 @@ TASK QUEUE:
   taskqueue retry <id>
   taskqueue cancel <id>
   taskqueue pause|resume <name>
-  taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, blocked)
+  taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, retry_in_sec, blocked)
   taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]
   taskqueue purge <name> [--states succeeded,failed,cancelled]
 

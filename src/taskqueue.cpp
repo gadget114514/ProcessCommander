@@ -10,6 +10,7 @@
 #include <chrono>
 #include <set>
 #include <regex>
+#include <stdexcept>
 
 namespace pc {
 
@@ -265,6 +266,8 @@ static std::string NormalizeJobJsonKeys(const std::string& in) {
         {"timeoutSec", "timeout_sec"},
         {"maxAttempts", "max_attempts"},
         {"retryDelaySec", "retry_delay_sec"},
+        {"exitCodes", "exit_codes"},
+        {"delaySec", "delay_sec"},
         {"dependsOn", "depends_on"},
         {"killExclude", "kill_exclude"},
         {"instructionsFile", "instructions_file"},
@@ -379,6 +382,55 @@ static std::string SuccessToJson(const TaskQueueSuccess& s) {
 
 static std::string ResourcesToJson(const TaskQueueResources& r) {
     return "{\"write\":" + StrArrayToJson(r.write) + ",\"read\":" + StrArrayToJson(r.read) + "}";
+}
+
+static std::string DeferToJson(const TaskQueueDefer& d) {
+    std::ostringstream oss;
+    oss << "{\"exit_codes\":[";
+    for (size_t i = 0; i < d.exitCodes.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << d.exitCodes[i];
+    }
+    oss << "],\"delay_sec\":" << d.delaySec << ",\"limit\":" << d.limit << "}";
+    return oss.str();
+}
+
+// "defer" as given by a caller (add/update) or as persisted; missing fields keep the defaults.
+// Returns false with a message on a malformed value.
+static bool ParseDeferChecked(const std::string& json, int successExitCode, TaskQueueDefer& out, std::string& err) {
+    out = TaskQueueDefer();
+    if (!HasJsonKey(json, "defer")) return true;
+    std::string obj = JsonFieldObj(json, "defer", "");
+    if (obj.empty()) {
+        err = "defer must be an object like {\"exitCodes\":[75],\"delaySec\":60,\"limit\":60}";
+        return false;
+    }
+    if (HasJsonKey(obj, "exit_codes")) {
+        out.exitCodes.clear();
+        for (const auto& s : JsonFieldStrArray(obj, "exit_codes")) {
+            int code = 0;
+            try {
+                size_t used = 0;
+                code = std::stoi(s, &used);
+                if (used != s.size()) throw std::invalid_argument(s);
+            } catch (const std::exception&) {
+                err = "defer.exitCodes must be integers";
+                return false;
+            }
+            if (code == successExitCode) {
+                err = "defer.exitCodes must not contain the success exit code (" + std::to_string(code) + ")";
+                return false;
+            }
+            out.exitCodes.push_back(code);
+        }
+    }
+    out.delaySec = static_cast<int>(JsonFieldInt(obj, "delay_sec", out.delaySec));
+    out.limit = static_cast<int>(JsonFieldInt(obj, "limit", out.limit));
+    if (out.delaySec < 0 || out.limit < 0) {
+        err = "defer.delaySec and defer.limit must not be negative";
+        return false;
+    }
+    return true;
 }
 
 static TaskQueueResources ParseResources(const std::string& obj) {
@@ -513,6 +565,8 @@ static TaskQueueJob ParseJob(const std::string& j) {
     job.success.exitCode = static_cast<int>(JsonFieldInt(successObj, "exit_code", 0));
     job.success.filesNewer = JsonFieldStrArray(successObj, "files_newer");
     job.success.outputRegex = JsonFieldStr(successObj, "output_regex", "");
+    std::string deferErr;
+    if (!ParseDeferChecked(j, job.success.exitCode, job.defer, deferErr)) job.defer = TaskQueueDefer();
     job.killExclude = JsonFieldStrArray(j, "kill_exclude");
     job.resources = ParseResources(JsonFieldObj(j, "resources"));
     job.priority = static_cast<int>(JsonFieldInt(j, "priority", 0));
@@ -811,6 +865,7 @@ std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeIns
         << ",\"idle\":{\"output_sec\":" << job.idle.outputSec << ",\"cpu_sec\":" << job.idle.cpuSec << "}"
         << ",\"max_attempts\":" << job.maxAttempts
         << ",\"retry_delay_sec\":" << job.retryDelaySec
+        << ",\"defer\":" << DeferToJson(job.defer)
         << ",\"success\":" << SuccessToJson(job.success)
         << ",\"kill_exclude\":" << StrArrayToJson(job.killExclude)
         << ",\"resources\":" << ResourcesToJson(job.resources)
@@ -1307,6 +1362,11 @@ static bool ParseNewJob(const std::string& rawJson, const std::string& taskqueue
         err = "job '" + job.id + "': " + resErr;
         return false;
     }
+    std::string deferErr;
+    if (!ParseDeferChecked(j, job.success.exitCode, job.defer, deferErr)) {
+        err = "job '" + job.id + "': " + deferErr;
+        return false;
+    }
     job.priority = static_cast<int>(JsonFieldInt(j, "priority", 0));
     job.env = ParseJsonStringMap(JsonFieldObj(j, "env"));
     {
@@ -1602,7 +1662,7 @@ std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::
     // Only "notes" may be updated after a job has finished or is running.
     if (onlyNotes) {
         for (const char* k : {"summary","command","cwd","timeout_sec","idle","max_attempts",
-                              "retry_delay_sec","priority","kill_exclude","resources","env","success",
+                              "retry_delay_sec","defer","priority","kill_exclude","resources","env","success",
                               "instructions_text","instructions_file","depends_on"}) {
             if (HasJsonKey(patchJson, k)) { onlyNotes = false; break; }
         }
@@ -1676,6 +1736,15 @@ std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::
         job->success.exitCode = static_cast<int>(JsonFieldInt(successObj, "exit_code", job->success.exitCode));
         job->success.filesNewer = JsonFieldStrArray(successObj, "files_newer");
         job->success.outputRegex = JsonFieldStr(successObj, "output_regex", "");
+    }
+    if (HasJsonKey(patchJson, "defer")) {
+        TaskQueueDefer d;
+        std::string deferErr;
+        if (!ParseDeferChecked(patchJson, job->success.exitCode, d, deferErr)) {
+            outError = deferErr;
+            return BuildError(outError);
+        }
+        job->defer = d;
     }
     if (HasJsonKey(patchJson, "notes")) {
         job->notes = JsonFieldStr(patchJson, "notes", "");
@@ -1988,7 +2057,6 @@ void TaskQueueManager::CheckQueueNotices(TaskQueue& tq) {
     int pendingCount = 0;
     int runningCount = 0;
     bool anyReady = false;
-    int64_t now = static_cast<int64_t>(GetNowTickMs());
     for (const auto& job : tq.jobs) {
         if (job.state == "pending") {
             pendingCount++;
@@ -1997,7 +2065,8 @@ void TaskQueueManager::CheckQueueNotices(TaskQueue& tq) {
                 const TaskQueueJob* dep = FindJobConst(d.id);
                 if (!dep || !IsDepSatisfied(*dep, d.on)) { allSat = false; break; }
             }
-            if (allSat && job.retryAtMs <= now) anyReady = true;
+            // A job waiting out retryDelaySec / defer.delaySec starts on its own: not stalled.
+            if (allSat) anyReady = true;
         } else if (job.state == "running") {
             runningCount++;
         }
@@ -2107,6 +2176,10 @@ std::string TaskQueueManager::TaskQueueGraph(const std::string& taskqueue, const
                 << ",\"resource_wait\":";
             if (resourceWait.empty()) oss << "null";
             else oss << "\"" << JsonEscape(resourceWait) << "\"";
+            // Seconds until a pending job may start again (retryDelaySec or a deferral).
+            oss << ",\"retry_in_sec\":";
+            if (job.state == "pending" && job.retryAtMs > now) oss << (job.retryAtMs - now + 999) / 1000;
+            else oss << "null";
             oss << ",\"dependents\":" << StrArrayToJson(dependents) << "}";
         }
     }
@@ -2204,12 +2277,36 @@ void TaskQueueManager::ApplyAttemptOutcome(TaskQueue& tq, TaskQueueJob& job, boo
         return;
     }
 
+    // A deferral exit code (defer.exitCodes, 75 by default) means the command did not run its
+    // work and asks to be started again later: back to pending after defer.delaySec, without
+    // using up max_attempts, until defer.limit deferrals have happened.
+    // The process exited on its own ("failed": non-zero exit, "checkFailed": exit code other
+    // than success.exitCode); timeouts, kills and launch failures are never deferrals.
+    if ((reason == "failed" || reason == "checkFailed") &&
+        std::find(job.defer.exitCodes.begin(), job.defer.exitCodes.end(), exitCode) != job.defer.exitCodes.end()) {
+        int deferrals = 0;
+        for (const auto& att : job.attempts) {
+            if (att.reason == "deferred") deferrals++;
+        }
+        if (job.defer.limit == 0 || deferrals < job.defer.limit) {
+            a.reason = "deferred";
+            job.state = "pending";
+            job.retryAtMs = static_cast<int64_t>(GetNowTickMs()) + static_cast<int64_t>(job.defer.delaySec) * 1000;
+            EmitEventLocked(tq, "jobDeferred", job.id, a.n);
+            SaveAllLocked();
+            CheckQueueNotices(tq);
+            cv_.notify_all();
+            return;
+        }
+    }
+
     EmitEventLocked(tq, "jobAttemptFailed", job.id, a.n);
     // An attempt cut short by a ProcessCommander restart is not the job's fault,
     // so it does not use up max_attempts (spec: interrupted jobs are re-run).
+    // A deferred attempt did not run the job's work either.
     int countedAttempts = 0;
     for (const auto& att : job.attempts) {
-        if (att.reason != "interrupted") countedAttempts++;
+        if (att.reason != "interrupted" && att.reason != "deferred") countedAttempts++;
     }
     if (countedAttempts < job.maxAttempts) {
         job.state = "pending";

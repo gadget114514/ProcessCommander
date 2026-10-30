@@ -98,6 +98,16 @@ struct TaskQueueAttempt {
     uint64_t startFiletime = 0;
 };
 
+// An attempt that ends with one of exitCodes means "nothing ran, try again later" (75 =
+// EX_TEMPFAIL, e.g. ww-run refusing an overlapping card): the job goes back to pending and
+// starts again after delaySec, without using up maxAttempts. After limit deferrals (0 = no
+// limit) the exit code counts as an ordinary failure.
+struct TaskQueueDefer {
+    std::vector<int> exitCodes{75};
+    int delaySec = 60;
+    int limit = 60;
+};
+
 struct TaskQueueJob {
     std::string id;
     std::string taskqueue;
@@ -113,6 +123,7 @@ struct TaskQueueJob {
     TaskQueueIdle idle;
     int maxAttempts = 2;
     int retryDelaySec = 0;
+    TaskQueueDefer defer;
     TaskQueueSuccess success;
     std::vector<std::string> killExclude;
     TaskQueueResources resources;

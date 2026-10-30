@@ -149,6 +149,8 @@ do not overlap (design: [doc/resource-locks.md](../../doc/resource-locks.md)):
   `ww-data\logs\refused.log`.
 - A refused run exits with **75** (nothing ran, try again later), so a caller can tell it from a
   setup error (1) or an engine failure. `-DryRun` also exits 75 when the run would be refused.
+  A pcder task queue defers such a job by default: it starts again after 60 s without using up
+  `maxAttempts` (job field `defer`).
 
 `ww-run.cmd -Help` prints all options and the steps for a supervisor LLM.
 

@@ -143,8 +143,10 @@ the same rule (bare names, overlap test), so both layers agree.
   the declaration then comes from one place.
 - A job that runs ww-run as a **main** run (`-Main`, or a card without `Authorised edits`) must
   declare `"write": ["**"]`, the lock ww-run itself takes. Without it ProcessCommander starts it
-  next to other runs, ww-run refuses with exit code 75, and the task queue counts a failed attempt
-  (retried, then `failed`). `-Jobs` writes `**` for such cards.
+  next to other runs and ww-run refuses with exit code 75. The task queue then defers the job (job
+  field `defer`, on by default for exit code 75): it goes back to pending and starts again after
+  60 s without using up `maxAttempts`, so nothing breaks, but the job keeps polling instead of
+  waiting for the lock. `-Jobs` writes `**` for such cards.
 - Worktree jobs declare no path resources (see section 1).
 
 ```json
