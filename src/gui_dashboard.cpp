@@ -541,6 +541,8 @@ struct DashboardState {
     int lastTotalListHeight = 0;
     std::vector<std::string> taskJobIds;
     std::vector<std::string> taskJobStates;
+    std::vector<int> taskJobProcIds;     // latest attempt's process per task row (0 = none)
+    int lastFollowedProcId = -1;         // process the monitor pane last auto-followed
     // JSON stream bottom pane below the process / task lists
     HWND hwndBtnStreamPane = nullptr;
     HWND hwndStreamPane = nullptr;
@@ -1970,8 +1972,14 @@ static void RefreshTaskQueueData(DashboardState* st) {
         return false;
     });
 
+    // Rebuilding the list drops the highlight, so remember which job was selected and select it again.
+    std::string keepSelectedJob;
+    int prevSel = ListView_GetNextItem(st->hwndTaskList, -1, LVNI_SELECTED);
+    if (prevSel >= 0 && prevSel < static_cast<int>(st->taskJobIds.size())) keepSelectedJob = st->taskJobIds[prevSel];
+
     st->taskJobIds.clear();
     st->taskJobStates.clear();
+    st->taskJobProcIds.clear();
     SendMessageW(st->hwndTaskList, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(st->hwndTaskList);
 
@@ -1988,6 +1996,11 @@ static void RefreshTaskQueueData(DashboardState* st) {
         }
         st->taskJobIds.push_back(jobId);
         st->taskJobStates.push_back(kind);
+        // The process of the latest attempt, so selecting this row can show it in the monitor pane.
+        int64_t latestPid = 0;
+        auto attemptsOfRow = SplitJsonObjectArray(j, "attempts");
+        if (!attemptsOfRow.empty()) latestPid = JsonGetInt(attemptsOfRow.back(), "process_id", 0);
+        st->taskJobProcIds.push_back(static_cast<int>(latestPid));
 
         std::wstring idStr = Utf8ToWide(jobId);
         std::wstring summaryStr = Utf8ToWide(JsonGetString(j, "summary", ""));
@@ -2055,12 +2068,15 @@ static void RefreshTaskQueueData(DashboardState* st) {
                 endStr = FormatRemainingTime(timeoutSec);
             }
         }
-        // Follow a newly started task: the monitor pane watches the job's process.
+        // Follow a task only when its process has just started, so a selection made by hand is kept.
         if (state == "running") {
             auto attemptsSel = SplitJsonObjectArray(j, "attempts");
             if (!attemptsSel.empty()) {
                 int64_t pidSel = JsonGetInt(attemptsSel.back(), "process_id", 0);
-                if (pidSel > 0) st->selectedProcId = static_cast<int>(pidSel);
+                if (pidSel > 0 && static_cast<int>(pidSel) != st->lastFollowedProcId) {
+                    st->selectedProcId = static_cast<int>(pidSel);
+                    st->lastFollowedProcId = static_cast<int>(pidSel);
+                }
             }
         }
         std::wstring depsStr = TaskQueueDepsDisplay(j);
@@ -2087,6 +2103,13 @@ static void RefreshTaskQueueData(DashboardState* st) {
         ListView_SetItemText(st->hwndTaskList, row, 7, queueStr.data());
         ListView_SetItemText(st->hwndTaskList, row, 8, resourcesStr.data());
         row++;
+    }
+    if (!keepSelectedJob.empty()) {
+        for (int r = 0; r < static_cast<int>(st->taskJobIds.size()); ++r) {
+            if (st->taskJobIds[r] != keepSelectedJob) continue;
+            ListView_SetItemState(st->hwndTaskList, r, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            break;
+        }
     }
     SendMessageW(st->hwndTaskList, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(st->hwndTaskList, nullptr, FALSE);
@@ -6776,7 +6799,20 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     }
                 }
             } else if (nmhdr->idFrom == IDC_LIST_TASKS) {
-                if (nmhdr->code == NM_RCLICK) {
+                if (nmhdr->code == LVN_ITEMCHANGED) {
+                    // Selecting a task shows its process in the monitor pane below.
+                    auto* nmlv = reinterpret_cast<NMLISTVIEW*>(lParam);
+                    bool newlySelected = (nmlv->uNewState & LVIS_SELECTED) && !(nmlv->uOldState & LVIS_SELECTED);
+                    int idx = nmlv->iItem;
+                    if (newlySelected && idx >= 0 && idx < static_cast<int>(st->taskJobProcIds.size())) {
+                        int pid = st->taskJobProcIds[idx];
+                        if (pid > 0) {
+                            st->selectedProcId = pid;
+                            st->lastFollowedProcId = pid;
+                            SyncStreamPane(st);
+                        }
+                    }
+                } else if (nmhdr->code == NM_RCLICK) {
                     auto* nmia = reinterpret_cast<NMITEMACTIVATE*>(lParam);
                     int idx = nmia->iItem;
                     if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size())) {
