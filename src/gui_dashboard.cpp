@@ -2040,13 +2040,28 @@ static void ShowTaskQueueJobDetails(DashboardState* st, const std::string& jobId
     MessageBoxW(st->hwndMain, Utf8ToWide(resp).c_str(), Utf8ToWide(jobId).c_str(), MB_OK | MB_ICONINFORMATION);
 }
 
-static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobId, POINT ptScreen) {
+static void CopyTextToClipboard(HWND hwnd, const std::wstring& text);
+
+// Column index of "Resources" in the task list (see UpdateTaskListColumnWidths).
+static const int kTaskListResourcesCol = 8;
+
+// Full text of one task-list cell. The control keeps the whole string even when the column is
+// too narrow to draw it, so this is the text that hover and "copy cell" should use.
+static std::wstring TaskListCellText(HWND list, int row, int col) {
+    wchar_t buf[4096] = {};
+    ListView_GetItemText(list, row, col, buf, static_cast<int>(sizeof(buf) / sizeof(buf[0])));
+    return buf;
+}
+
+static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobId, POINT ptScreen, const std::wstring& cellText) {
     if (!st || !st->tqm || jobId.empty()) return;
     std::string err;
     std::string resp = st->tqm->TaskQueueGet(jobId, false, 0, err);
     std::string jobState = JsonGetString(resp, "state", "");
 
     HMENU hMenu = CreatePopupMenu();
+    AppendMenuW(hMenu, MF_STRING | (cellText.empty() ? MF_GRAYED : 0), 3110, Tr(L"セルをコピー", L"Copy cell", L"Copiar celda"));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     if (jobState == "running") {
         AppendMenuW(hMenu, MF_STRING, 3107, Tr(L"ツリー終了 (ジョブ中断)", L"Kill Tree (Cancel Job)", L"Terminar árbol (Cancelar)"));
         AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -2063,7 +2078,9 @@ static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobI
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, ptScreen.x, ptScreen.y, 0, st->hwndMain, nullptr);
     DestroyMenu(hMenu);
 
-    if (cmd == 3107) {
+    if (cmd == 3110) {
+        CopyTextToClipboard(st->hwndMain, cellText);
+    } else if (cmd == 3107) {
         if (MessageBoxW(st->hwndMain,
                 Tr(L"このタスクのプロセスツリーを強制終了（ジョブ中断）しますか？",
                    L"Are you sure you want to kill this task's process tree?",
@@ -6602,7 +6619,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             st->hwndTaskList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                 0, 0, 600, 160, hwnd, (HMENU)IDC_LIST_TASKS, nullptr, nullptr);
-            ListView_SetExtendedListViewStyle(st->hwndTaskList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+            ListView_SetExtendedListViewStyle(st->hwndTaskList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
             ListView_SetBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
@@ -7173,13 +7190,21 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size())) {
                         POINT ptScreen = {};
                         GetCursorPos(&ptScreen);
-                        ShowTaskQueueContextMenu(st, st->taskJobIds[idx], ptScreen);
+                        std::wstring cell = TaskListCellText(st->hwndTaskList, idx, nmia->iSubItem);
+                        ShowTaskQueueContextMenu(st, st->taskJobIds[idx], ptScreen, cell);
                     }
                 } else if (nmhdr->code == NM_DBLCLK) {
                     auto* nmia = reinterpret_cast<NMITEMACTIVATE*>(lParam);
                     int idx = nmia->iItem;
                     if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size())) {
                         ShowTaskQueueJobDetails(st, st->taskJobIds[idx]);
+                    }
+                } else if (nmhdr->code == LVN_GETINFOTIPW) {
+                    // Hover over the Resources cell: show all of it, not only what fits the column.
+                    auto* tip = reinterpret_cast<NMLVGETINFOTIPW*>(lParam);
+                    if (tip->iSubItem == kTaskListResourcesCol && tip->pszText && tip->cchTextMax > 0) {
+                        std::wstring full = TaskListCellText(st->hwndTaskList, tip->iItem, tip->iSubItem);
+                        wcsncpy_s(tip->pszText, tip->cchTextMax, full.c_str(), _TRUNCATE);
                     }
                 } else if (nmhdr->code == NM_CUSTOMDRAW) {
                     auto* lvcd = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);

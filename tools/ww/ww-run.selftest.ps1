@@ -471,6 +471,44 @@ try {
     $env:WW_JSON_STDOUT = $oldEnvJson
 }
 
+Write-Host "`n== 10. a run ends when the engine exits, even if its child keeps stdout open ==" -ForegroundColor Cyan
+# The fake engine prints one event, starts a child that inherits stdout and lives for 300 s, then
+# exits 0. Before the fix ww-run waited for EOF and so waited for that child.
+$runRepo = Join-Path $base "run-repo"
+New-Item -ItemType Directory -Force (Join-Path $runRepo "ww-data\tasks") | Out-Null
+& git -C $runRepo init -q
+& git -C $runRepo -c user.email=selftest@example.invalid -c user.name=selftest commit -q --allow-empty -m init
+Set-Content -Encoding UTF8 (Join-Path $runRepo "ww-data\tasks\901-lingering.md") "# 901 lingering child`n`nSplittable: no`n"
+$fakeEngine = Join-Path $base "fake-engine.ps1"
+Set-Content -Encoding UTF8 $fakeEngine @'
+'{"type":"result","subtype":"success"}'
+Start-Process -NoNewWindow -FilePath powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 300 #ww-selftest-orphan'
+exit 0
+'@
+$oldEngineCmd = $env:WW_TEST_ENGINE_COMMAND
+$watch = [System.Diagnostics.Stopwatch]::StartNew()
+$runOut = Join-Path $base "run-out.txt"
+try {
+    $env:WW_TEST_ENGINE_COMMAND = "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$fakeEngine'"
+    # Started with redirected output and a deadline, so a regression fails here instead of hanging.
+    $runProc = Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "ww-run.ps1"), '901', '-Root', $runRepo, '-Engine', 'claude' -PassThru -WindowStyle Hidden -RedirectStandardOutput $runOut
+    $finished = $runProc.WaitForExit(90000)
+    if (-not $finished) { & taskkill /PID $runProc.Id /T /F | Out-Null }
+    # Start-Process leaves ExitCode null on Windows PowerShell 5.1 (see ww-watch.ps1), so read the
+    # exit code that ww-run wrote to its last record.
+    $runExit = if ($finished) { [int](Get-Content (Join-Path $runRepo "ww-data\running\901.last.json") -Raw | ConvertFrom-Json).ExitCode } else { -1 }
+} finally {
+    $env:WW_TEST_ENGINE_COMMAND = $oldEngineCmd
+}
+$watch.Stop()
+Check $finished ("run ended without waiting for the child (took {0:N1} s)" -f $watch.Elapsed.TotalSeconds)
+Check ($runExit -eq 0) "run exit code is the engine's exit code (0)"
+$lastRecord = Join-Path $runRepo "ww-data\running\901.last.json"
+Check (Test-Path $lastRecord) "last record is written (finally block reached)"
+$orphans = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'ww-selftest-orphan' })
+Check ($orphans.Count -eq 0) "the child left behind by the engine was stopped"
+foreach ($o in $orphans) { & taskkill /PID $o.ProcessId /F | Out-Null }
+
 Write-Host "`n== summary ==" -ForegroundColor Cyan
 Write-Host "pass=$($script:pass) fail=$($script:fail)"
 if ($script:fail -gt 0) { exit 1 } else { exit 0 }

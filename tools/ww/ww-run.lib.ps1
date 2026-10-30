@@ -827,3 +827,39 @@ function Get-UntrackedAuthorisedPaths {
     }
     return @($bad)
 }
+
+# ---------- engine job object ----------
+# ww-run puts the engine launcher into a Windows job object. Every process the engine starts
+# belongs to the job, including children whose parent has already exited, so one call ends
+# whatever the engine left running. (A tree walk by parent PID cannot find those children.)
+if (-not ('WwJob' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WwJob {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll")] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll")] public static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+}
+'@
+}
+
+# Returns the job handle, or IntPtr.Zero when the job could not be set up (the caller then
+# ends only the launcher).
+function New-EngineJob([System.Diagnostics.Process]$Proc) {
+    $job = [WwJob]::CreateJobObject([IntPtr]::Zero, $null)
+    if ($job -eq [IntPtr]::Zero) { return $job }
+    if (-not [WwJob]::AssignProcessToJobObject($job, $Proc.Handle)) {
+        [WwJob]::CloseHandle($job) | Out-Null
+        return [IntPtr]::Zero
+    }
+    return $job
+}
+
+# Ends every process still in the job, then releases it.
+function Stop-EngineJob([IntPtr]$Job) {
+    if ($Job -eq [IntPtr]::Zero) { return }
+    [WwJob]::TerminateJobObject($Job, 1) | Out-Null
+    [WwJob]::CloseHandle($Job) | Out-Null
+}
