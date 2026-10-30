@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
-project(ProcessCommander VERSION 1.2.2 LANGUAGES CXX)
+project(ProcessCommander VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Link the MSVC runtime statically so the executables run without the VC++ redistributable.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_definitions(-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX -DECODE_ENABLE_SIXEL)
 
@@ -26,6 +29,16 @@ add_executable(ProcessCommander
     src/Terminal/src/TerminalView.cpp
     src/Terminal/src/TerminalGridView.cpp
 )
+
+# Version macros for C++ (PC_VERSION) and the VERSIONINFO resource (src/version_info.rc2).
+set(PC_VERSION_DEFINITIONS
+    PC_VERSION="${PROJECT_VERSION}"
+    PC_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    PC_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    PC_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+)
+
+target_compile_definitions(ProcessCommander PRIVATE ${PC_VERSION_DEFINITIONS})
 
 target_include_directories(ProcessCommander PRIVATE
     src
@@ -76,9 +89,12 @@ add_executable(pcder
     src/cli.cpp
     src/ipc_client.cpp
     src/common.cpp
+    src/pcder.rc
 )
 
 add_dependencies(pcder ProcessCommander)
+
+target_compile_definitions(pcder PRIVATE ${PC_VERSION_DEFINITIONS})
 
 target_include_directories(pcder PRIVATE
     src

@@ -2,22 +2,25 @@
 ;
 ; Prerequisites:
 ;   1. Build the Release binaries and assemble the payload into
-;      dist\ProcessCommander-v1.2.2-win64\ :
+;      dist\ProcessCommander-v<version>-win64\ :
 ;        ProcessCommander.exe, pcder.exe, conpty.dll, OpenConsole.exe,
 ;        LICENSE, README.md, README-ja.md, docs\images\*
 ;      tools\ (the ww task-card runner template) is taken from the repository directly.
-;   2. Compile with:  ISCC.exe installer\ProcessCommander.iss
-;      or run installer\build_installer.cmd
+;   2. Run installer\build_installer.cmd (it reads the version from CMakeLists.txt),
+;      or compile with:  ISCC.exe /DMyAppVersion=<version> installer\ProcessCommander.iss
 ;
 ; The install is per-user ({localappdata}\Programs) so the dashboard can write
 ; logs/state/task queues next to the executable without administrator rights.
 
 #define MyAppName "ProcessCommander"
-#define MyAppVersion "1.2.2"
+; The version is the single source in CMakeLists.txt, passed as /DMyAppVersion=x.y.z.
+#ifndef MyAppVersion
+  #error MyAppVersion is not defined. Run installer\build_installer.cmd or pass /DMyAppVersion=x.y.z to ISCC.
+#endif
 #define MyAppPublisher "gadget114514"
 #define MyAppURL "https://github.com/gadget114514/ProcessCommander"
 #define MyAppExeName "ProcessCommander.exe"
-#define PayloadDir "..\dist\ProcessCommander-v1.2.2-win64"
+#define PayloadDir "..\dist\ProcessCommander-v" + MyAppVersion + "-win64"
 
 [Setup]
 AppId={{fb224954-9950-4106-a925-41423c19c7cc}
@@ -28,7 +31,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-VersionInfoVersion=1.2.2.0
+VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=ProcessCommander Setup
 VersionInfoProductName={#MyAppName}

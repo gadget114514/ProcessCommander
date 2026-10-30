@@ -22,3 +22,4 @@ echo.
 echo === Build succeeded ===
 echo Library: %BUILD_DIR%\Release\libsixel.lib
 echo Headers: %~dp0include\sixel.h
+echo Copy the library to lib\libsixel.lib in the repository root to use it.

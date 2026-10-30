@@ -1,5 +1,11 @@
 #pragma once
 
+// Product version; CMake passes PROJECT_VERSION. The fallback is deliberately not a
+// real version so a non-CMake build never reports a stale number.
+#ifndef PC_VERSION
+#define PC_VERSION "unknown"
+#endif
+
 #include <windows.h>
 #include <string>
 #include <vector>

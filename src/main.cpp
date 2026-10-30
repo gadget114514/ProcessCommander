@@ -13,7 +13,11 @@ using namespace pc;
 
 static void PrintUsage() {
     std::cout <<
-R"(ProcessCommander - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+"ProcessCommander " PC_VERSION R"( - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+
+NAMING:
+  PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
+  (this executable); pcder.exe is its console client.
 
 USAGE:
   ProcessCommander.exe [gui] [--data-dir <path>]
@@ -25,6 +29,9 @@ USAGE:
 
   ProcessCommander.exe --help
       Show this help.
+
+  ProcessCommander.exe --version
+      Show the version.
 
 OPTIONS (per launch):
   --data-dir <path>   Store logs, state, task queues and config in <path>.
@@ -57,6 +64,9 @@ WORKING MODEL (LLM orchestration):
     3. Workers are ordinary processes and may themselves be LLM CLIs. Pass
        detailed instructions via instructionsFile/instructionsText; workers read
        {instructions} / PC_JOB_INSTRUCTIONS and write artifacts.
+       Role clarity: when supervisor and worker share the same engine
+       (Claude/Claude, opencode/opencode), roles can blur; prefer a different
+       worker engine or a clearly distinct worker role/prompt.
     4. The supervisor observes with taskqueue_wait / taskqueue_list /
        taskqueue_graph and reads logs; it never polls .done files.
     5. On failure, fix the cause and call taskqueue_retry. Blocked dependents
@@ -164,6 +174,19 @@ int main() {
             }
         }
         PrintUsage();
+        return 0;
+    }
+
+    // Like pcder, --json may come before or after the command.
+    bool jsonOutput = false;
+    std::string firstCmd;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--json" || args[i] == "-j") jsonOutput = true;
+        else if (firstCmd.empty()) firstCmd = args[i];
+    }
+    if (firstCmd == "--version" || firstCmd == "-V" || firstCmd == "version") {
+        if (jsonOutput) std::cout << "{\"ok\":true,\"program\":\"ProcessCommander\",\"version\":\"" PC_VERSION "\"}" << std::endl;
+        else std::cout << "ProcessCommander " PC_VERSION << std::endl;
         return 0;
     }
 

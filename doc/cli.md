@@ -4,6 +4,19 @@
 
 The console client `pcder.exe` communicates with the running GUI Dashboard via Named Pipe (`\\.\pipe\ProcessCommander_IPC_v1`). If the dashboard is not yet running, `ProcessCommander.exe` is located in the same directory and launched automatically.
 
+> **Naming:** **PCR** is short for **ProcessCommander** (the GUI dashboard / MCP server, `ProcessCommander.exe`). When docs, prompts or job notes say "PCR", they mean ProcessCommander; `pcder.exe` is its console client. Both help outputs state this in a `NAMING` section, and `help --json` exposes it as `aliases.PCR`.
+
+## Version (`--version` / `-V` / `version`)
+
+```powershell
+pcder.exe --version              # pcder 2.0.0
+pcder.exe version --json         # {"ok":true,"program":"pcder","version":"2.0.0"}
+ProcessCommander.exe --version   # ProcessCommander 2.0.0
+ProcessCommander.exe version --json  # {"ok":true,"program":"ProcessCommander","version":"2.0.0"}
+```
+
+The version also appears in the first line of both help outputs, as `version` in `pcder.exe help --json`, and as `serverInfo.version` in the MCP `initialize` response.
+
 ## JSON Output (`--json` / `-j`)
 
 By default, `pcder.exe` prints human-friendly text. Add the global `--json` (or `-j`) flag — before or after the command — to receive the raw machine-readable JSON response instead. This is intended for scripts, CI pipelines, and LLM agents:
@@ -116,6 +129,7 @@ pcder.exe mcp install --dry-run --json    # preview without writing
 
 | Key | Contents |
 | :--- | :--- |
+| `version`, `aliases` | pcder version and the `PCR` = ProcessCommander alias |
 | `concepts` | Process IDs, modes, stdin, logs, `.done` files, cwd/env, data directory, lifecycle |
 | `cli_exit_codes`, `environment_variables` | Exit codes and `PROCESS_COMMANDER_LOG_DIR` |
 | `data_dir_option`, `effective_data_dir` | Per-invocation `--data-dir`, its resolved absolute path for this call, and project consistency rules |

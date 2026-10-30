@@ -3723,9 +3723,12 @@ static void UpdateToolbarLabels(DashboardState* st) {
     }
 }
 
+// PCR is the short name of ProcessCommander.
+static const wchar_t* const kMainWindowTitle = L"ProcessCommander (PCR)";
+
 static void ApplyLanguageToUi(DashboardState* st) {
     if (!st) return;
-    SetWindowTextW(st->hwndMain, L"Process Commander");
+    SetWindowTextW(st->hwndMain, kMainWindowTitle);
     UpdateToolbarLabels(st);
     UpdateListHeaderSortIndicator(st);
     UpdateTaskListHeaders(st);
@@ -5232,10 +5235,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             LoadShellConfig(st);
             UpdateToolbarLabels(st);
-            SetWindowTextW(hwnd,
-                Tr(L"ProcessCommander — マルチターミナル ConPTY ダッシュボード (Direct2D TerminalView)",
-                   L"ProcessCommander — Multi-Terminal ConPTY Dashboard (Direct2D TerminalView)",
-                   L"ProcessCommander — Panel de terminales ConPTY (Direct2D TerminalView)"));
+            SetWindowTextW(hwnd, kMainWindowTitle);
 
             st->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -6024,7 +6024,7 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc, TaskQueueManager& tqm) {
     HWND hwnd = CreateWindowExW(
         0,
         wc.lpszClassName,
-        L"Process Commander",
+        kMainWindowTitle,
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 1460, 940,
         nullptr, nullptr, hInst, &state

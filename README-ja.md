@@ -4,6 +4,8 @@
 
 **ProcessCommander** は、Claude Code や各種自動化スクリプトから複数のサブプロセス・対話型 CLI エージェント（`opencode`, `claude`, PowerShell, cmd, Git Bash 等）を並列起動・監視・制御し、**状況をひと目で把握できる Native Win32 + Direct2D マルチターミナルダッシュボード GUI** を備えたプロセスマネージャです。
 
+**PCR** は ProcessCommander の略称です。バージョンは `pcder.exe --version` で確認できます（現在: 2.0.0）。
+
 ### 対象ユーザー
 
 - **LLM コーディングエージェント（Claude Code、opencode、Codex など）を使う Windows 開発者**で、監督役の LLM から別の CLI エージェントをワーカープロセスとして動かし、作業を任せたい人。
@@ -48,7 +50,11 @@ LLM は `processcommander help --json` を実行して使い方を理解しま�
 ## 付録: `ProcessCommander.exe --help` の出力
 
 ```text
-ProcessCommander - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+ProcessCommander 2.0.0 - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+
+NAMING:
+  PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
+  (this executable); pcder.exe is its console client.
 
 USAGE:
   ProcessCommander.exe [gui] [--data-dir <path>]
@@ -60,6 +66,9 @@ USAGE:
 
   ProcessCommander.exe --help
       Show this help.
+
+  ProcessCommander.exe --version
+      Show the version.
 
 OPTIONS (per launch):
   --data-dir <path>   Store logs, state, task queues and config in <path>.
@@ -92,6 +101,9 @@ WORKING MODEL (LLM orchestration):
     3. Workers are ordinary processes and may themselves be LLM CLIs. Pass
        detailed instructions via instructionsFile/instructionsText; workers read
        {instructions} / PC_JOB_INSTRUCTIONS and write artifacts.
+       Role clarity: when supervisor and worker share the same engine
+       (Claude/Claude, opencode/opencode), roles can blur; prefer a different
+       worker engine or a clearly distinct worker role/prompt.
     4. The supervisor observes with taskqueue_wait / taskqueue_list /
        taskqueue_graph and reads logs; it never polls .done files.
     5. On failure, fix the cause and call taskqueue_retry. Blocked dependents
@@ -147,7 +159,9 @@ MCP SERVER SETUP:
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
     - Required taskqueue job fields: id, command, summary, timeoutSec.
       Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
-      killExclude, priority, instructionsFile / instructionsText.
+      killExclude, resources {write,read}, priority, instructionsFile / instructionsText.
+    - resources: jobs whose write/read sets overlap never run together (read/read is
+      fine). Paths/globs resolve against cwd; "@name" is a named lock.
     - Success is verified: exit code AND optional filesNewer / outputRegex.
     - States: waiting = queued and ready; pending = dependencies not satisfied;
       blocked = a dependency failed; running; succeeded; failed; cancelled.
@@ -163,7 +177,11 @@ MCP SERVER SETUP:
 ## 付録: `pcder.exe help` の出力
 
 ```text
-pcder - ProcessCommander console client
+pcder 2.0.0 - ProcessCommander console client
+
+NAMING:
+  PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
+  (the GUI dashboard / MCP server, ProcessCommander.exe); pcder.exe is its console client.
 
 USAGE:
   pcder [--json] <command> [options]
@@ -171,6 +189,7 @@ USAGE:
 GLOBAL OPTIONS:
   --json, -j               Print machine-readable JSON instead of human-friendly text.
   -h, --help               Show this help.
+  -V, --version            Show the version (also: pcder version).
 
 DATA DIRECTORY (per invocation):
   --data-dir <path>        Store logs, state, task queues and config in <path> for
@@ -284,6 +303,15 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
+  agent status <id>
+      Show current agent status, active tool, thoughts, message, and supervisor context.
+
+  agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
+      View captured JSON streaming events for claude, agy, or opencode agents.
+
+  agent info <id> [--notes "<notes>"] [--goal "<goal>"]
+      Update supervisor notes or goal for an ongoing agent.
+
   mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
       .mcp.json (Claude Code, default) or opencode.json (--client opencode).
@@ -295,6 +323,11 @@ TASK QUEUE:
   taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]
       Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
       Each job needs id, command, summary, timeoutSec; dependsOn replaces '&&'.
+      Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
+      killExclude, resources {write,read}, priority, instructionsFile/instructionsText.
+      resources: jobs whose write/read sets overlap (write/write, write/read) never
+      run together, across all queues; read/read may. Paths/globs resolve against
+      cwd; "@name" is a named lock. Disable with Settings / config.json resource_locks.
 
   taskqueue list [<name>] [--state <state>]
       List jobs with state, queue, summary and blockedBy.
@@ -303,7 +336,7 @@ TASK QUEUE:
   taskqueue retry <id>
   taskqueue cancel <id>
   taskqueue pause|resume <name>
-  taskqueue graph [<name>] [--root <id>]
+  taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, blocked)
   taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]
   taskqueue purge <name> [--states succeeded,failed,cancelled]
 
@@ -362,6 +395,11 @@ SETUP FOR LLM AGENTS:
         instructions via instructionsFile/instructionsText; the worker reads
         {instructions} / PC_JOB_INSTRUCTIONS and writes artifacts.
       - Workers may be LLM CLIs (opencode run, claude -p, ...) or build scripts.
+      - Role clarity: when the supervisor and worker use the same engine
+        (e.g. Claude supervising `claude -p`, or opencode supervising
+        `opencode run`), roles can blur and cause confusion; prefer a
+        different worker engine for workers, or give workers a clearly
+        distinct role/prompt and avoid nested supervision.
       - Verify success with exit code + filesNewer/outputRegex; observe with
         taskqueue_wait / taskqueue_list / taskqueue_graph and logs; retry with
         taskqueue_retry. Blocked dependents resume automatically.

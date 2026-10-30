@@ -167,7 +167,11 @@ McpInstallOutcome InstallMcpConfig(const std::string& client, const std::string&
 
 void PrintCliUsage() {
     std::cout <<
-R"(pcder - ProcessCommander console client
+"pcder " PC_VERSION " - ProcessCommander console client\n"
+R"(
+NAMING:
+  PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
+  (the GUI dashboard / MCP server, ProcessCommander.exe); pcder.exe is its console client.
 
 USAGE:
   pcder [--json] <command> [options]
@@ -175,6 +179,7 @@ USAGE:
 GLOBAL OPTIONS:
   --json, -j               Print machine-readable JSON instead of human-friendly text.
   -h, --help               Show this help.
+  -V, --version            Show the version (also: pcder version).
 
 DATA DIRECTORY (per invocation):
   --data-dir <path>        Store logs, state, task queues and config in <path> for
@@ -308,6 +313,11 @@ TASK QUEUE:
   taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]
       Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
       Each job needs id, command, summary, timeoutSec; dependsOn replaces '&&'.
+      Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
+      killExclude, resources {write,read}, priority, instructionsFile/instructionsText.
+      resources: jobs whose write/read sets overlap (write/write, write/read) never
+      run together, across all queues; read/read may. Paths/globs resolve against
+      cwd; "@name" is a named lock. Disable with Settings / config.json resource_locks.
 
   taskqueue list [<name>] [--state <state>]
       List jobs with state, queue, summary and blockedBy.
@@ -316,7 +326,7 @@ TASK QUEUE:
   taskqueue retry <id>
   taskqueue cancel <id>
   taskqueue pause|resume <name>
-  taskqueue graph [<name>] [--root <id>]
+  taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, blocked)
   taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]
   taskqueue purge <name> [--states succeeded,failed,cancelled]
 
@@ -408,12 +418,15 @@ void PrintCliUsageJson() {
     std::cout << R"({
   "ok": true,
   "program": "pcder",
+  "version": ")" PC_VERSION R"(",
+  "aliases": {"PCR": "ProcessCommander (the GUI dashboard / MCP server, ProcessCommander.exe); pcder is its console client."},
   "description": "ProcessCommander console client. Sends commands to the running ProcessCommander GUI dashboard over a named pipe.",
   "usage": "pcder [--json] <command> [options]",
   "effective_data_dir": ")" << dataDir << R"(",
   "global_options": [
     {"name": "--json", "alias": "-j", "description": "Print the raw machine-readable JSON response. May be placed before or after the command."},
-    {"name": "--help", "alias": "-h", "description": "Show usage. Combine with --json to get this machine-readable help."}
+    {"name": "--help", "alias": "-h", "description": "Show usage. Combine with --json to get this machine-readable help."},
+    {"name": "--version", "alias": "-V", "description": "Show the version. Combine with --json for {\"ok\":true,\"version\":...}."}
   ],
   "data_dir_option": {
     "name": "--data-dir",
@@ -599,6 +612,12 @@ void PrintCliUsageJson() {
       "name": "help",
       "description": "Show command usage.",
       "usage": "pcder help [--json]",
+      "options": []
+    },
+    {
+      "name": "version",
+      "description": "Show the pcder version.",
+      "usage": "pcder version [--json]",
       "options": []
     }
   ],
@@ -1228,6 +1247,11 @@ int RunCli(const std::vector<std::string>& rawArgs) {
     if (subcmd == "--help" || subcmd == "-h" || subcmd == "help") {
         if (jsonOutput) PrintCliUsageJson();
         else PrintCliUsage();
+        return 0;
+    }
+    if (subcmd == "--version" || subcmd == "-V" || subcmd == "version") {
+        if (jsonOutput) std::cout << "{\"ok\":true,\"program\":\"pcder\",\"version\":\"" PC_VERSION "\"}" << std::endl;
+        else std::cout << "pcder " PC_VERSION << std::endl;
         return 0;
     }
 

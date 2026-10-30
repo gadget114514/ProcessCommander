@@ -4,6 +4,19 @@
 
 CLI コマンドは Named Pipe (`\\.\pipe\ProcessCommander_IPC_v1`) を通じて起動中の GUI ダッシュボードと連携します（GUI 未起動時は自動で起動します）。
 
+> **呼称:** **PCR** は **ProcessCommander**（GUI ダッシュボード / MCP サーバー、`ProcessCommander.exe`）の略称です。ドキュメント・プロンプト・ジョブの notes などで「PCR」と書かれていれば ProcessCommander を指します。`pcder.exe` はそのコンソールクライアントです。両方の help の `NAMING` 節に記載されており、`help --json` では `aliases.PCR` として取得できます。
+
+## バージョン確認（`--version` / `-V` / `version`）
+
+```powershell
+pcder.exe --version              # pcder 2.0.0
+pcder.exe version --json         # {"ok":true,"program":"pcder","version":"2.0.0"}
+ProcessCommander.exe --version   # ProcessCommander 2.0.0
+ProcessCommander.exe version --json  # {"ok":true,"program":"ProcessCommander","version":"2.0.0"}
+```
+
+バージョンは両方の help の 1 行目、`pcder.exe help --json` の `version`、MCP の `initialize` 応答の `serverInfo.version` にも出力されます。
+
 ```powershell
 # GUI ダッシュボードの起動（トレイ格納中の場合は前面に復元）
 ProcessCommander.exe gui

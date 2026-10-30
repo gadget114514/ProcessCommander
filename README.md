@@ -4,6 +4,8 @@
 
 **ProcessCommander** is a native Win32 C++ Multi-Terminal ConPTY Process Manager and Dashboard designed for orchestrating, monitoring, and interacting with multiple parallel CLI agents (`claude`, `opencode`, build scripts, and interactive shells) via both **Model Context Protocol (MCP)** and **CLI commands**.
 
+**PCR** is short for ProcessCommander. Check the version with `pcder.exe --version` (current: 2.0.0).
+
 ### Who is this for?
 
 - **Windows developers who use LLM coding agents** (Claude Code, opencode, Codex, etc.) and want one supervising LLM to delegate work to other CLI agents running as worker processes.
@@ -48,7 +50,11 @@ You use the LLM as frontend supervisor llm, and you can specify other llm as wor
 ## Appendix: `ProcessCommander.exe --help`
 
 ```text
-ProcessCommander - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+ProcessCommander 2.0.0 - Native Win32 Multi-LLM Process & ConPTY Manager + Live GUI Dashboard
+
+NAMING:
+  PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
+  (this executable); pcder.exe is its console client.
 
 USAGE:
   ProcessCommander.exe [gui] [--data-dir <path>]
@@ -60,6 +66,9 @@ USAGE:
 
   ProcessCommander.exe --help
       Show this help.
+
+  ProcessCommander.exe --version
+      Show the version.
 
 OPTIONS (per launch):
   --data-dir <path>   Store logs, state, task queues and config in <path>.
@@ -150,7 +159,9 @@ MCP SERVER SETUP:
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
     - Required taskqueue job fields: id, command, summary, timeoutSec.
       Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
-      killExclude, priority, instructionsFile / instructionsText.
+      killExclude, resources {write,read}, priority, instructionsFile / instructionsText.
+    - resources: jobs whose write/read sets overlap never run together (read/read is
+      fine). Paths/globs resolve against cwd; "@name" is a named lock.
     - Success is verified: exit code AND optional filesNewer / outputRegex.
     - States: waiting = queued and ready; pending = dependencies not satisfied;
       blocked = a dependency failed; running; succeeded; failed; cancelled.
@@ -166,7 +177,11 @@ MCP SERVER SETUP:
 ## Appendix: `pcder.exe help` output
 
 ```text
-pcder - ProcessCommander console client
+pcder 2.0.0 - ProcessCommander console client
+
+NAMING:
+  PCR = ProcessCommander. "PCR" in docs, prompts or job notes means ProcessCommander
+  (the GUI dashboard / MCP server, ProcessCommander.exe); pcder.exe is its console client.
 
 USAGE:
   pcder [--json] <command> [options]
@@ -174,6 +189,7 @@ USAGE:
 GLOBAL OPTIONS:
   --json, -j               Print machine-readable JSON instead of human-friendly text.
   -h, --help               Show this help.
+  -V, --version            Show the version (also: pcder version).
 
 DATA DIRECTORY (per invocation):
   --data-dir <path>        Store logs, state, task queues and config in <path> for
@@ -287,6 +303,15 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
+  agent status <id>
+      Show current agent status, active tool, thoughts, message, and supervisor context.
+
+  agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
+      View captured JSON streaming events for claude, agy, or opencode agents.
+
+  agent info <id> [--notes "<notes>"] [--goal "<goal>"]
+      Update supervisor notes or goal for an ongoing agent.
+
   mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
       .mcp.json (Claude Code, default) or opencode.json (--client opencode).
@@ -298,6 +323,11 @@ TASK QUEUE:
   taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]
       Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
       Each job needs id, command, summary, timeoutSec; dependsOn replaces '&&'.
+      Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
+      killExclude, resources {write,read}, priority, instructionsFile/instructionsText.
+      resources: jobs whose write/read sets overlap (write/write, write/read) never
+      run together, across all queues; read/read may. Paths/globs resolve against
+      cwd; "@name" is a named lock. Disable with Settings / config.json resource_locks.
 
   taskqueue list [<name>] [--state <state>]
       List jobs with state, queue, summary and blockedBy.
@@ -306,7 +336,7 @@ TASK QUEUE:
   taskqueue retry <id>
   taskqueue cancel <id>
   taskqueue pause|resume <name>
-  taskqueue graph [<name>] [--root <id>]
+  taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, blocked)
   taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]
   taskqueue purge <name> [--states succeeded,failed,cancelled]
 
