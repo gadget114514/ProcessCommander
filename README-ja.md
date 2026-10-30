@@ -4,6 +4,14 @@
 
 **ProcessCommander** は、Claude Code や各種自動化スクリプトから複数のサブプロセス・対話型 CLI エージェント（`opencode`, `claude`, PowerShell, cmd, Git Bash 等）を並列起動・監視・制御し、**状況をひと目で把握できる Native Win32 + Direct2D マルチターミナルダッシュボード GUI** を備えたプロセスマネージャです。
 
+### 対象ユーザー
+
+- **LLM コーディングエージェント（Claude Code、opencode、Codex など）を使う Windows 開発者**で、監督役の LLM から別の CLI エージェントをワーカープロセスとして動かし、作業を任せたい人。
+- **長時間・並列・対話型のジョブ**（ビルド、テスト、開発サーバー、TUI エージェント）を扱う人。チャット内のサブエージェントでは重すぎる、遅すぎる、トークンがかかりすぎる作業向けです。
+- **多数のエージェント端末を 1 つのダッシュボードで見ながら操作したい人**。タイムアウト、リトライ、依存関係を設定でき、ログは再起動後も残ります。
+
+**向いていないケース**: 短い推論やコード修正だけで、LLM のサブエージェントで足りている場合。詳しくは [Pros/Cons 比較（英語）](doc/pros-cons-comparison.md) を参照してください。
+
 ![ProcessCommander Dashboard](docs/images/dashboard.jpg)
 
 ---

@@ -4,6 +4,14 @@
 
 **ProcessCommander** is a native Win32 C++ Multi-Terminal ConPTY Process Manager and Dashboard designed for orchestrating, monitoring, and interacting with multiple parallel CLI agents (`claude`, `opencode`, build scripts, and interactive shells) via both **Model Context Protocol (MCP)** and **CLI commands**.
 
+### Who is this for?
+
+- **Windows developers who use LLM coding agents** (Claude Code, opencode, Codex, etc.) and want one supervising LLM to delegate work to other CLI agents running as worker processes.
+- **People running long, parallel, or interactive jobs** — builds, test suites, dev servers, TUI agents — that are too heavy, too slow, or too token-expensive for in-chat sub-agents.
+- **Anyone who wants to watch and steer** many agent terminals live on one dashboard, with timeouts, retries, dependencies, and logs that survive restarts.
+
+**Probably not for you if** your tasks are short reasoning or code edits that LLM sub-agents already handle well. See the [Pros/Cons comparison](doc/pros-cons-comparison.md).
+
 ![ProcessCommander Dashboard](docs/images/dashboardgraph.jpg)
 ![ProcessCommander Dashboard](docs/images/dashboard.jpg)
 
