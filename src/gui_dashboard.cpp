@@ -5556,7 +5556,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 510;
+    int dlgH = 545;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 
