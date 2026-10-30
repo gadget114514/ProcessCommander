@@ -3399,6 +3399,7 @@ static void ShowTaskDetailsDialog(DashboardState* st, int procId) {
 struct ActivityRow {
     std::string kind;
     std::string target;
+    std::string description;  // the tool call's own "description", shown in its own column
     int64_t startMs = 0;
     int64_t endMs = 0;
     int firstEvent = 0;
@@ -3829,6 +3830,7 @@ static std::vector<ActivityRow> BuildActivityRows(const std::vector<LlmStreamEve
         ActivityRow r;
         r.kind = kind;
         r.target = target;
+        r.description = DescribeLlmNote(events[i]);
         r.startMs = events[i].recvEpochMs;
         r.endMs = r.startMs;
         r.firstEvent = r.lastEvent = i;
@@ -3864,7 +3866,7 @@ static std::wstring ActivityRowStartTime(const ActivityRow& r) {
 // One step as tab-separated values for the clipboard, with the full target rather than the cell's shortened text.
 static std::wstring ActivityRowCopyText(const ActivityRow& r) {
     return ActivityRowStartTime(r) + L"\t" + ActivityRowDuration(r) + L"\t" + ActivityLabel(r.kind) + L"\t" +
-           Utf8ToWide(r.target) + L"\t" + TokenCellText(r.tokIn) + L"\t" + TokenCellText(r.tokOut) + L"\t" +
+           Utf8ToWide(r.description) + L"\t" + Utf8ToWide(r.target) + L"\t" + TokenCellText(r.tokIn) + L"\t" + TokenCellText(r.tokOut) + L"\t" +
            TokenCellText(r.tokCache) + L"\t" + TokenCellText(r.tokThink) + L"\t" +
            TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink);
 }
@@ -4073,6 +4075,7 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
             std::wstring durStr = ActivityRowDuration(r);
             std::wstring whatStr = ActivityLabel(r.kind);
             std::wstring targetStr = ShortTarget(r.target, 200);
+            std::wstring descStr = ShortTarget(r.description, 200);
             LVITEMW lvi = {};
             lvi.mask = LVIF_TEXT | LVIF_PARAM;
             lvi.iItem = d;
@@ -4081,12 +4084,13 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
             ListView_InsertItem(ds->hwndList, &lvi);
             ListView_SetItemText(ds->hwndList, d, 1, durStr.data());
             ListView_SetItemText(ds->hwndList, d, 2, whatStr.data());
-            ListView_SetItemText(ds->hwndList, d, 3, targetStr.data());
-            ListView_SetItemText(ds->hwndList, d, 4, TokenCellText(r.tokIn).data());
-            ListView_SetItemText(ds->hwndList, d, 5, TokenCellText(r.tokOut).data());
-            ListView_SetItemText(ds->hwndList, d, 6, TokenCellText(r.tokCache).data());
-            ListView_SetItemText(ds->hwndList, d, 7, TokenCellText(r.tokThink).data());
-            ListView_SetItemText(ds->hwndList, d, 8, TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink).data());
+            ListView_SetItemText(ds->hwndList, d, 3, descStr.data());
+            ListView_SetItemText(ds->hwndList, d, 4, targetStr.data());
+            ListView_SetItemText(ds->hwndList, d, 5, TokenCellText(r.tokIn).data());
+            ListView_SetItemText(ds->hwndList, d, 6, TokenCellText(r.tokOut).data());
+            ListView_SetItemText(ds->hwndList, d, 7, TokenCellText(r.tokCache).data());
+            ListView_SetItemText(ds->hwndList, d, 8, TokenCellText(r.tokThink).data());
+            ListView_SetItemText(ds->hwndList, d, 9, TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink).data());
         }
         SendMessageW(ds->hwndList, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(ds->hwndList, nullptr, FALSE);
@@ -4269,6 +4273,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 Tr(L"開始", L"Start", L"Inicio"),
                 Tr(L"所要", L"Took", L"Duración"),
                 Tr(L"実行中", L"Running", L"En curso"),
+                Tr(L"説明", L"Description", L"Descripción"),
                 Tr(L"対象", L"Target", L"Objetivo"),
                 L"i",
                 L"o",
@@ -4276,8 +4281,8 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 L"t",
                 L"a"
             };
-            const int monWidths[] = {60, 60, 150, 170, 44, 44, 44, 44, 52};
-            int colCount = ds->embedded ? 9 : 7;
+            const int monWidths[] = {60, 60, 150, 150, 170, 44, 44, 44, 44, 52};
+            int colCount = ds->embedded ? 10 : 7;
             for (int i = 0; i < colCount; ++i) {
                 if (ds->embedded) {
                     LVCOLUMNW lvc = {};
