@@ -2572,17 +2572,17 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
     int baseSum = 0;
     for (int i = 0; i < 8; ++i) baseSum += base[i];
 
-    // The last column (Resources) takes whatever remains so the columns always fill the list.
+    // Shares are proportional with no per-column minimum, so the widths always add up to the list width.
+    // A minimum here would push the sum past the list and cut off the last column (Resources).
+    // The last column takes whatever remains.
     int remaining = total - summaryW;
     int widths[8] = {};
     int assigned = 0;
     for (int i = 0; i < 7; ++i) {
         widths[i] = base[i] * remaining / baseSum;
-        if (widths[i] < 60) widths[i] = 60;
         assigned += widths[i];
     }
     widths[7] = remaining - assigned;
-    if (widths[7] < 60) widths[7] = 60;
 
     ListView_SetColumnWidth(st->hwndTaskList, 0, widths[0]);
     ListView_SetColumnWidth(st->hwndTaskList, 1, summaryW);
