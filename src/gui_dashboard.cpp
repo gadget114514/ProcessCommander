@@ -1521,17 +1521,14 @@ static void UpdateListHeaderSortIndicator(DashboardState* st) {
 }
 
 static const wchar_t* TaskColumnTitle(int index) {
-    static const wchar_t* const ja[7] = {
-        L"ID", L"サマリ", L"状態", L"開始時刻", L"終了 / 残り時間",
-        L"依存 / 理由", L"キュー"
+    static const wchar_t* const ja[8] = {
+        L"ID", L"サマリ", L"状態", L"開始時刻", L"終了 / 残り時間", L"やっていること", L"依存 / 理由", L"キュー"
     };
-    static const wchar_t* const en[7] = {
-        L"ID", L"Summary", L"State", L"Start", L"End / Left",
-        L"Depends / Reason", L"Queue"
+    static const wchar_t* const en[8] = {
+        L"ID", L"Summary", L"State", L"Start", L"End / Left", L"Doing", L"Depends / Reason", L"Queue"
     };
-    static const wchar_t* const es[7] = {
-        L"ID", L"Resumen", L"Estado", L"Inicio", L"Fin / Restante",
-        L"Dependencias", L"Cola"
+    static const wchar_t* const es[8] = {
+        L"ID", L"Resumen", L"Estado", L"Inicio", L"Fin / Restante", L"Haciendo", L"Dependencias", L"Cola"
     };
     if (g_uiLanguage == UiLanguage::Spanish) return es[index];
     if (g_uiLanguage == UiLanguage::English) return en[index];
@@ -1541,7 +1538,7 @@ static const wchar_t* TaskColumnTitle(int index) {
 static void UpdateTaskListHeaders(DashboardState* st) {
     if (!st || !st->hwndTaskList) return;
     HWND hHeader = ListView_GetHeader(st->hwndTaskList);
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         LVCOLUMNW lvc = {};
         lvc.mask = LVCF_TEXT;
         lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
@@ -1962,7 +1959,6 @@ static void RefreshTaskQueueData(DashboardState* st) {
                 }
             }
         }
-        if (!taskDoingStr.empty()) { summaryStr += L"\r\n"; summaryStr += taskDoingStr; }
         std::wstring stateStr = TaskQueueStateLabel(state, j, stateById);
         if (!notes.empty()) stateStr += L" \U0001F4DD";
         std::string attemptStart = LastAttemptField(j, "start");
@@ -2029,8 +2025,9 @@ static void RefreshTaskQueueData(DashboardState* st) {
         ListView_SetItemText(st->hwndTaskList, row, 2, stateStr.data());
         ListView_SetItemText(st->hwndTaskList, row, 3, startStr.data());
         ListView_SetItemText(st->hwndTaskList, row, 4, endStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 5, depsStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 6, queueStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 5, taskDoingStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 6, depsStr.data());
+        ListView_SetItemText(st->hwndTaskList, row, 7, queueStr.data());
         row++;
     }
     SendMessageW(st->hwndTaskList, WM_SETREDRAW, TRUE, 0);
@@ -2322,20 +2319,20 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
 
     // Summary takes ~half of the visible list width; the other columns share the rest.
     int summaryW = total / 2;
-    const int base[6] = {90, 100, 105, 115, 190, 110}; // ID, State, Start, End, Depends, Queue
+    const int base[7] = {90, 100, 105, 115, 190, 110, 110}; // ID, State, Start, End, Doing, Depends, Queue
     int baseSum = 0;
-    for (int i = 0; i < 6; ++i) baseSum += base[i];
+    for (int i = 0; i < 7; ++i) baseSum += base[i];
 
     int remaining = total - summaryW;
-    int widths[6] = {};
+    int widths[7] = {};
     int assigned = 0;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         widths[i] = base[i] * remaining / baseSum;
         if (widths[i] < 60) widths[i] = 60;
         assigned += widths[i];
     }
-    widths[5] = remaining - assigned;
-    if (widths[5] < 60) widths[5] = 60;
+    widths[6] = remaining - assigned;
+    if (widths[6] < 60) widths[6] = 60;
 
     ListView_SetColumnWidth(st->hwndTaskList, 0, widths[0]);
     ListView_SetColumnWidth(st->hwndTaskList, 1, summaryW);
@@ -2344,6 +2341,7 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
     ListView_SetColumnWidth(st->hwndTaskList, 4, widths[3]);
     ListView_SetColumnWidth(st->hwndTaskList, 5, widths[4]);
     ListView_SetColumnWidth(st->hwndTaskList, 6, widths[5]);
+    ListView_SetColumnWidth(st->hwndTaskList, 7, widths[6]);
 }
 
 static void LayoutControls(DashboardState* st, int width, int height) {
@@ -5975,8 +5973,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
             {
-                const int taskWidths[7] = {90, 350, 100, 105, 115, 190, 110};
-                for (int i = 0; i < 7; ++i) {
+                const int taskWidths[8] = {90, 350, 100, 105, 115, 190, 110, 110};
+                for (int i = 0; i < 8; ++i) {
                     LVCOLUMNW lvc = {};
                     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
                     lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
