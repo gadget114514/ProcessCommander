@@ -732,9 +732,9 @@ static COLORREF GetStateRowBgColor(const ProcessSnapshot& s) {
 
 static COLORREF KpiAccent(int index) {
     static const COLORREF darkAccents[7] = {
-        RGB(125, 128, 134), RGB(78, 112, 92), RGB(120, 104, 74),
-        RGB(78, 104, 128), RGB(124, 84, 84), RGB(104, 94, 118),
-        RGB(140, 100, 60)
+        RGB(118, 132, 156), RGB(60, 130, 89), RGB(142, 111, 52),
+        RGB(55, 105, 151), RGB(144, 64, 64), RGB(101, 78, 134),
+        RGB(172, 100, 28)
     };
     static const COLORREF lightAccents[7] = {
         RGB(100, 116, 139), RGB(22, 163, 74), RGB(217, 119, 6),
