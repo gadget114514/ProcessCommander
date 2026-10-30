@@ -22,6 +22,7 @@ struct LlmStreamEvent {
     std::string toolInput;     // arguments or parameters
     std::string content;       // thinking reasoning or assistant message text
     std::string status;        // "thinking", "calling_tool", "generating", "idle", "completed", "error"
+    std::string messageId;     // Claude message.id; usage is per message, not cumulative
     int stepIndex = 0;
     uint64_t totalTokens = 0;
     uint64_t inputTokens = 0;
@@ -119,6 +120,9 @@ private:
     int processId_ = 0;
     std::string agentType_;
     std::string conversationId_;
+    uint64_t lastAgyModelProbeMs_ = 0;
+    std::string lastMessageId_;
+    std::vector<LlmUsagePoint> pendingUsage_;  // recorded by IngestChunk after releasing mutex_
     std::string streamFilePath_;
     std::wstring streamFilePathWide_;
     std::string lineBuffer_;
@@ -134,6 +138,7 @@ private:
     uint64_t lastCacheWrite_ = 0;
     double lastUsageCost_ = 0.0;
     static constexpr size_t kMaxEvents = 500;
+    static constexpr uint64_t kAgyModelProbeIntervalMs = 5000;
     // Claude tool_result lines (file contents etc.) routinely exceed 64KB.
     static constexpr size_t kMaxLineBytes = 16 * 1024 * 1024;
 };

@@ -3,6 +3,7 @@
 #include "common.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -54,7 +55,8 @@ static std::mutex g_usageHistoryMutex;
 static std::deque<LlmUsagePoint> g_usageHistory;
 static bool g_usageHistoryLoaded = false;
 static bool g_usageHistoryPersist = false;
-static uint64_t g_recordCalls = 0;
+static std::mutex g_usageFileMutex;
+static std::atomic<uint64_t> g_recordCalls{0};
 static std::string g_lastSkipReason;
 
 static std::wstring UsageHistoryPathWide() {
@@ -101,21 +103,23 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
         point.costUsd <= 0.0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
-    LoadUsageHistoryLocked();
     LlmUsagePoint p = point;
     p.epochSec = epochSec;
-    g_usageHistory.push_back(std::move(p));
-    int64_t cutoff = epochSec - kUsageRetentionSec;
-    while (!g_usageHistory.empty() && g_usageHistory.front().epochSec < cutoff) {
-        g_usageHistory.pop_front();
+    bool persist = false;
+    {
+        std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
+        LoadUsageHistoryLocked();
+        g_usageHistory.push_back(p);
+        int64_t cutoff = epochSec - kUsageRetentionSec;
+        while (!g_usageHistory.empty() && g_usageHistory.front().epochSec < cutoff) {
+            g_usageHistory.pop_front();
+        }
+        while (g_usageHistory.size() > kMaxUsagePoints) {
+            g_usageHistory.pop_front();
+        }
+        persist = g_usageHistoryPersist;
     }
-    while (g_usageHistory.size() > kMaxUsagePoints) {
-        g_usageHistory.pop_front();
-    }
-    if (g_usageHistoryPersist) {
-        std::ofstream out(UsageHistoryPathWide(), std::ios::app);
-        if (out) {
+    if (persist) {
         nlohmann::json j;
         j["epochSec"] = p.epochSec;
         j["inputTokens"] = p.inputTokens;
@@ -127,8 +131,11 @@ void RecordLlmUsagePoint(int64_t epochSec, const LlmUsagePoint& point) {
         j["costUsd"] = p.costUsd;
         j["agentType"] = p.agentType;
         j["model"] = p.model;
-        out << j.dump() << "\n";
-        }
+        std::string text = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + "\n";
+        // Separate lock so dashboard reads of the in-memory history never wait on disk I/O.
+        std::lock_guard<std::mutex> fileLock(g_usageFileMutex);
+        std::ofstream out(UsageHistoryPathWide(), std::ios::app);
+        if (out) out << text;
     }
 }
 
@@ -189,19 +196,79 @@ static std::string ReadAgyModelFromTranscript(const std::string& conversationId)
     return "";
 }
 
+static std::string MatchAgentKeyword(const std::string& lowerText) {
+    if (WordMatches(lowerText, "claude")) return "claude";
+    if (WordMatches(lowerText, "agy") || WordMatches(lowerText, "antigravity")) return "agy";
+    if (WordMatches(lowerText, "opencode")) return "opencode";
+    if (WordMatches(lowerText, "codex")) return "codex";
+    if (WordMatches(lowerText, "aider")) return "aider";
+    if (WordMatches(lowerText, "ollama")) return "ollama";
+    return "";
+}
+
+// Splits a command line on whitespace, honoring double quotes.
+static std::vector<std::string> SplitCommandLine(const std::string& cmd) {
+    std::vector<std::string> out;
+    std::string cur;
+    bool inQuote = false;
+    bool hasToken = false;
+    for (char c : cmd) {
+        if (c == '"') {
+            inQuote = !inQuote;
+            hasToken = true;
+        } else if (!inQuote && (c == ' ' || c == '\t')) {
+            if (hasToken) out.push_back(cur);
+            cur.clear();
+            hasToken = false;
+        } else {
+            cur += c;
+            hasToken = true;
+        }
+    }
+    if (hasToken) out.push_back(cur);
+    return out;
+}
+
+// Launchers/shells that precede the real agent executable or script.
+static bool IsLauncherToken(const std::string& lowerToken) {
+    std::string base = lowerToken;
+    size_t slash = base.find_last_of("\\/");
+    if (slash != std::string::npos) base = base.substr(slash + 1);
+    size_t dot = base.rfind('.');
+    if (dot != std::string::npos) {
+        std::string ext = base.substr(dot);
+        if (ext == ".exe" || ext == ".cmd" || ext == ".bat") base = base.substr(0, dot);
+    }
+    static const char* kLaunchers[] = {
+        "node", "nodejs", "npx", "npm", "pnpm", "pnpx", "yarn", "bun", "bunx", "deno",
+        "cmd", "powershell", "pwsh", "bash", "sh", "wsl", "start", "call",
+        "python", "python3", "py", "uv", "uvx", "pipx",
+        "exec", "run", "dlx", "x", "tool",
+    };
+    for (const char* l : kLaunchers) {
+        if (base == l) return true;
+    }
+    return false;
+}
+
 std::string DetectAgentType(const std::string& commandLine, const std::string& name) {
     std::string lcmd = ToLowerStr(commandLine);
-    std::string lname = ToLowerStr(name);
 
-    if (WordMatches(lcmd, "claude") || WordMatches(lname, "claude")) return "claude";
-    if (WordMatches(lcmd, "agy") || WordMatches(lcmd, "antigravity") ||
-        WordMatches(lname, "agy") || WordMatches(lname, "antigravity")) return "agy";
-    if (WordMatches(lcmd, "opencode") || WordMatches(lname, "opencode")) return "opencode";
-    if (WordMatches(lcmd, "codex") || WordMatches(lname, "codex")) return "codex";
-    if (WordMatches(lcmd, "aider") || WordMatches(lname, "aider")) return "aider";
-    if (WordMatches(lcmd, "ollama") || WordMatches(lname, "ollama")) return "ollama";
+    // Prefer the executable (or the script run by a launcher) so that model names in
+    // later arguments, e.g. "opencode run -m anthropic/claude-sonnet-4", do not win.
+    for (const std::string& tok : SplitCommandLine(lcmd)) {
+        if (tok.empty() || tok[0] == '-') continue;
+        // Shell switches such as "cmd /c" (but not absolute paths like "/usr/bin/claude").
+        if (tok[0] == '/' && tok.find('/', 1) == std::string::npos) continue;
+        if (IsLauncherToken(tok)) continue;
+        std::string t = MatchAgentKeyword(tok);
+        if (!t.empty()) return t;
+        break;
+    }
 
-    return "";
+    std::string t = MatchAgentKeyword(ToLowerStr(name));
+    if (!t.empty()) return t;
+    return MatchAgentKeyword(lcmd);
 }
 
 bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgentType, LlmStreamEvent& outEvent) {
@@ -380,6 +447,11 @@ bool ParseLlmStreamLine(const std::string& line, const std::string& defaultAgent
         else if (j["llm"].contains("name") && j["llm"]["name"].is_string()) outEvent.model = j["llm"]["name"].get<std::string>();
     } else if (j.contains("metadata") && j["metadata"].is_object()) {
         if (j["metadata"].contains("model") && j["metadata"]["model"].is_string()) outEvent.model = j["metadata"]["model"].get<std::string>();
+    }
+
+    // Claude repeats the same message.usage on every content-block event of one message.
+    if (j.contains("message") && j["message"].is_object()) {
+        outEvent.messageId = getStr(j["message"], "id");
     }
 
     // Step index
@@ -795,28 +867,37 @@ void LlmStreamTracker::UpdateSupervisorInfo(const std::string& notes, const std:
 
 void LlmStreamTracker::IngestChunk(const char* data, size_t len) {
     if (!data || len == 0) return;
-    std::lock_guard<std::mutex> lock(mutex_);
-    lineBuffer_.append(data, len);
+    std::vector<LlmUsagePoint> usage;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lineBuffer_.append(data, len);
 
-    size_t start = 0;
-    size_t pos = 0;
-    while ((pos = lineBuffer_.find('\n', start)) != std::string::npos) {
-        if (discardingLine_) {
-            // Tail of an oversized line that was already dropped.
-            discardingLine_ = false;
-        } else {
-            ProcessLine(lineBuffer_.substr(start, pos - start));
+        size_t start = 0;
+        size_t pos = 0;
+        while ((pos = lineBuffer_.find('\n', start)) != std::string::npos) {
+            if (discardingLine_) {
+                // Tail of an oversized line that was already dropped.
+                discardingLine_ = false;
+            } else {
+                ProcessLine(lineBuffer_.substr(start, pos - start));
+            }
+            start = pos + 1;
         }
-        start = pos + 1;
-    }
-    lineBuffer_.erase(0, start);
+        lineBuffer_.erase(0, start);
 
-    // Safety guard against a runaway line without newlines. Splitting it would only
-    // yield unparsable fragments, so drop it entirely up to the next newline.
-    if (lineBuffer_.size() > kMaxLineBytes) {
-        lineBuffer_.clear();
-        discardingLine_ = true;
+        // Safety guard against a runaway line without newlines. Splitting it would only
+        // yield unparsable fragments, so drop it entirely up to the next newline.
+        if (lineBuffer_.size() > kMaxLineBytes) {
+            lineBuffer_.clear();
+            discardingLine_ = true;
+        }
+        usage.swap(pendingUsage_);
     }
+
+    // Recorded outside mutex_: it takes the global history lock and may do file I/O,
+    // which must not block GetState()/GetEvents() callers.
+    int64_t nowEpoch = static_cast<int64_t>(time(nullptr));
+    for (const auto& pt : usage) RecordLlmUsagePoint(nowEpoch, pt);
 }
 
 void LlmStreamTracker::ProcessLine(const std::string& line) {
@@ -870,17 +951,23 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
         state_.model = ev.model;
     }
     // agy does not report model in stream-json; recover it from the agy transcript file.
+    // The transcript is re-read at most every kAgyModelProbeIntervalMs, not on every event.
     if (ev.agentType == "agy" && state_.model.empty()) {
-        nlohmann::json j2 = nlohmann::json::parse(line, nullptr, false);
-        if (!j2.is_discarded()) {
-            if (j2.contains("conversation_id") && j2["conversation_id"].is_string()) {
-                conversationId_ = j2["conversation_id"].get<std::string>();
-            } else if (j2.contains("step_update") && j2["step_update"].is_object() &&
-                       j2["step_update"].contains("conversation_id") && j2["step_update"]["conversation_id"].is_string()) {
-                conversationId_ = j2["step_update"]["conversation_id"].get<std::string>();
+        if (conversationId_.empty()) {
+            nlohmann::json j2 = nlohmann::json::parse(line, nullptr, false);
+            if (!j2.is_discarded()) {
+                if (j2.contains("conversation_id") && j2["conversation_id"].is_string()) {
+                    conversationId_ = j2["conversation_id"].get<std::string>();
+                } else if (j2.contains("step_update") && j2["step_update"].is_object() &&
+                           j2["step_update"].contains("conversation_id") && j2["step_update"]["conversation_id"].is_string()) {
+                    conversationId_ = j2["step_update"]["conversation_id"].get<std::string>();
+                }
             }
         }
-        if (!conversationId_.empty()) {
+        uint64_t nowMs = GetNowTickMs();
+        if (!conversationId_.empty() &&
+            (lastAgyModelProbeMs_ == 0 || nowMs - lastAgyModelProbeMs_ >= kAgyModelProbeIntervalMs)) {
+            lastAgyModelProbeMs_ = nowMs;
             std::string m = ReadAgyModelFromTranscript(conversationId_);
             if (!m.empty()) state_.model = m;
         }
@@ -904,28 +991,50 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
         pt.costUsd = ev.costUsd;
         pt.agentType = "agy";
         pt.model = ev.model.empty() ? state_.model : ev.model;
-        RecordLlmUsagePoint(static_cast<int64_t>(time(nullptr)), pt);
+        pendingUsage_.push_back(std::move(pt));
     }
+    // Claude reports usage per message (repeated on each content-block event of that
+    // message, possibly growing), and its final "result" event repeats the run total.
+    // Count per message: reset the baselines when message.id changes and ignore the
+    // tokens on events without a message id; cost only comes from the result event.
+    const bool perMessageUsage = !perStepUsage && (ev.agentType == "claude" || agentType_ == "claude");
+    if (perMessageUsage && !ev.messageId.empty() && ev.messageId != lastMessageId_) {
+        lastMessageId_ = ev.messageId;
+        lastUsageTotal_ = 0;
+        lastInput_ = 0;
+        lastOutput_ = 0;
+        lastThinking_ = 0;
+        lastCacheRead_ = 0;
+        lastCacheWrite_ = 0;
+    }
+    const bool countTokens = !perMessageUsage || !ev.messageId.empty();
     // Other agents' usage values are usually cumulative; keep the high-water mark so
     // totals do not double-count per-response deltas.
-    if (!perStepUsage && ev.totalTokens > state_.totalTokens) state_.totalTokens = ev.totalTokens;
+    if (!perStepUsage && !perMessageUsage && ev.totalTokens > state_.totalTokens) state_.totalTokens = ev.totalTokens;
     if (!perStepUsage && ev.costUsd > state_.costUsd) state_.costUsd = ev.costUsd;
-    if (!perStepUsage && (eventTokens > 0 || ev.costUsd > 0.0)) {
-        uint64_t deltaInput = (ev.inputTokens >= lastInput_) ? (ev.inputTokens - lastInput_) : ev.inputTokens;
-        uint64_t deltaOutput = (ev.outputTokens >= lastOutput_) ? (ev.outputTokens - lastOutput_) : ev.outputTokens;
-        uint64_t deltaThinking = (ev.thinkingTokens >= lastThinking_) ? (ev.thinkingTokens - lastThinking_) : ev.thinkingTokens;
-        uint64_t deltaCacheRead = (ev.cacheReadTokens >= lastCacheRead_) ? (ev.cacheReadTokens - lastCacheRead_) : ev.cacheReadTokens;
-        uint64_t deltaCacheWrite = (ev.cacheWriteTokens >= lastCacheWrite_) ? (ev.cacheWriteTokens - lastCacheWrite_) : ev.cacheWriteTokens;
-        uint64_t deltaTotal = deltaInput + deltaOutput + deltaThinking + deltaCacheRead + deltaCacheWrite;
-        if (deltaTotal == 0 && eventTokens >= lastUsageTotal_) deltaTotal = eventTokens - lastUsageTotal_;
-        double deltaCost = (ev.costUsd >= lastUsageCost_) ? (ev.costUsd - lastUsageCost_) : ev.costUsd;
-        lastUsageTotal_ = eventTokens;
-        lastInput_ = ev.inputTokens;
-        lastOutput_ = ev.outputTokens;
-        lastThinking_ = ev.thinkingTokens;
-        lastCacheRead_ = ev.cacheReadTokens;
-        lastCacheWrite_ = ev.cacheWriteTokens;
-        lastUsageCost_ = ev.costUsd;
+    if (!perStepUsage && ((countTokens && eventTokens > 0) || ev.costUsd > 0.0)) {
+        uint64_t deltaInput = 0, deltaOutput = 0, deltaThinking = 0, deltaCacheRead = 0, deltaCacheWrite = 0, deltaTotal = 0;
+        if (countTokens) {
+            deltaInput = (ev.inputTokens >= lastInput_) ? (ev.inputTokens - lastInput_) : ev.inputTokens;
+            deltaOutput = (ev.outputTokens >= lastOutput_) ? (ev.outputTokens - lastOutput_) : ev.outputTokens;
+            deltaThinking = (ev.thinkingTokens >= lastThinking_) ? (ev.thinkingTokens - lastThinking_) : ev.thinkingTokens;
+            deltaCacheRead = (ev.cacheReadTokens >= lastCacheRead_) ? (ev.cacheReadTokens - lastCacheRead_) : ev.cacheReadTokens;
+            deltaCacheWrite = (ev.cacheWriteTokens >= lastCacheWrite_) ? (ev.cacheWriteTokens - lastCacheWrite_) : ev.cacheWriteTokens;
+            deltaTotal = deltaInput + deltaOutput + deltaThinking + deltaCacheRead + deltaCacheWrite;
+            if (deltaTotal == 0 && eventTokens >= lastUsageTotal_) deltaTotal = eventTokens - lastUsageTotal_;
+            lastUsageTotal_ = eventTokens;
+            lastInput_ = ev.inputTokens;
+            lastOutput_ = ev.outputTokens;
+            lastThinking_ = ev.thinkingTokens;
+            lastCacheRead_ = ev.cacheReadTokens;
+            lastCacheWrite_ = ev.cacheWriteTokens;
+            if (perMessageUsage) state_.totalTokens += deltaTotal;
+        }
+        double deltaCost = 0.0;
+        if (ev.costUsd > 0.0) {
+            deltaCost = (ev.costUsd >= lastUsageCost_) ? (ev.costUsd - lastUsageCost_) : ev.costUsd;
+            lastUsageCost_ = ev.costUsd;
+        }
         if (deltaTotal > 0 || deltaCost > 0.0) {
             LlmUsagePoint pt;
             pt.inputTokens = deltaInput;
@@ -937,7 +1046,7 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
             pt.costUsd = deltaCost;
             pt.agentType = ev.agentType.empty() ? agentType_ : ev.agentType;
             pt.model = ev.model.empty() ? state_.model : ev.model;
-            RecordLlmUsagePoint(static_cast<int64_t>(time(nullptr)), pt);
+            pendingUsage_.push_back(std::move(pt));
         }
     }
 
