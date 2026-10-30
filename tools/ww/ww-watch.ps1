@@ -119,6 +119,9 @@ function Invoke-Leaf([string]$id, $card) {
 
         # ----- stalled -----
         Stop-Runs
+        # Give ww-run time to end by itself: it stops the engine's leftover children and writes its
+        # last record in its finally block. taskkill /F skips finally, so it is only the last resort.
+        if (-not $proc.HasExited) { $proc.WaitForExit(30000) | Out-Null }
         if (-not $proc.HasExited) { & taskkill /PID $proc.Id /T /F | Out-Null }
         $state[$id].stalls++
         Save-State $state

@@ -380,6 +380,8 @@ try {
     # stderr is left on the console (raw); JSON errors on stdout still reach the progress log.
     $safePrompt = $promptFile.Replace("'", "''")
     $engineCommand = Get-EngineCommand -Engine $Engine -Model $Model
+    # HOOK: ww-run.selftest.ps1 replaces the real engine with a fake one (a command line, not a path).
+    if ($env:WW_TEST_ENGINE_COMMAND) { $engineCommand = $env:WW_TEST_ENGINE_COMMAND }
     $launch = "`$ProgressPreference='SilentlyContinue'; `$prompt = (Get-Content -LiteralPath '$safePrompt' -Raw -Encoding UTF8).TrimEnd(); $engineCommand; if (`$null -eq `$LASTEXITCODE) { exit 1 } else { exit `$LASTEXITCODE }"
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($launch))
 
@@ -394,6 +396,8 @@ try {
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
     $proc.StandardInput.Close()
+# Assign the job before anything else runs: children started before this point are not in it.
+$job = New-EngineJob -Proc $proc
 
     $workerPid = Find-WorkerPid -Task $Task
     if ($workerPid) {
@@ -402,19 +406,41 @@ try {
         $record | ConvertTo-Json | Set-Content -Encoding UTF8 $taskRunFile
     }
 
-    while ($null -ne ($line = $proc.StandardOutput.ReadLine())) {
-        [System.IO.File]::AppendAllText($events, $line + "`r`n", $utf8)
-        if ($JsonStdout) {
-            [Console]::Out.WriteLine($line)
-        }
-        $progressLine = Format-ProgressEvent -Line $line
-        if ($progressLine) {
-            [System.IO.File]::AppendAllText($progress, $progressLine + "`r`n", $utf8)
-            if (-not $JsonStdout) {
-                Write-Host $progressLine
+    # Read the stream until the run is over, not until stdout reaches EOF. The engine's children
+    # (MCP servers, shell tools) inherit stdout and can outlive the engine, so EOF may never come.
+    # The run is over when the launcher has exited and its buffered output is drained (3 s grace).
+    $reader = $proc.StandardOutput
+    $pending = $reader.ReadLineAsync()
+    $exitedAt = $null
+    while ($true) {
+        if ($pending.Wait(500)) {
+            $line = $pending.Result
+            if ($null -eq $line) { break }
+            $exitedAt = $null
+            [System.IO.File]::AppendAllText($events, $line + "`r`n", $utf8)
+            if ($JsonStdout) {
+                [Console]::Out.WriteLine($line)
             }
+            $progressLine = Format-ProgressEvent -Line $line
+            if ($progressLine) {
+                [System.IO.File]::AppendAllText($progress, $progressLine + "`r`n", $utf8)
+                if (-not $JsonStdout) {
+                    Write-Host $progressLine
+                }
+            }
+            $pending = $reader.ReadLineAsync()
+            continue
+        }
+        if ($proc.HasExited) {
+            if (-not $exitedAt) { $exitedAt = Get-Date }
+            if (((Get-Date) - $exitedAt).TotalSeconds -ge 3) { break }
         }
     }
+    # The launcher's exit code is the engine's. Then end whatever the engine left running (its
+    # children may still hold the stdout pipe); they are not part of the run any more.
+    if (-not $proc.HasExited) { $proc.WaitForExit(5000) | Out-Null }
+    Stop-EngineJob -Job $job
+    if (-not $proc.HasExited) { & taskkill /PID $proc.Id /T /F | Out-Null }
     $proc.WaitForExit()
     $exit = $proc.ExitCode
 } catch {
@@ -465,6 +491,5 @@ try {
     $color = if ($reports -and $exit -eq 0) { "Green" } else { "Yellow" }
     Write-Host "[ww-run] $msg" -ForegroundColor $color
     [console]::beep(880, 300)
-    try { (New-Object -ComObject WScript.Shell).Popup($msg, 15, "ww-run", 64) | Out-Null } catch {}
 }
 exit $exit
