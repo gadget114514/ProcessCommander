@@ -309,6 +309,12 @@ $claudeRead = @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_us
 Check ((Format-ProgressEvent -Line $claudeRead) -match '^\d{2}:\d{2}:\d{2}\s+Read\s+src/Foo\.cs$') "claude tool_use Read -> file_path target"
 $claudeBash = @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Bash'; input = @{ command = 'git status' } }) } } | ConvertTo-Json -Compress -Depth 8
 Check ((Format-ProgressEvent -Line $claudeBash) -match '^\d{2}:\d{2}:\d{2}\s+Bash\s+git status$') "claude tool_use Bash -> command target"
+$claudeBashDesc = @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Bash'; input = @{ command = 'git status'; description = 'check the working tree' } }) } } | ConvertTo-Json -Compress -Depth 8
+Check ((Format-ProgressEvent -Line $claudeBashDesc) -match '^\d{2}:\d{2}:\d{2}\s+Bash\s+git status - check the working tree$') "claude tool_use Bash with description -> command + description"
+$claudeGrepDesc = @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Grep'; input = @{ pattern = 'foo'; description = 'find usages' } }) } } | ConvertTo-Json -Compress -Depth 8
+Check ((Format-ProgressEvent -Line $claudeGrepDesc) -match '^\d{2}:\d{2}:\d{2}\s+Grep\s+foo - find usages$') "claude tool_use Grep with description -> pattern + description"
+$claudeTaskDesc = @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Task'; input = @{ description = 'survey code'; prompt = 'read everything' } }) } } | ConvertTo-Json -Compress -Depth 8
+Check ((Format-ProgressEvent -Line $claudeTaskDesc) -match '^\d{2}:\d{2}:\d{2}\s+Task\s+survey code$') "claude Task description is not repeated"
 $claudeText = @{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = 'DONE' }) } } | ConvertTo-Json -Compress -Depth 8
 Check ((Format-ProgressEvent -Line $claudeText) -match '^\d{2}:\d{2}:\d{2}\s+text\s+DONE$') "claude text block -> text"
 $claudeUser = @{ type = 'user'; message = @{ content = @(@{ type = 'tool_result'; content = 'x' }) } } | ConvertTo-Json -Compress -Depth 8
