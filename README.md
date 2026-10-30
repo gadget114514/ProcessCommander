@@ -23,7 +23,8 @@
 
 ## Express
 
-- Install processcommander*setup.exe
+- Download and install [ProcessCommander-v2.0.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64-setup.exe)
+  (portable: [ProcessCommander-v2.0.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all

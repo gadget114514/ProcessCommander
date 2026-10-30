@@ -20,7 +20,8 @@
 
 ## Express
 
-- processcommander*setup.exe をインストール
+- [ProcessCommander-v2.0.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.0.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.0/ProcessCommander-v2.0.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
