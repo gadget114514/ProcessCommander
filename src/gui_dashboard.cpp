@@ -3710,6 +3710,9 @@ static void UpdateToolbarLabels(DashboardState* st) {
         if (st->hwndBtnHideTray)
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnHideTray,
                 Tr(L"トレイに格納", L"Tray", L"Bandeja"));
+        if (st->hwndBtnUsage)
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                Tr(L"使用状況", L"Usage Stats", L"Estadísticas de uso"));
     }
     UpdatePanelToggleLabels(st);
     if (st->hwndBtnViewTasks) {
@@ -5231,6 +5234,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnToggleList);
                 addTool(st->hwndBtnToggleTerm);
                 addTool(st->hwndBtnHideTray);
+                addTool(st->hwndBtnUsage);
             }
 
             LoadShellConfig(st);
