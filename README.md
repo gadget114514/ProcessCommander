@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.3.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.0/ProcessCommander-v2.3.0-win64-setup.exe)
-  (portable: [ProcessCommander-v2.3.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.0/ProcessCommander-v2.3.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.3.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64-setup.exe)
+  (portable: [ProcessCommander-v2.3.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -35,13 +35,13 @@ LLM will execute "processcommander help --json", then the llm will know how to u
 You use the LLM as frontend supervisor llm, and you can specify other llm as worker.
 
 
-## Delegating like a sub-agent: `run_agent`
+## Delegating to a worker LLM: `run_worker`
 
-The MCP tool `run_agent` hands one task to a worker LLM CLI, blocks until the worker exits, and returns only its final result. The worker's transcript stays out of the supervisor's context, and the raw stream stays in `stream_file`.
+The MCP tool `run_worker` hands one task to a worker LLM CLI, blocks until the worker exits, and returns only its final result. The worker's transcript stays out of the supervisor's context, and the raw stream stays in `stream_file`.
 
 ```json
 {
-  "name": "run_agent",
+  "name": "run_worker",
   "arguments": {
     "cmd": "claude -p \"Summarize the failing tests\" --output-format stream-json --verbose",
     "name": "test-summary",
@@ -63,8 +63,8 @@ The MCP tool `run_agent` hands one task to a worker LLM CLI, blocks until the wo
 The response carries `finished`, `success`, `state`, `exit_code`, `result`, `result_source`, `result_truncated`, `tool_calls`, `tool_errors`, `num_turns`, `permission_denials`, `total_tokens`, `cost_usd`, `log_file` and `stream_file`.
 
 - `result` is capped at 64 KB; `result_truncated` tells you it was cut. If the stream has no result event, `result` holds the last output lines and `result_source` is `output`.
-- If `wait_ms` runs out, the response has `finished: false` and the worker's current activity, and the worker keeps running. Continue with `wait_agent` and the returned `id`.
-- Your harness does not see this as a native sub-agent. To have it shown as one, define a thin custom agent (Claude Code: `.claude/agents/<name>.md`, cheap model, this tool only) that calls `run_agent` and returns the result. The wrapper costs extra tokens; calling `run_agent` directly is cheapest.
+- If `wait_ms` runs out, the response has `finished: false` and the worker's current activity, and the worker keeps running. Continue with `wait_worker` and the returned `id`.
+- Your harness does not see this as a native sub-agent. To have it shown as one, define a thin custom agent (Claude Code: `.claude/agents/<name>.md`, cheap model, this tool only) that calls `run_worker` and returns the result. The wrapper costs extra tokens; calling `run_worker` directly is cheapest.
 - For several steps with an order, dependencies or retries, use the [task queue](doc/taskqueue.md) instead.
 
 ## Documentation
@@ -181,8 +181,8 @@ MCP SERVER SETUP:
     Process (6):
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
-    Agent (5):
-      run_agent, wait_agent, get_agent_stream, get_agent_state, update_agent_info
+    Worker (5):
+      run_worker, wait_worker, get_agent_stream, get_agent_state, update_agent_info
     Task queue (13):
       taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
@@ -191,9 +191,9 @@ MCP SERVER SETUP:
 
   HOW TO USE (decision guide):
     - One command, e.g. a build script, CLI agent or shell -> start_process
-    - One task for a worker LLM, final result only         -> run_agent
+    - One task for a worker LLM, final result only         -> run_worker
       Harnesses do not see this as a native sub-agent; a thin custom agent that
-      calls run_agent makes it one, at the cost of the wrapper's tokens.
+      calls run_worker makes it one, at the cost of the wrapper's tokens.
     - Multiple steps, order, dependencies or retries      -> taskqueue_add + dependsOn
     - Never write &&, ||, a single &, PowerShell ';', newline chains or polling
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
@@ -450,18 +450,18 @@ SETUP FOR LLM AGENTS:
         taskqueue_wait / taskqueue_list / taskqueue_graph and logs; retry with
         taskqueue_retry. Blocked dependents resume automatically.
       - Never poll .done files; use taskqueue_wait or wait_process.
-      - Delegating like a sub-agent: run_agent blocks until the worker exits and
+      - Delegating to a worker LLM: run_worker blocks until the worker exits and
         returns only its final result; the raw stream stays in stream_file.
       - Your harness does not see ProcessCommander as a native sub-agent. To have
         it shown as one, define a thin custom agent (Claude Code:
-        .claude/agents/<name>.md, cheap model, this tool only) that calls run_agent
-        and returns the result. The wrapper costs extra tokens; calling run_agent
+        .claude/agents/<name>.md, cheap model, this tool only) that calls run_worker
+        and returns the result. The wrapper costs extra tokens; calling run_worker
         directly is cheapest.
 
     MCP tools (24):
       Process:    start_process, list_processes, get_process_output,
                   send_process_input, wait_process, kill_process
-      Agent:      run_agent, wait_agent, get_agent_stream, get_agent_state,
+      Worker:     run_worker, wait_worker, get_agent_stream, get_agent_state,
                   update_agent_info
       Task queue: taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
                   taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,

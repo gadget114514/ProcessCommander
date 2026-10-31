@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.3.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.0/ProcessCommander-v2.3.0-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.3.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.0/ProcessCommander-v2.3.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.3.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.3.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -33,13 +33,13 @@ LLM は `processcommander help --json` を実行して使い方を理解しま�
 
 ---
 
-## サブエージェントのように委任する: `run_agent`
+## ワーカー LLM に委任する: `run_worker`
 
-MCP ツール `run_agent` は、1つのタスクをワーカーの LLM CLI に任せ、終了まで待って最終結果だけを返します。ワーカーのやり取りは監督役のコンテキストに入らず、生のストリームは `stream_file` に残ります。
+MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に任せ、終了まで待って最終結果だけを返します。ワーカーのやり取りは監督役のコンテキストに入らず、生のストリームは `stream_file` に残ります。
 
 ```json
 {
-  "name": "run_agent",
+  "name": "run_worker",
   "arguments": {
     "cmd": "claude -p \"失敗しているテストを要約して\" --output-format stream-json --verbose",
     "name": "test-summary",
@@ -61,8 +61,8 @@ MCP ツール `run_agent` は、1つのタスクをワーカーの LLM CLI に�
 応答には `finished`, `success`, `state`, `exit_code`, `result`, `result_source`, `result_truncated`, `tool_calls`, `tool_errors`, `num_turns`, `permission_denials`, `total_tokens`, `cost_usd`, `log_file`, `stream_file` が含まれます。
 
 - `result` の上限は 64 KB で、切り詰めると `result_truncated` が true になります。ストリームに結果のイベントがないときは、`result` に出力の末尾の行が入り、`result_source` は `output` になります。
-- `wait_ms` が切れると、応答は `finished: false` とワーカーの現在の動作を返し、ワーカーは動き続けます。続きは、返された `id` を `wait_agent` に渡して待ちます。
-- ハーネスからはネイティブのサブエージェントには見えません。そう見せたいときは、`run_agent` を呼んで結果を返すだけの薄いカスタムエージェント（Claude Code なら `.claude/agents/<name>.md`、安価なモデル、このツールのみ）を定義します。その分のトークンがかかるため、`run_agent` を直接呼ぶのが最も安上がりです。
+- `wait_ms` が切れると、応答は `finished: false` とワーカーの現在の動作を返し、ワーカーは動き続けます。続きは、返された `id` を `wait_worker` に渡して待ちます。
+- ハーネスからはネイティブのサブエージェントには見えません。そう見せたいときは、`run_worker` を呼んで結果を返すだけの薄いカスタムエージェント（Claude Code なら `.claude/agents/<name>.md`、安価なモデル、このツールのみ）を定義します。その分のトークンがかかるため、`run_worker` を直接呼ぶのが最も安上がりです。
 - 順序・依存・リトライのある複数ステップには、[タスクキュー](doc/taskqueue-ja.md)を使ってください。
 
 ---
@@ -183,8 +183,8 @@ MCP SERVER SETUP:
     Process (6):
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
-    Agent (5):
-      run_agent, wait_agent, get_agent_stream, get_agent_state, update_agent_info
+    Worker (5):
+      run_worker, wait_worker, get_agent_stream, get_agent_state, update_agent_info
     Task queue (13):
       taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
@@ -193,9 +193,9 @@ MCP SERVER SETUP:
 
   HOW TO USE (decision guide):
     - One command, e.g. a build script, CLI agent or shell -> start_process
-    - One task for a worker LLM, final result only         -> run_agent
+    - One task for a worker LLM, final result only         -> run_worker
       Harnesses do not see this as a native sub-agent; a thin custom agent that
-      calls run_agent makes it one, at the cost of the wrapper's tokens.
+      calls run_worker makes it one, at the cost of the wrapper's tokens.
     - Multiple steps, order, dependencies or retries      -> taskqueue_add + dependsOn
     - Never write &&, ||, a single &, PowerShell ';', newline chains or polling
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
@@ -452,18 +452,18 @@ SETUP FOR LLM AGENTS:
         taskqueue_wait / taskqueue_list / taskqueue_graph and logs; retry with
         taskqueue_retry. Blocked dependents resume automatically.
       - Never poll .done files; use taskqueue_wait or wait_process.
-      - Delegating like a sub-agent: run_agent blocks until the worker exits and
+      - Delegating to a worker LLM: run_worker blocks until the worker exits and
         returns only its final result; the raw stream stays in stream_file.
       - Your harness does not see ProcessCommander as a native sub-agent. To have
         it shown as one, define a thin custom agent (Claude Code:
-        .claude/agents/<name>.md, cheap model, this tool only) that calls run_agent
-        and returns the result. The wrapper costs extra tokens; calling run_agent
+        .claude/agents/<name>.md, cheap model, this tool only) that calls run_worker
+        and returns the result. The wrapper costs extra tokens; calling run_worker
         directly is cheapest.
 
     MCP tools (24):
       Process:    start_process, list_processes, get_process_output,
                   send_process_input, wait_process, kill_process
-      Agent:      run_agent, wait_agent, get_agent_stream, get_agent_state,
+      Worker:     run_worker, wait_worker, get_agent_stream, get_agent_state,
                   update_agent_info
       Task queue: taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
                   taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,

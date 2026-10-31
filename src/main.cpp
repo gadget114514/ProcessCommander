@@ -112,8 +112,8 @@ MCP SERVER SETUP:
     Process (6):
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
-    Agent (5):
-      run_agent, wait_agent, get_agent_stream, get_agent_state, update_agent_info
+    Worker (5):
+      run_worker, wait_worker, get_agent_stream, get_agent_state, update_agent_info
     Task queue (13):
       taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
@@ -122,9 +122,9 @@ MCP SERVER SETUP:
 
   HOW TO USE (decision guide):
     - One command, e.g. a build script, CLI agent or shell -> start_process
-    - One task for a worker LLM, final result only         -> run_agent
+    - One task for a worker LLM, final result only         -> run_worker
       Harnesses do not see this as a native sub-agent; a thin custom agent that
-      calls run_agent makes it one, at the cost of the wrapper's tokens.
+      calls run_worker makes it one, at the cost of the wrapper's tokens.
     - Multiple steps, order, dependencies or retries      -> taskqueue_add + dependsOn
     - Never write &&, ||, a single &, PowerShell ';', newline chains or polling
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.

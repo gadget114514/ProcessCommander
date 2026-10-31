@@ -185,7 +185,7 @@ void IpcServer::HandleClient(HANDLE hPipe) {
     CloseHandle(hPipe);
 }
 
-// The worker's final report for run_agent / wait_agent: only this reaches the supervisor's context,
+// The worker's final report for run_worker / wait_worker: only this reaches the supervisor's context,
 // the raw stream stays in stream_file. Size-capped so one run cannot flood that context.
 static std::string AgentResultToJson(ProcessManager& pm, int id, bool finished) {
     constexpr size_t kMaxResultBytes = 64 * 1024;

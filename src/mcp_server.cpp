@@ -164,8 +164,8 @@ int RunMcpServer() {
                 << "},\"required\":[\"cmd\"]}"
                 << "},"
                 << "{"
-                << "\"name\":\"run_agent\","
-                << "\"description\":\"Delegate one task to a worker LLM CLI like a sub-agent: start it, block until it exits, and return only its final result, outcome and token totals. Nothing else enters your context; the raw event stream stays in stream_file. Use stream-json output for the worker (e.g. claude -p ... --output-format stream-json --verbose); other output falls back to the last lines of output. Stdin is closed. If wait_ms elapses the worker keeps running: continue with wait_agent.\","
+                << "\"name\":\"run_worker\","
+                << "\"description\":\"Delegate one task to a worker LLM CLI: start it, block until it exits, and return only its final result, outcome and token totals. Nothing else enters your context; the raw event stream stays in stream_file. Use stream-json output for the worker (e.g. claude -p ... --output-format stream-json --verbose); other output falls back to the last lines of output. Stdin is closed. If wait_ms elapses the worker keeps running: continue with wait_worker.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"cmd\":{\"type\":\"string\",\"description\":\"Worker command line, one command only\"},"
                 << "\"name\":{\"type\":\"string\",\"description\":\"Friendly display label for the dashboard\"},"
@@ -179,8 +179,8 @@ int RunMcpServer() {
                 << "},\"required\":[\"cmd\"]}"
                 << "},"
                 << "{"
-                << "\"name\":\"wait_agent\","
-                << "\"description\":\"Keep waiting for a worker started by run_agent, and return the same final result. While it is still running, returns finished=false with its current activity.\","
+                << "\"name\":\"wait_worker\","
+                << "\"description\":\"Keep waiting for a worker started by run_worker, and return the same final result. While it is still running, returns finished=false with its current activity.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID\"},"
                 << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"Max wait in ms (default 0 = until the worker exits)\"}"
@@ -427,7 +427,7 @@ int RunMcpServer() {
                        << ",\"wait\":" << (wait ? "true" : "false")
                        << ",\"wait_ms\":" << waitMs << "}";
             }
-            else if (toolName == "run_agent") {
+            else if (toolName == "run_worker" || toolName == "run_agent") {  // run_agent: name used by v2.3.0
                 ipcReq << "{\"action\":\"start\""
                        << ",\"cmd\":\"" << JsonEscape(JsonGetString(argsJson, "cmd", "")) << "\""
                        << ",\"name\":\"" << JsonEscape(JsonGetString(argsJson, "name", "")) << "\""
@@ -441,7 +441,7 @@ int RunMcpServer() {
                        << ",\"wait\":true,\"result_only\":true"
                        << ",\"wait_ms\":" << JsonGetInt(argsJson, "wait_ms", 0) << "}";
             }
-            else if (toolName == "wait_agent") {
+            else if (toolName == "wait_worker" || toolName == "wait_agent") {  // wait_agent: name used by v2.3.0
                 ipcReq << "{\"action\":\"wait\",\"result_only\":true"
                        << ",\"id\":" << JsonGetInt(argsJson, "id", 0)
                        << ",\"wait_ms\":" << JsonGetInt(argsJson, "wait_ms", 0) << "}";
