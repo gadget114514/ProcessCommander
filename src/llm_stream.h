@@ -35,6 +35,8 @@ struct LlmStreamEvent {
     uint64_t permissionDenials = 0; // Claude result permission_denials count
     uint64_t toolsOffered = 0;    // Claude system init tools count
     bool toolError = false;       // a tool_result reported an error
+    bool transient = false;       // Claude partial-message chunk: updates the live state only, never stored or saved
+    bool runTotal = false;        // Claude result line: its usage is the run total, not one message's
     int64_t recvEpochMs = 0;   // wall clock when the line was received (for activity durations)
     int stepIndex = 0;
     uint64_t totalTokens = 0;
@@ -163,6 +165,8 @@ public:
 private:
     void ProcessLine(const std::string& line);
     void ApplyEvent(LlmStreamEvent& ev, const std::string& line);
+    void ApplyPartialEvent(LlmStreamEvent& ev);
+    void ApplyActivity(const LlmStreamEvent& ev);
 
     mutable std::mutex mutex_;
     int processId_ = 0;
@@ -185,6 +189,15 @@ private:
     uint64_t lastCacheRead_ = 0;
     uint64_t lastCacheWrite_ = 0;
     double lastUsageCost_ = 0.0;
+    std::string partialTextType_;   // "thinking" or "message": the block whose chunks are in partialText_
+    std::string partialText_;       // head of the streamed text of the current block (only the head is shown)
+    // Claude usage already counted, per message, compared with the run total of the result line.
+    uint64_t countedInput_ = 0;
+    uint64_t countedOutput_ = 0;
+    uint64_t countedThinking_ = 0;
+    uint64_t countedCacheRead_ = 0;
+    uint64_t countedCacheWrite_ = 0;
+    static constexpr size_t kMaxPartialTextBytes = 1024;
     static constexpr size_t kMaxEvents = 500;
     static constexpr uint64_t kAgyModelProbeIntervalMs = 5000;
     // Claude tool_result lines (file contents etc.) routinely exceed 64KB.

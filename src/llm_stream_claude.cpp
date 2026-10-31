@@ -1,8 +1,8 @@
 // Claude Code stream-json (claude -p --output-format stream-json --verbose).
 // "assistant" and "user" lines keep their payload in message.content[], one block per entry:
 // thinking, tool_use and text for assistant; tool_result and text for user. Each block becomes
-// its own event. system/init, rate_limit_event and result lines are one event each. Other lines
-// (for example system subtypes other than init) fall back to the generic parser.
+// its own event. system/init, rate_limit_event and result lines are one event each. stream_event
+// lines (--include-partial-messages) and other system lines are transient, see ParseClaudeStreamEvent.
 
 #include "llm_stream_internal.h"
 
@@ -94,11 +94,68 @@ bool ParseClaudeMessageLine(const nlohmann::json& j, const std::string& trimmed,
     return true;
 }
 
+// Partial-message chunks (--include-partial-messages) are transient: the tracker uses them for the
+// live state and the usage, but they are not stored or saved. The complete assistant line that
+// follows still carries the full text, tool input and usage.
+void ParseClaudeStreamEvent(const nlohmann::json& j, const std::string& trimmed, const std::string& agentType,
+                            std::vector<LlmStreamEvent>& out) {
+    static const nlohmann::json kEmpty = nlohmann::json::object();
+    const nlohmann::json& e = (j.contains("event") && j["event"].is_object()) ? j["event"] : kEmpty;
+    const std::string et = JsonStr(e, "type");
+
+    LlmStreamEvent ev;
+    ev.rawJson = trimmed;
+    ev.agentType = agentType.empty() ? "generic" : agentType;
+    ev.sessionId = JsonStr(j, "session_id");
+    ev.messageId = JsonStr(j, "api_message_id");
+    ev.transient = true;
+    ev.type = "partial";
+
+    if (et == "message_start") {
+        if (e.contains("message") && e["message"].is_object()) ev.model = JsonStr(e["message"], "model");
+    } else if (et == "content_block_start") {
+        // A new block: the streamed text of the previous one is over.
+        const nlohmann::json& block = e.contains("content_block") ? e["content_block"] : kEmpty;
+        const std::string bt = JsonStr(block, "type");
+        ev.status = "block_start";
+        if (bt == "thinking") {
+            ev.type = "thinking";
+        } else if (bt == "text") {
+            ev.type = "message";
+        } else if (bt == "tool_use") {
+            ev.type = "tool_call";
+            ev.status = "calling_tool";
+            ev.toolName = JsonStr(block, "name");
+        }
+    } else if (et == "content_block_delta") {
+        const nlohmann::json& delta = e.contains("delta") ? e["delta"] : kEmpty;
+        const std::string dt = JsonStr(delta, "type");
+        if (dt == "thinking_delta") {
+            ev.type = "thinking";
+            ev.content = JsonStr(delta, "thinking");
+        } else if (dt == "text_delta") {
+            ev.type = "message";
+            ev.content = JsonStr(delta, "text");
+        }
+    } else if (et == "message_delta") {
+        // The final usage of the message, which the assistant line may not have yet.
+        ev.type = "usage";
+        ev.status = "idle";
+        if (e.contains("delta") && e["delta"].is_object()) ev.stopReason = JsonStr(e["delta"], "stop_reason");
+        if (e.contains("usage")) ApplyLlmUsageFields(e["usage"], ev);
+    }
+    out.push_back(std::move(ev));
+}
+
 }  // namespace
 
 bool ParseClaudeLines(const nlohmann::json& j, const std::string& trimmed, const std::string& agentType,
                       std::vector<LlmStreamEvent>& out) {
     const std::string type = JsonStr(j, "type");
+    if (type == "stream_event") {
+        ParseClaudeStreamEvent(j, trimmed, agentType, out);
+        return true;
+    }
     if (type == "assistant" || type == "user") return ParseClaudeMessageLine(j, trimmed, agentType, out);
 
     LlmStreamEvent ev;
@@ -144,9 +201,14 @@ bool ParseClaudeLines(const nlohmann::json& j, const std::string& trimmed, const
         if (j.contains("usage")) ApplyLlmUsageFields(j["usage"], ev);
         ev.apiDurationMs = JsonU64(j, "duration_api_ms");
         ev.numTurns = JsonU64(j, "num_turns");
+        ev.runTotal = true;  // its usage is the run total, not one message's
         if (j.contains("permission_denials") && j["permission_denials"].is_array()) {
             ev.permissionDenials = j["permission_denials"].size();
         }
+    } else if (type == "system") {
+        // Progress lines (status, thinking_tokens, task_summary, ...) sent with --include-partial-messages.
+        ev.type = "system";
+        ev.transient = true;
     } else {
         return false;
     }

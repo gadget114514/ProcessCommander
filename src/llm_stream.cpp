@@ -302,6 +302,7 @@ void ApplyLlmUsageFields(const nlohmann::json& u, LlmStreamEvent& outEvent) {
     }
     if (u.contains("output_tokens_details") && u["output_tokens_details"].is_object()) {
         if (!thinking) thinking = JsonU64(u["output_tokens_details"], "reasoning_tokens");
+        if (!thinking) thinking = JsonU64(u["output_tokens_details"], "thinking_tokens");
     }
     if (u.contains("details") && u["details"].is_object()) {
         if (!thinking) thinking = JsonU64(u["details"], "reasoning_tokens");
@@ -1010,8 +1011,11 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
         return;
     }
 
-    // Save line to persistent stream file (.jsonl) once, even when it yields several events
-    if (!streamFilePathWide_.empty()) {
+    // Save line to persistent stream file (.jsonl) once, even when it yields several events.
+    // Partial-message chunks are not saved: the complete message follows on its own line.
+    bool persist = parsed.empty();
+    for (const auto& ev : parsed) persist = persist || !ev.transient;
+    if (persist && !streamFilePathWide_.empty()) {
         std::string writeLine = line;
         if (writeLine.empty() || writeLine.back() != '\n') writeLine += "\r\n";
         AppendToLogFileWide(streamFilePathWide_, writeLine);
@@ -1020,7 +1024,59 @@ void LlmStreamTracker::ProcessLine(const std::string& line) {
     for (auto& ev : parsed) ApplyEvent(ev, line);
 }
 
+void LlmStreamTracker::ApplyActivity(const LlmStreamEvent& ev) {
+    std::string actKind, actTarget;
+    if (DescribeLlmActivity(ev, actKind, actTarget)) {
+        // Streamed thinking / reply chunks continue one activity; anything else starts a new one.
+        bool continues = actKind == state_.activity && (actKind == "thinking" || actKind == "replying");
+        if (!continues) state_.activitySinceEpochMs = ev.recvEpochMs;
+        state_.activity = actKind;
+        state_.activityTarget = actTarget;
+    }
+}
+
+void LlmStreamTracker::ApplyPartialEvent(LlmStreamEvent& ev) {
+    ev.recvEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    state_.updatedAt = GetCurrentTimestampStr();
+    if (!ev.model.empty()) state_.model = ev.model;
+
+    if (ev.type == "tool_call") {
+        state_.status = "calling_tool";
+        state_.currentTool = ev.toolName;
+        state_.currentToolAction = ev.toolAction;
+    } else if (ev.type == "thinking" || ev.type == "message") {
+        // Chunks of one block accumulate; a new block starts from empty text.
+        if (ev.type != partialTextType_ || ev.status == "block_start") {
+            partialTextType_ = ev.type;
+            partialText_.clear();
+        }
+        if (partialText_.size() < kMaxPartialTextBytes) partialText_ += ev.content;
+        ev.content = partialText_;
+        if (ev.type == "thinking") {
+            state_.status = "thinking";
+            if (!ev.content.empty()) state_.lastThought = Utf8Prefix(ev.content, 160);
+        } else {
+            state_.status = "generating";
+            if (!ev.content.empty()) state_.lastMessage = Utf8Prefix(ev.content, 160);
+        }
+    } else {
+        return;
+    }
+    ApplyActivity(ev);
+}
+
 void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
+    if (ev.transient) {
+        ApplyPartialEvent(ev);
+        // Usage chunks still count below; other chunks stop here.
+        if (ev.type != "usage") return;
+    } else if (ev.type != "usage") {
+        // A complete block replaces the chunks that led up to it.
+        partialTextType_.clear();
+        partialText_.clear();
+    }
+
     ev.seq = nextSeq_++;
     ev.timestamp = GetCurrentTimestampStr();
     ev.recvEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1087,10 +1143,11 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
         pt.model = ev.model.empty() ? state_.model : ev.model;
         pendingUsage_.push_back(std::move(pt));
     }
-    // Claude reports usage per message (repeated on each content-block event of that
-    // message, possibly growing), and its final "result" event repeats the run total.
-    // Count per message: reset the baselines when message.id changes and ignore the
-    // tokens on events without a message id; cost only comes from the result event.
+    // Claude reports usage per message: its assistant lines repeat the usage from the start of
+    // the message, a message_delta chunk (--include-partial-messages) has the final usage, and the
+    // "result" event has the run total. Count per message: reset the baselines when message.id
+    // changes and only count growth within a message. The result event then adds whatever the
+    // messages did not report. Cost only comes from the result event.
     const bool perMessageUsage = !perStepUsage && (ev.agentType == "claude" || agentType_ == "claude");
     if (perMessageUsage && !ev.messageId.empty() && ev.messageId != lastMessageId_) {
         lastMessageId_ = ev.messageId;
@@ -1106,23 +1163,47 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
     // totals do not double-count per-response deltas.
     if (!perStepUsage && !perMessageUsage && ev.totalTokens > state_.totalTokens) state_.totalTokens = ev.totalTokens;
     if (!perStepUsage && ev.costUsd > state_.costUsd) state_.costUsd = ev.costUsd;
-    if (!perStepUsage && ((countTokens && eventTokens > 0) || ev.costUsd > 0.0)) {
+    if (!perStepUsage && (((countTokens || ev.runTotal) && eventTokens > 0) || ev.costUsd > 0.0)) {
         uint64_t deltaInput = 0, deltaOutput = 0, deltaThinking = 0, deltaCacheRead = 0, deltaCacheWrite = 0, deltaTotal = 0;
-        if (countTokens) {
-            deltaInput = (ev.inputTokens >= lastInput_) ? (ev.inputTokens - lastInput_) : ev.inputTokens;
-            deltaOutput = (ev.outputTokens >= lastOutput_) ? (ev.outputTokens - lastOutput_) : ev.outputTokens;
-            deltaThinking = (ev.thinkingTokens >= lastThinking_) ? (ev.thinkingTokens - lastThinking_) : ev.thinkingTokens;
-            deltaCacheRead = (ev.cacheReadTokens >= lastCacheRead_) ? (ev.cacheReadTokens - lastCacheRead_) : ev.cacheReadTokens;
-            deltaCacheWrite = (ev.cacheWriteTokens >= lastCacheWrite_) ? (ev.cacheWriteTokens - lastCacheWrite_) : ev.cacheWriteTokens;
-            deltaTotal = deltaInput + deltaOutput + deltaThinking + deltaCacheRead + deltaCacheWrite;
-            if (deltaTotal == 0 && eventTokens >= lastUsageTotal_) deltaTotal = eventTokens - lastUsageTotal_;
+        if (perMessageUsage && ev.runTotal) {
+            // The run total covers the messages too; count only what they did not report.
+            auto missing = [](uint64_t total, uint64_t counted) -> uint64_t { return total > counted ? total - counted : 0; };
+            deltaInput = missing(ev.inputTokens, countedInput_);
+            deltaOutput = missing(ev.outputTokens, countedOutput_);
+            deltaThinking = missing(ev.thinkingTokens, countedThinking_);
+            deltaCacheRead = missing(ev.cacheReadTokens, countedCacheRead_);
+            deltaCacheWrite = missing(ev.cacheWriteTokens, countedCacheWrite_);
+            // Claude's output_tokens already include its thinking tokens.
+            deltaTotal = deltaInput + deltaOutput + deltaCacheRead + deltaCacheWrite;
+        } else if (countTokens) {
+            // Within a message the usage only grows; a lower value repeats an earlier line.
+            auto growth = [&](uint64_t value, uint64_t& last) -> uint64_t {
+                if (value < last) {
+                    if (perMessageUsage) return 0;
+                    last = value;
+                    return value;
+                }
+                uint64_t d = value - last;
+                last = value;
+                return d;
+            };
+            deltaInput = growth(ev.inputTokens, lastInput_);
+            deltaOutput = growth(ev.outputTokens, lastOutput_);
+            deltaThinking = growth(ev.thinkingTokens, lastThinking_);
+            deltaCacheRead = growth(ev.cacheReadTokens, lastCacheRead_);
+            deltaCacheWrite = growth(ev.cacheWriteTokens, lastCacheWrite_);
+            // Claude's output_tokens already include its thinking tokens.
+            deltaTotal = deltaInput + deltaOutput + deltaCacheRead + deltaCacheWrite + (perMessageUsage ? 0 : deltaThinking);
+            if (!perMessageUsage && deltaTotal == 0 && eventTokens >= lastUsageTotal_) deltaTotal = eventTokens - lastUsageTotal_;
             lastUsageTotal_ = eventTokens;
-            lastInput_ = ev.inputTokens;
-            lastOutput_ = ev.outputTokens;
-            lastThinking_ = ev.thinkingTokens;
-            lastCacheRead_ = ev.cacheReadTokens;
-            lastCacheWrite_ = ev.cacheWriteTokens;
-            if (perMessageUsage) state_.totalTokens += deltaTotal;
+        }
+        if (perMessageUsage) {
+            state_.totalTokens += deltaTotal;
+            countedInput_ += deltaInput;
+            countedOutput_ += deltaOutput;
+            countedThinking_ += deltaThinking;
+            countedCacheRead_ += deltaCacheRead;
+            countedCacheWrite_ += deltaCacheWrite;
         }
         double deltaCost = 0.0;
         if (ev.costUsd > 0.0) {
@@ -1185,15 +1266,9 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
         state_.status = "completed";
     }
 
-    std::string actKind, actTarget;
-    if (DescribeLlmActivity(ev, actKind, actTarget)) {
-        // Streamed thinking / reply chunks continue one activity; anything else starts a new one.
-        bool continues = actKind == state_.activity && (actKind == "thinking" || actKind == "replying");
-        if (!continues) state_.activitySinceEpochMs = ev.recvEpochMs;
-        state_.activity = actKind;
-        state_.activityTarget = actTarget;
-    }
+    ApplyActivity(ev);
 
+    if (ev.transient) return;  // a usage chunk: counted above, not stored
     events_.push_back(ev);
     while (events_.size() > kMaxEvents) {
         events_.pop_front();

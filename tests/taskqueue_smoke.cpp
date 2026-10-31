@@ -320,6 +320,31 @@ int main() {
     }
 
     {
+        // Claude --include-partial-messages: chunks update the live state but are not stored, and usage
+        // counts once per message (message_delta) with the result total filling in what was not reported.
+        LlmStreamTracker tr;
+        tr.Init(9002, "claude", "");
+        std::string head =
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"model\":\"claude-test\",\"id\":\"m1\"}}}\n"
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}}\n"
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}}\n";
+        tr.IngestChunk(head.data(), head.size());
+        Check(tr.EventCount() == 0 && tr.GetState().lastMessage == "Hello" && tr.GetState().model == "claude-test",
+              "claude partial chunks update the live state and are not stored");
+        std::string rest =
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"model\":\"claude-test\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}],"
+            "\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}\n"
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},"
+            "\"usage\":{\"input_tokens\":2,\"output_tokens\":89,\"output_tokens_details\":{\"thinking_tokens\":40}}},\"api_message_id\":\"m1\"}\n"
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.01,\"num_turns\":1,"
+            "\"result\":\"Hello\",\"usage\":{\"input_tokens\":2,\"output_tokens\":89}}\n";
+        tr.IngestChunk(rest.data(), rest.size());
+        Check(tr.GetState().totalTokens == 91, "claude usage counts each message once and fills gaps from the result total");
+        Check(tr.EventCount() == 2, "claude complete blocks are stored, partial lines are not");
+    }
+
+    {
         // Resource overlap rules (doc/resource-locks.md).
         Check(NormalizeResource("src\\A.cpp", "C:\\Proj\\") == "c:/proj/src/a.cpp", "relative resource resolves against cwd");
         Check(NormalizeResource("./src/../doc/x.md", "c:/p") == "c:/p/doc/x.md", "resource . and .. are resolved");
