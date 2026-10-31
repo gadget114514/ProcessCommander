@@ -86,7 +86,7 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 
 ### v2.3.2
 - **Themes**: five new pastel themes with pale backgrounds: Pastel Blue, Orange, Pink, Red and Green.
-- **KPI cards**: the colour bar is twice as tall.
+- **KPI cards**: the colour bar is twice as tall, the text is bold, and the cards are more compact.
 - **CLI**: `pcder agent` is now `pcder worker`. The old name still works.
 - **MCP**: `get_agent_stream`, `get_agent_state` and `update_agent_info` are now `get_worker_stream`, `get_worker_state` and `update_worker_info`. The old names still work but are no longer listed.
 

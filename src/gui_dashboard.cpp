@@ -616,10 +616,10 @@ static UiTheme ParseTheme(const std::string& code) {
 
 // Compact dashboard header / splitter layout constants
 constexpr int kHeaderKpiTop        = 6;
-constexpr int kHeaderKpiRow1Bottom = 32;
-constexpr int kHeaderKpiRow2Top    = 36;
-constexpr int kHeaderKpiBottom     = 62;
-constexpr int kToolbarTop          = 68;
+constexpr int kHeaderKpiRow1Bottom = 26;
+constexpr int kHeaderKpiRow2Top    = 30;
+constexpr int kHeaderKpiBottom     = 50;
+constexpr int kToolbarTop          = 56;
 constexpr int kToolbarH            = 24;
 constexpr int kListTop             = 98;
 constexpr int kSplitterH           = 6;
@@ -1379,61 +1379,61 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                     std::wstring sub = (totalTreeProcs > static_cast<uint32_t>(totalCount))
                         ? (std::to_wstring(totalTreeProcs) + Tr(L" 子", L" child", L" sub")) : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"プロセス総数", L"TOTAL PROCESSES", L"PROCESOS TOTALES"),
-                                std::to_wstring(totalCount), KpiAccent(0), st->hFontUi, st->hFontKpiVal,
+                                std::to_wstring(totalCount), KpiAccent(0), st->hFontUiBold, st->hFontKpiVal,
                                 -1.0f, sub);
                 } else if (col == 1) {
                     DrawKpiCard(hdc, rcCard, Tr(L"稼働中プロセス", L"RUNNING PROCS", L"PROCESOS ACTIVOS"),
-                                std::to_wstring(activeRunning), KpiAccent(1), st->hFontUi, st->hFontKpiVal,
+                                std::to_wstring(activeRunning), KpiAccent(1), st->hFontUiBold, st->hFontKpiVal,
                                 (activeRunning > 0 ? g_kpiBarPhase : -1.0f));
                 } else if (col == 2) {
                     DrawKpiCard(hdc, rcCard, Tr(L"待機 / アイドル", L"WAITING / IDLE", L"ESPERANDO / INACTIVO"),
-                                std::to_wstring(idleWaiting), KpiAccent(2), st->hFontUi, st->hFontKpiVal);
+                                std::to_wstring(idleWaiting), KpiAccent(2), st->hFontUiBold, st->hFontKpiVal);
                 } else if (col == 3) {
                     DrawKpiCard(hdc, rcCard, Tr(L"完了 (OK)", L"COMPLETED (OK)", L"COMPLETADO (OK)"),
-                                std::to_wstring(completedOk), KpiAccent(3), st->hFontUi, st->hFontKpiVal);
+                                std::to_wstring(completedOk), KpiAccent(3), st->hFontUiBold, st->hFontKpiVal);
                 } else if (col == 4) {
                     DrawKpiCard(hdc, rcCard, Tr(L"失敗 / 強制終了", L"FAILED / KILLED", L"FALLIDO / TERMINADO"),
-                                std::to_wstring(failedOrKilled), KpiAccent(4), st->hFontUi, st->hFontKpiVal);
+                                std::to_wstring(failedOrKilled), KpiAccent(4), st->hFontUiBold, st->hFontKpiVal);
                 } else if (col == 5) {
                     std::wstring memStr = Utf8ToWide(FormatBytes(totalMemBytes));
                     DrawKpiCard(hdc, rcCard, Tr(L"ジョブメモリ", L"JOB MEMORY", L"MEMORIA TOTAL"),
-                                memStr, KpiAccent(5), st->hFontUi, st->hFontKpiVal);
+                                memStr, KpiAccent(5), st->hFontUiBold, st->hFontKpiVal);
                 } else if (col == 6) {
                     std::wstring val = (minRemainingSec >= 0) ? FormatRemainingTimeShort(minRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
                     DrawKpiCard(hdc, rcCard, Tr(L"残り時間", L"PROC TIMEOUT", L"TIEMPO RESTANTE"),
-                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal);
+                                val, KpiAccent(6), st->hFontUiBold, st->hFontKpiVal);
                 }
             } else {
                 // Bottom Row: Tasks
                 if (col == 0) {
                     DrawKpiCard(hdc, rcCard, Tr(L"タスク総数", L"TOTAL TASKS", L"TAREAS TOTALES"),
-                                std::to_wstring(tqCounts.total), KpiAccent(0), st->hFontUi, st->hFontKpiVal);
+                                std::to_wstring(tqCounts.total), KpiAccent(0), st->hFontUiBold, st->hFontKpiVal);
                 } else if (col == 1) {
                     DrawKpiCard(hdc, rcCard, Tr(L"稼働中タスク", L"RUNNING TASKS", L"TAREAS EN EJECUCIÓN"),
-                                std::to_wstring(tqCounts.running), KpiAccent(1), st->hFontUi, st->hFontKpiVal,
+                                std::to_wstring(tqCounts.running), KpiAccent(1), st->hFontUiBold, st->hFontKpiVal,
                                 (tqCounts.running > 0 ? g_kpiBarPhase : -1.0f));
                 } else if (col == 2) {
                     std::wstring sub = (tqCounts.pending > 0) ? (L"(+" + std::to_wstring(tqCounts.pending) + L")") : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"実行待ちタスク", L"WAITING TASKS", L"TAREAS EN ESPERA"),
-                                std::to_wstring(tqCounts.waiting), KpiAccent(2), st->hFontUi, st->hFontKpiVal,
+                                std::to_wstring(tqCounts.waiting), KpiAccent(2), st->hFontUiBold, st->hFontKpiVal,
                                 -1.0f, sub);
                 } else if (col == 3) {
                     DrawKpiCard(hdc, rcCard, Tr(L"タスク成功 (OK)", L"SUCCEEDED TASKS", L"TAREAS EXITOSAS"),
-                                std::to_wstring(tqCounts.succeeded), KpiAccent(3), st->hFontUi, st->hFontKpiVal);
+                                std::to_wstring(tqCounts.succeeded), KpiAccent(3), st->hFontUiBold, st->hFontKpiVal);
                 } else if (col == 4) {
                     std::wstring sub = (tqCounts.cancelled > 0) ? (L"(" + std::to_wstring(tqCounts.cancelled) + L")") : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"タスク失敗/中断", L"FAILED / CANCELLED", L"FALLIDAS / CANCELADAS"),
-                                std::to_wstring(tqCounts.failed + tqCounts.cancelled), KpiAccent(4), st->hFontUi, st->hFontKpiVal,
+                                std::to_wstring(tqCounts.failed + tqCounts.cancelled), KpiAccent(4), st->hFontUiBold, st->hFontKpiVal,
                                 -1.0f, sub);
                 } else if (col == 5) {
                     std::wstring sub = (tqCounts.blocked > 0) ? (L"(" + std::to_wstring(tqCounts.blocked) + L")") : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"保留 / ブロック", L"PENDING / BLOCKED", L"PENDIENTES / BLOQ"),
-                                std::to_wstring(tqCounts.pending + tqCounts.blocked), KpiAccent(5), st->hFontUi, st->hFontKpiVal,
+                                std::to_wstring(tqCounts.pending + tqCounts.blocked), KpiAccent(5), st->hFontUiBold, st->hFontKpiVal,
                                 -1.0f, sub);
                 } else if (col == 6) {
                     std::wstring val = (tqCounts.sumRemainingSec >= 0) ? FormatRemainingTimeShort(tqCounts.sumRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
                     DrawKpiCard(hdc, rcCard, Tr(L"残り時間", L"TASK REMAINING", L"RESTANTE TOTAL"),
-                                val, KpiAccent(6), st->hFontUi, st->hFontKpiVal);
+                                val, KpiAccent(6), st->hFontUiBold, st->hFontKpiVal);
                 }
             }
         }

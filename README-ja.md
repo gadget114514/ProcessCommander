@@ -88,7 +88,7 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 
 ### v2.3.2
 - **テーマ**: 背景が淡色のパステルテーマを5種類追加しました（パステル青、橙、桃、赤、緑）。
-- **KPI カード**: 色の帯の高さを2倍にしました。
+- **KPI カード**: 色の帯の高さを2倍にし、文字を太字にして、上下の余白を詰めました。
 - **CLI**: `pcder agent` を `pcder worker` に改名しました。旧名も使えます。
 - **MCP**: `get_agent_stream` / `get_agent_state` / `update_agent_info` を `get_worker_stream` / `get_worker_state` / `update_worker_info` に改名しました。旧名も使えますが、ツール一覧には表示されません。
 
