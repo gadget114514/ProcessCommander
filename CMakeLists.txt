@@ -76,6 +76,7 @@ target_link_libraries(ProcessCommander PRIVATE
     dwrite
     dwmapi
     windowscodecs
+    crypt32
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/libsixel.lib"
 )
 
@@ -120,6 +121,7 @@ target_link_libraries(pcder PRIVATE
     user32
     shell32
     advapi32
+    crypt32
 )
 
 # Headless smoke test for the task queue engine (deps, retries, chain guard, persistence).

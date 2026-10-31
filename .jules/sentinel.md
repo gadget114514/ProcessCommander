@@ -11,3 +11,8 @@
 **Vulnerability:** `ShellExecuteW` was used to open URIs from OSC 8 hyperlinks without any validation of the URI scheme, leading to potential Arbitrary Code Execution.
 **Learning:** Untrusted URIs executed via `ShellExecuteW` must have their scheme validated against an explicitly safe allowlist (like `http://`, `https://`, `mailto:`, `file://`) before any execution or custom command substitution logic.
 **Prevention:** Always validate the URI scheme before executing untrusted inputs using `ShellExecuteW`.
+
+## 2024-05-18 - Prevent Command Injection in PowerShell Execution
+**Vulnerability:** Command injection vulnerability in IPC client auto-start logic via direct string interpolation of file paths in PowerShell commands.
+**Learning:** `Invoke-CimMethod -Arguments @{CommandLine='...'}` uses single quotes, which can be escaped, but if an attacker controls `guiExePath` or the data directory, they could potentially break out of the string context if other injections are found. Passing user-controlled data via environment variables introduces race conditions in multi-threaded C++ code. The most secure approach is to Base64 encode the arguments, inject the Base64 string into the script template to be decoded at runtime by `[System.Convert]::FromBase64String`, and then Base64 encode the entire script itself for execution via `-EncodedCommand`.
+**Prevention:** When invoking PowerShell from C++ where inputs might contain arbitrary characters, perform a two-stage Base64 encoding. Encode the dynamic payload, embed it into the script to be decoded at runtime, and then encode the final script. Execute using `powershell.exe -EncodedCommand`.
