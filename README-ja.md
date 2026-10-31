@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.3.3-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.3/ProcessCommander-v2.3.3-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.3.3-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.3/ProcessCommander-v2.3.3-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.3.4-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.4/ProcessCommander-v2.3.4-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.3.4-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.4/ProcessCommander-v2.3.4-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,9 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.3.4
+- **タスク監視**: 目標欄とプレビュー欄のスクロールバーをテーマの色に合わせました。
 
 ### v2.3.3
 - **テーマ**: 濃い紫、薄い紫、濃い黄、薄い黄を追加しました。
