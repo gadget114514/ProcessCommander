@@ -1,5 +1,6 @@
 #include "ipc_client.h"
 #include "common.h"
+#include <wincrypt.h>
 
 namespace pc {
 
@@ -69,29 +70,55 @@ bool SendIpcRequest(const std::string& reqJson, std::string& outRespJson, std::s
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
 
-        auto EscapeSingleQuotes = [](const std::wstring& in) {
-            std::wstring outText = in;
-            size_t pos = 0;
-            while ((pos = outText.find(L'\'', pos)) != std::wstring::npos) {
-                outText.replace(pos, 1, L"''");
-                pos += 2;
-            }
-            return outText;
-        };
-        std::wstring guiCmdLine = L"\\\"" + EscapeSingleQuotes(guiExePath) + L"\\\" gui";
+        std::wstring guiCmdLine = L"\"" + guiExePath + L"\" gui";
         if (HasCustomDataDirectory()) {
-            guiCmdLine += L" --data-dir \\\"" + EscapeSingleQuotes(GetEffectiveDataDirectoryWide()) + L"\\\"";
+            guiCmdLine += L" --data-dir \"" + GetEffectiveDataDirectoryWide() + L"\"";
         }
+
+        auto Base64Encode = [](const std::wstring& in) -> std::wstring {
+            DWORD base64Len = 0;
+            CryptBinaryToStringW(
+                reinterpret_cast<const BYTE*>(in.data()),
+                static_cast<DWORD>(in.size() * sizeof(wchar_t)),
+                CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+                nullptr,
+                &base64Len
+            );
+            if (base64Len == 0) return L"";
+            std::wstring out(base64Len, L'\0');
+            CryptBinaryToStringW(
+                reinterpret_cast<const BYTE*>(in.data()),
+                static_cast<DWORD>(in.size() * sizeof(wchar_t)),
+                CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+                &out[0],
+                &base64Len
+            );
+            // CryptBinaryToStringW includes the null terminator in base64Len when writing to buffer
+            if (base64Len > 0 && out[base64Len - 1] == L'\0') {
+                out.resize(base64Len - 1);
+            }
+            // However, the returned base64Len from the second call doesn't include the null terminator
+            // on some Windows versions, so we use string's c_str() to find the real length.
+            out.resize(wcslen(out.c_str()));
+            return out;
+        };
+
+        std::wstring b64CmdLine = Base64Encode(guiCmdLine);
+
+        std::wstring psScript = L"$cmd = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String('";
+        psScript += b64CmdLine;
+        psScript += L"')); Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$cmd} | Out-Null";
+
+        std::wstring b64Script = Base64Encode(psScript);
 
         wchar_t psPath[MAX_PATH] = {};
         ExpandEnvironmentStringsW(L"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
                                   psPath, MAX_PATH);
 
         std::wstring wmiCmd = psPath;
-        wmiCmd += L" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "
-                  L"\"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='";
-        wmiCmd += guiCmdLine;
-        wmiCmd += L"'} | Out-Null\"";
+        wmiCmd += L" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ";
+        wmiCmd += b64Script;
+
         std::vector<wchar_t> wmiBuf(wmiCmd.begin(), wmiCmd.end());
         wmiBuf.push_back(L'\0');
 
