@@ -164,6 +164,29 @@ int RunMcpServer() {
                 << "},\"required\":[\"cmd\"]}"
                 << "},"
                 << "{"
+                << "\"name\":\"run_agent\","
+                << "\"description\":\"Delegate one task to a worker LLM CLI like a sub-agent: start it, block until it exits, and return only its final result, outcome and token totals. Nothing else enters your context; the raw event stream stays in stream_file. Use stream-json output for the worker (e.g. claude -p ... --output-format stream-json --verbose); other output falls back to the last lines of output. Stdin is closed. If wait_ms elapses the worker keeps running: continue with wait_agent.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"cmd\":{\"type\":\"string\",\"description\":\"Worker command line, one command only\"},"
+                << "\"name\":{\"type\":\"string\",\"description\":\"Friendly display label for the dashboard\"},"
+                << "\"cwd\":{\"type\":\"string\",\"description\":\"Working directory path (default: current directory)\"},"
+                << "\"agent_type\":{\"type\":\"string\",\"description\":\"Stream format: 'claude', 'agy', 'opencode', or 'auto' (default: detected from the command)\"},"
+                << "\"timeout_sec\":{\"type\":\"integer\",\"description\":\"Max runtime timeout in seconds (0 = unlimited)\"},"
+                << "\"idle_timeout_sec\":{\"type\":\"integer\",\"description\":\"Auto-kill if no output for N seconds (0 = unlimited)\"},"
+                << "\"supervisor_goal\":{\"type\":\"string\",\"description\":\"High-level goal shown on the dashboard\"},"
+                << "\"supervisor_notes\":{\"type\":\"string\",\"description\":\"Notes shown on the dashboard\"},"
+                << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"Max wait in ms (default 0 = until the worker exits)\"}"
+                << "},\"required\":[\"cmd\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"wait_agent\","
+                << "\"description\":\"Keep waiting for a worker started by run_agent, and return the same final result. While it is still running, returns finished=false with its current activity.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID\"},"
+                << "\"wait_ms\":{\"type\":\"integer\",\"description\":\"Max wait in ms (default 0 = until the worker exits)\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
                 << "\"name\":\"get_agent_stream\","
                 << "\"description\":\"Read structured JSON streaming events (tools called, arguments, reasoning/thoughts, assistant responses, status) emitted by Claude, agy, or OpenCode worker agents. Events are automatically captured and saved to logs/proc_<id>_<name>_stream.jsonl.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
@@ -403,6 +426,25 @@ int RunMcpServer() {
                        << ",\"supervisor_goal\":\"" << JsonEscape(supervisorGoal) << "\""
                        << ",\"wait\":" << (wait ? "true" : "false")
                        << ",\"wait_ms\":" << waitMs << "}";
+            }
+            else if (toolName == "run_agent") {
+                ipcReq << "{\"action\":\"start\""
+                       << ",\"cmd\":\"" << JsonEscape(JsonGetString(argsJson, "cmd", "")) << "\""
+                       << ",\"name\":\"" << JsonEscape(JsonGetString(argsJson, "name", "")) << "\""
+                       << ",\"mode\":\"pipe\",\"open_stdin\":false,\"json_stream\":true"
+                       << ",\"cwd\":\"" << JsonEscape(ResolveAbsolutePathUtf8(JsonGetString(argsJson, "cwd", ""))) << "\""
+                       << ",\"agent_type\":\"" << JsonEscape(JsonGetString(argsJson, "agent_type", "")) << "\""
+                       << ",\"timeout_sec\":" << JsonGetInt(argsJson, "timeout_sec", 0)
+                       << ",\"idle_timeout_sec\":" << JsonGetInt(argsJson, "idle_timeout_sec", 0)
+                       << ",\"supervisor_notes\":\"" << JsonEscape(JsonGetString(argsJson, "supervisor_notes", "")) << "\""
+                       << ",\"supervisor_goal\":\"" << JsonEscape(JsonGetString(argsJson, "supervisor_goal", "")) << "\""
+                       << ",\"wait\":true,\"result_only\":true"
+                       << ",\"wait_ms\":" << JsonGetInt(argsJson, "wait_ms", 0) << "}";
+            }
+            else if (toolName == "wait_agent") {
+                ipcReq << "{\"action\":\"wait\",\"result_only\":true"
+                       << ",\"id\":" << JsonGetInt(argsJson, "id", 0)
+                       << ",\"wait_ms\":" << JsonGetInt(argsJson, "wait_ms", 0) << "}";
             }
             else if (toolName == "get_agent_stream") {
                 int64_t id = JsonGetInt(argsJson, "id", 0);

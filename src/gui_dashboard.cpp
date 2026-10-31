@@ -4487,12 +4487,12 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             int w = LOWORD(lParam);
             int h = HIWORD(lParam);
             if (ds->embedded) {
-                // Left half: goal text on top, usage graph below. Right half: the subtask list, full height.
+                // Left third: goal text on top, usage graph below. Right two thirds: the subtask list, full height.
                 int pad = 4;
                 // Goal / Now / Ends / process summary need several wrapped lines.
                 int topH = (std::clamp)(h * 52 / 100, 110, 150);
                 int availW = (std::max)(300, w - pad * 2);
-                int leftW = availW / 2 - 4;
+                int leftW = availW / 3 - 4;
                 int contentX = pad + 28;
                 int textW = (std::max)(160, leftW - 28);
                 if (ds->hwndAgentIcon) MoveWindow(ds->hwndAgentIcon, pad, pad, 24, 24, TRUE);

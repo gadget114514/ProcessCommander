@@ -401,10 +401,19 @@ SETUP FOR LLM AGENTS:
 "        taskqueue_wait / taskqueue_list / taskqueue_graph and logs; retry with\n"
 "        taskqueue_retry. Blocked dependents resume automatically.\n"
 "      - Never poll .done files; use taskqueue_wait or wait_process.\n"
+"      - Delegating like a sub-agent: run_agent blocks until the worker exits and\n"
+"        returns only its final result; the raw stream stays in stream_file.\n"
+"      - Your harness does not see ProcessCommander as a native sub-agent. To have\n"
+"        it shown as one, define a thin custom agent (Claude Code:\n"
+"        .claude/agents/<name>.md, cheap model, this tool only) that calls run_agent\n"
+"        and returns the result. The wrapper costs extra tokens; calling run_agent\n"
+"        directly is cheapest.\n"
 "\n"
-"    MCP tools (19):\n"
+"    MCP tools (24):\n"
 "      Process:    start_process, list_processes, get_process_output,\n"
 "                  send_process_input, wait_process, kill_process\n"
+"      Agent:      run_agent, wait_agent, get_agent_stream, get_agent_state,\n"
+"                  update_agent_info\n"
 "      Task queue: taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,\n"
 "                  taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,\n"
 "                  taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,\n"
@@ -669,7 +678,7 @@ void PrintCliUsageJson() {
           }
         }
       },
-      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph"]
+      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "run_agent", "wait_agent", "get_agent_stream", "get_agent_state", "update_agent_info", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph"]
     }
   },
   "agent": {
@@ -705,6 +714,8 @@ void PrintCliUsageJson() {
         "Prefer filesNewer/outputRegex when exit code 0 does not prove the work was done.",
         "Keep the supervisor context small: pass detailed instructions to workers and read artifacts, not raw transcripts.",
         "Use taskqueue_wait instead of polling .done files.",
+        "To delegate one task like a sub-agent, use run_agent: it blocks until the worker exits and returns only the final result; the raw stream stays in stream_file.",
+        "Harnesses do not see ProcessCommander as a native sub-agent. To have it shown as one, define a thin custom agent (Claude Code: .claude/agents/<name>.md, cheap model, this tool only) that calls run_agent and returns the result. The wrapper costs extra tokens; calling run_agent directly is cheapest.",
         "Never force success; ProcessCommander verifies it."
       ],
       "example": {
