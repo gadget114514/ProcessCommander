@@ -4370,6 +4370,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ds->hwndHeader = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
                 40, 12, 792, 75, hwnd, (HMENU)2100, nullptr, nullptr);
+            SetWindowSubclass(ds->hwndHeader, ListViewSubclassProc, 1, 0);
             ds->hwndAgentIcon = CreateWindowExW(0, L"STATIC", L"🤖",
                 WS_CHILD | WS_VISIBLE | SS_CENTER,
                 12, 12, 24, 24, hwnd, (HMENU)2105, nullptr, nullptr);
@@ -4440,6 +4441,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ds->hwndEditPreview = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
                 12, 365, 820, 180, hwnd, (HMENU)2102, nullptr, nullptr);
+            SetWindowSubclass(ds->hwndEditPreview, ListViewSubclassProc, 1, 0);
 
             if (ds->hFontUi) {
                 SendMessageW(ds->hwndHeader, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
