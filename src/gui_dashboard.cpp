@@ -527,6 +527,10 @@ static void PaintThemedListScrollBars(HWND hwnd) {
     ReleaseDC(hwnd, hdc);
 }
 
+// The control whose scrollbar is held with the mouse. Timers still fire inside the scrollbar's modal
+// loop, so refreshes check this and leave that control alone until the button is released.
+static HWND g_scrollDragWnd = nullptr;
+
 static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                              UINT_PTR, DWORD_PTR) {
     if (msg == WM_DRAWITEM) {
@@ -536,7 +540,10 @@ static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
             return TRUE;
         }
     }
+    bool scrollBarPress = msg == WM_NCLBUTTONDOWN && (wParam == HTVSCROLL || wParam == HTHSCROLL);
+    if (scrollBarPress) g_scrollDragWnd = hwnd;
     LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
+    if (scrollBarPress) g_scrollDragWnd = nullptr;
     if (msg != WM_NCDESTROY && msg != WM_DESTROY) PaintThemedListScrollBars(hwnd);
     return res;
 }
@@ -717,6 +724,7 @@ enum ControlId {
     IDC_LIST_TASKS = 1026,
     IDC_BTN_USAGE = 1027,
     IDC_BTN_STREAM_PANE = 1028,
+    IDC_BTN_REFRESH = 1029,
     IDC_SET_LANG_JA = 6001,
     IDC_SET_LANG_EN = 6002,
     IDC_SET_LANG_ES = 6003,
@@ -831,6 +839,7 @@ struct DashboardState {
     int lastFollowedProcId = -1;         // process the monitor pane last auto-followed
     // JSON stream bottom pane below the process / task lists
     HWND hwndBtnStreamPane = nullptr;
+    HWND hwndBtnRefresh = nullptr;
     HWND hwndStreamPane = nullptr;
     LlmStreamDlgState* streamPane = nullptr; // owned by hwndStreamPane
     bool showStreamPane = true;
@@ -1877,6 +1886,10 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
                 st->showStreamPane ? Tr(L"タスク監視ペインを非表示", L"Hide Monitor Pane", L"Ocultar panel de monitor")
                                    : Tr(L"タスク監視ペインを表示", L"Show Monitor Pane", L"Mostrar panel de monitor"));
         }
+        if (st->hwndBtnRefresh) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnRefresh,
+                Tr(L"すべてのリストを最新の情報に更新", L"Refresh All Lists", L"Actualizar todas las listas"));
+        }
     }
     // Repaint the toggles so their latched (pressed) look follows the state.
     for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane}) {
@@ -2283,6 +2296,9 @@ static void RefreshTaskQueueData(DashboardState* st) {
     std::string keepSelectedJob;
     int prevSel = ListView_GetNextItem(st->hwndTaskList, -1, LVNI_SELECTED);
     if (prevSel >= 0 && prevSel < static_cast<int>(st->taskJobIds.size())) keepSelectedJob = st->taskJobIds[prevSel];
+    // It also resets the scroll position, so put that back afterwards too.
+    int keepTopIndex = ListView_GetTopIndex(st->hwndTaskList);
+    int keepScrollX = GetScrollPos(st->hwndTaskList, SB_HORZ);
 
     st->taskJobIds.clear();
     st->taskJobStates.clear();
@@ -2418,6 +2434,10 @@ static void RefreshTaskQueueData(DashboardState* st) {
             break;
         }
     }
+    RECT firstRow = {};
+    int rowHeight = ListView_GetItemRect(st->hwndTaskList, 0, &firstRow, LVIR_BOUNDS) ? firstRow.bottom - firstRow.top : 0;
+    ListView_Scroll(st->hwndTaskList, keepScrollX - GetScrollPos(st->hwndTaskList, SB_HORZ),
+                    (keepTopIndex - ListView_GetTopIndex(st->hwndTaskList)) * rowHeight);
     SendMessageW(st->hwndTaskList, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(st->hwndTaskList, nullptr, FALSE);
 }
@@ -2520,6 +2540,8 @@ static std::wstring ActivityLine(const std::string& kind, const std::string& tar
 
 static void RefreshDashboardData(DashboardState* st) {
     if (!st || !st->pm) return;
+    // Hold every update while a list scrollbar is dragged; the next tick after release catches up.
+    if (g_scrollDragWnd && (g_scrollDragWnd == st->hwndList || g_scrollDragWnd == st->hwndTaskList)) return;
     st->allSnapshots = st->pm->GetAllSnapshots();
 
     bool processFinished = false;
@@ -2765,6 +2787,7 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnStreamPane, 28},
         {st->hwndBtnUsage, 28},
         {st->hwndBtnHideTray, 28},
+        {st->hwndBtnRefresh, 28},
         {st->hwndClock, 80}
     };
     const int gap = 7;
@@ -4184,7 +4207,8 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
 
     ds->rows = BuildActivityRows(ds->events, running);
     uint64_t lastSeq = ds->events.empty() ? 0 : ds->events.back().seq;
-    if (ds->hwndList && (ds->lastEventCount != ds->events.size() || ds->lastEventSeq != lastSeq)) {
+    if (ds->hwndList && g_scrollDragWnd != ds->hwndList &&
+        (ds->lastEventCount != ds->events.size() || ds->lastEventSeq != lastSeq)) {
         ds->lastEventCount = ds->events.size();
         ds->lastEventSeq = lastSeq;
         SendMessageW(ds->hwndList, WM_SETREDRAW, FALSE, 0);
@@ -4310,7 +4334,8 @@ static void ReloadStreamDialogData(HWND hwnd, LlmStreamDlgState* ds) {
 
     // The tail is capped, so a new event may keep the count unchanged: compare the last seq too.
     uint64_t lastSeq = ds->events.empty() ? 0 : ds->events.back().seq;
-    if (ds->hwndList && (ds->lastEventCount != ds->events.size() || ds->lastEventSeq != lastSeq)) {
+    if (ds->hwndList && g_scrollDragWnd != ds->hwndList &&
+        (ds->lastEventCount != ds->events.size() || ds->lastEventSeq != lastSeq)) {
         ds->lastEventCount = ds->events.size();
         ds->lastEventSeq = lastSeq;
         SendMessageW(ds->hwndList, WM_SETREDRAW, FALSE, 0);
@@ -6722,6 +6747,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_HIDE_TRAY, nullptr, nullptr);
             st->hwndBtnViewTasks = CreateWindowExW(0, L"BUTTON", L"Task Queue",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 150, 24, hwnd, (HMENU)IDC_BTN_VIEW_TASKS, nullptr, nullptr);
+            st->hwndBtnRefresh = CreateWindowExW(0, L"BUTTON", L"↻",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_REFRESH, nullptr, nullptr);
             st->hwndClock = CreateWindowExW(0, L"BUTTON", L"",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 80, 24, hwnd, (HMENU)IDC_CLOCK, nullptr, nullptr);
             st->hwndBtnUsage = CreateWindowExW(0, L"BUTTON", L"📊",
@@ -6767,6 +6794,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnToggleTerm);
                 addTool(st->hwndBtnStreamPane);
                 addTool(st->hwndBtnHideTray);
+                addTool(st->hwndBtnRefresh);
             }
 
             LoadShellConfig(st);
@@ -6845,7 +6873,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             HWND uiCtrls[] = {
                 st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillAll,
                 st->hwndBtnGridView,
-                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnHideTray, st->hwndClock,
+                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnHideTray, st->hwndBtnRefresh, st->hwndClock,
                 st->hwndBtnViewTasks, st->hwndList, st->hwndTaskList, st->hwndTab
             };
             for (HWND h : uiCtrls) {
@@ -7304,6 +7332,11 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 GetClientRect(hwnd, &rcClient);
                 LayoutControls(st, rcClient.right, rcClient.bottom);
                 InvalidateRect(hwnd, nullptr, FALSE);
+            } else if (id == IDC_BTN_REFRESH) {
+                RefreshDashboardData(st);
+                if (st->streamPane && st->hwndStreamPane && IsWindowVisible(st->hwndStreamPane)) {
+                    ReloadStreamDialogData(st->hwndStreamPane, st->streamPane);
+                }
             } else if (id == IDC_BTN_STREAM_PANE) {
                 st->showStreamPane = !st->showStreamPane;
                 if (st->showStreamPane && st->hideProcessList) st->hideProcessList = false;
