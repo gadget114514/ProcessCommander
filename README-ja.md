@@ -145,10 +145,12 @@ MCP SERVER SETUP:
     - The dashboard auto-starts on first use and owns the Named Pipe server.
     - Logs, state and task queues live under logs/ (override: PROCESS_COMMANDER_LOG_DIR).
 
-  MCP tools (19):
+  MCP tools (24):
     Process (6):
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
+    Agent (5):
+      run_agent, wait_agent, get_agent_stream, get_agent_state, update_agent_info
     Task queue (13):
       taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
@@ -413,10 +415,19 @@ SETUP FOR LLM AGENTS:
         taskqueue_wait / taskqueue_list / taskqueue_graph and logs; retry with
         taskqueue_retry. Blocked dependents resume automatically.
       - Never poll .done files; use taskqueue_wait or wait_process.
+      - Delegating like a sub-agent: run_agent blocks until the worker exits and
+        returns only its final result; the raw stream stays in stream_file.
+      - Your harness does not see ProcessCommander as a native sub-agent. To have
+        it shown as one, define a thin custom agent (Claude Code:
+        .claude/agents/<name>.md, cheap model, this tool only) that calls run_agent
+        and returns the result. The wrapper costs extra tokens; calling run_agent
+        directly is cheapest.
 
-    MCP tools (19):
+    MCP tools (24):
       Process:    start_process, list_processes, get_process_output,
                   send_process_input, wait_process, kill_process
+      Agent:      run_agent, wait_agent, get_agent_stream, get_agent_state,
+                  update_agent_info
       Task queue: taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
                   taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
                   taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,

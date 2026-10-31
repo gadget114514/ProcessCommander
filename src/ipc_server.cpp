@@ -1,6 +1,7 @@
 #include "ipc_server.h"
 #include "chain_guard.h"
 #include "llm_stream.h"
+#include "nlohmann/json.hpp"
 #include <ctime>
 #include <sstream>
 #include <cctype>
@@ -184,6 +185,86 @@ void IpcServer::HandleClient(HANDLE hPipe) {
     CloseHandle(hPipe);
 }
 
+// The worker's final report for run_agent / wait_agent: only this reaches the supervisor's context,
+// the raw stream stays in stream_file. Size-capped so one run cannot flood that context.
+static std::string AgentResultToJson(ProcessManager& pm, int id, bool finished) {
+    constexpr size_t kMaxResultBytes = 64 * 1024;
+    constexpr int kOutputFallbackLines = 50;
+
+    ProcessSnapshot snap;
+    if (!pm.GetSnapshot(id, snap)) {
+        return "{\"ok\":false,\"error\":\"Process ID not found.\"}";
+    }
+    // The monitor marks the process finished as soon as it exits, which can be before the reader
+    // thread has ingested the last lines, and the last line is the one holding the result.
+    if (finished) {
+        int stableTicks = 0;
+        for (int i = 0; i < 30 && stableTicks < 3; ++i) {
+            uint64_t bytesBefore = snap.totalBytesRead;
+            Sleep(100);
+            pm.GetSnapshot(id, snap);
+            stableTicks = (snap.totalBytesRead == bytesBefore) ? stableTicks + 1 : 0;
+        }
+    }
+
+    std::vector<LlmStreamEvent> events;
+    LlmAgentState st;
+    pm.GetAgentStream(id, 0, "", 0, events, st);
+
+    std::string result, source;
+    bool isError = false;
+    if (finished) {
+        for (auto it = events.rbegin(); it != events.rend(); ++it) {
+            if (it->type != "result" && it->type != "error" && it->type != "message") continue;
+            result = it->content;
+            source = it->type;
+            isError = it->type == "error";
+            // Claude's result line can carry a short "summary" as content; the report is in "result".
+            auto raw = nlohmann::json::parse(it->rawJson, nullptr, false);
+            if (it->type != "message" && raw.is_object() && raw.contains("result") && raw["result"].is_string()) {
+                result = raw["result"].get<std::string>();
+            }
+            break;
+        }
+        if (result.empty()) {
+            pm.GetOutput(id, true, kOutputFallbackLines, result);
+            source = "output";
+        }
+    }
+    bool truncated = result.size() > kMaxResultBytes;
+    if (truncated) {
+        size_t cut = kMaxResultBytes;
+        while (cut > 0 && (static_cast<unsigned char>(result[cut]) & 0xC0) == 0x80) cut--;
+        result.resize(cut);
+    }
+
+    std::ostringstream oss;
+    oss << "{\"ok\":true,\"id\":" << id
+        << ",\"finished\":" << (finished ? "true" : "false")
+        << ",\"success\":" << ((finished && snap.state == ProcState::Completed && !isError) ? "true" : "false")
+        << ",\"state\":\"" << ProcStateToString(snap.state) << "\""
+        << ",\"exit_code\":" << snap.exitCode
+        << ",\"elapsed_ms\":" << snap.elapsedMs
+        << ",\"agent_type\":\"" << JsonEscape(st.agentType) << "\""
+        << ",\"model\":\"" << JsonEscape(st.model) << "\""
+        << ",\"result\":\"" << JsonEscape(result) << "\""
+        << ",\"result_source\":\"" << source << "\""
+        << ",\"result_truncated\":" << (truncated ? "true" : "false")
+        << ",\"tool_calls\":" << st.toolCalls
+        << ",\"tool_errors\":" << st.toolErrors
+        << ",\"num_turns\":" << st.numTurns
+        << ",\"permission_denials\":" << st.permissionDenials
+        << ",\"total_tokens\":" << st.totalTokens
+        << ",\"cost_usd\":" << st.costUsd;
+    if (!finished) {
+        oss << ",\"activity\":\"" << JsonEscape(st.activity) << "\""
+            << ",\"activity_target\":\"" << JsonEscape(st.activityTarget) << "\"";
+    }
+    oss << ",\"log_file\":\"" << JsonEscape(snap.logFilePath) << "\""
+        << ",\"stream_file\":\"" << JsonEscape(st.streamFilePath) << "\"}";
+    return oss.str();
+}
+
 std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
     std::string action = JsonGetString(reqJson, "action", "");
     if (action != "ping") {
@@ -238,11 +319,16 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
         HWND hwnd = notifyHwnd_.load();
         if (hwnd) PostMessageW(hwnd, WM_PC_IPC_EVENT, static_cast<WPARAM>(id), 0);
 
+        bool finished = false;
         if (waitFinish) {
             uint32_t maxWait = (waitMs > 0) ? static_cast<uint32_t>(waitMs) : 0;
-            pm_.WaitForExit(id, maxWait);
+            finished = pm_.WaitForExit(id, maxWait);
         } else if (waitMs > 0) {
-            pm_.WaitForExit(id, static_cast<uint32_t>(waitMs));
+            finished = pm_.WaitForExit(id, static_cast<uint32_t>(waitMs));
+        }
+
+        if (JsonGetBool(reqJson, "result_only", false)) {
+            return AgentResultToJson(pm_, id, finished);
         }
 
         ProcessSnapshot snap;
@@ -350,6 +436,9 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             return "{\"ok\":false,\"error\":\"Process ID not found.\"}";
         }
         bool finished = pm_.WaitForExit(id, static_cast<uint32_t>(waitMs > 0 ? waitMs : 0));
+        if (JsonGetBool(reqJson, "result_only", false)) {
+            return AgentResultToJson(pm_, id, finished);
+        }
         pm_.GetSnapshot(id, snap);
         std::string outLog;
         pm_.GetOutput(id, true, 200, outLog);
