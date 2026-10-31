@@ -22,6 +22,7 @@ param(
     [string]$Base = "main",
     [ValidateSet("agy", "opencode", "claude", "codex")][string]$Engine = $(if ($env:WW_ENGINE) { $env:WW_ENGINE } else { "agy" }),
     [string]$Model = $env:WW_MODEL,
+    [string]$Agent = $env:WW_AGENT,
     [switch]$JsonStdout = $(if ($env:WW_JSON_STDOUT -eq "1") { $true } else { $false }),
     [string]$Root = $env:WW_ROOT,
     [switch]$DryRun,
@@ -64,6 +65,7 @@ MODES (one card per run; the same card never runs twice)
 OPTIONS
   -Engine      agy (default, or WW_ENGINE), opencode, claude, codex
   -Model       engine model (or WW_MODEL)
+-Agent       Claude Code agent (.claude/agents/<name>.md) for -Engine claude only (or WW_AGENT)
   -Extra       text appended to the prompt
   -Root        checkout root (or WW_ROOT); default: git top level of the current directory
   -JsonStdout  print the raw engine events on stdout (or WW_JSON_STDOUT=1)
@@ -129,6 +131,15 @@ if (@($Worktree, $Shared, $Main | Where-Object { $_ }).Count -gt 1) {
     Write-Host "[ww-run] -Shared, -Main and -Worktree cannot be combined" -ForegroundColor Red
     exit 1
 }
+# -Agent (or WW_AGENT) names a Claude Code agent; only the claude engine can use it.
+if ($Agent -and $Engine -ne 'claude') {
+    Write-Host "[ww-run] -Agent (WW_AGENT) needs -Engine claude, not $Engine" -ForegroundColor Red
+    exit 1
+}
+if ($Agent -and $Agent -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') {
+    Write-Host "[ww-run] invalid agent name '$Agent' (letters, digits, '-' and '_')" -ForegroundColor Red
+    exit 1
+}
 
 # -Jobs: write pcder task-queue jobs for several cards (and optionally add them); run nothing.
 # Notes go to stderr so the JSON on stdout stays clean.
@@ -145,7 +156,7 @@ if ($Jobs) {
         if (-not $Worktree -and $e.Count -eq 0) {
             [Console]::Error.WriteLine("[ww-run] note: $($c.Name) has no '## Authorised edits'; it locks the whole checkout and runs alone")
         }
-        $list.Add((New-PcderJob -Task $id -CardName $c.Name -Root $root -RunCmd $runCmd -Engine $Engine -Model $Model `
+        $list.Add((New-PcderJob -Task $id -CardName $c.Name -Root $root -RunCmd $runCmd -Engine $Engine -Model $Model -Agent $Agent `
             -TimeoutSec $TimeoutSec -Worktree:$Worktree -Edits $e -Reads $r))
         $declared += [pscustomobject]@{ Task = $id; Locks = (Get-RunLocks ([pscustomobject]@{ Shared = $true; Edits = $e; Reads = $r })) }
     }
@@ -316,7 +327,8 @@ if ($DryRun) {
     Write-Host "[ww-run] DRYRUN plan:"
     Write-Host "  engine      : $Engine"
     Write-Host "  model       : $(if ($Model) { $Model } elseif ($Engine -eq 'agy') { 'gemini-3.8-flash-medium (default)' } else { '(engine default)' })"
-    Write-Host "  command     : $(Get-EngineCommand -Engine $Engine -Model $Model)"
+    Write-Host "  command     : $(Get-EngineCommand -Engine $Engine -Model $Model -Agent $Agent)"
+    if ($Agent) { Write-Host "  agent       : $Agent (.claude/agents/$Agent.md)" }
     Write-Host "  data dir    : $data"
     Write-Host "  mode        : $(if ($Worktree) { 'worktree' } elseif ($Shared) { 'shared' } else { 'main' })"
     Write-Host "  edits       : $(if ($Worktree) { 'n/a (worktree)' } elseif ($Shared -and $edits.Count) { $edits -join ', ' } else { '** (whole checkout)' })"
@@ -379,7 +391,7 @@ try {
     # -EncodedCommand avoids cmd.exe quoting entirely; the child closes stdin immediately (below).
     # stderr is left on the console (raw); JSON errors on stdout still reach the progress log.
     $safePrompt = $promptFile.Replace("'", "''")
-    $engineCommand = Get-EngineCommand -Engine $Engine -Model $Model
+    $engineCommand = Get-EngineCommand -Engine $Engine -Model $Model -Agent $Agent
     # HOOK: ww-run.selftest.ps1 replaces the real engine with a fake one (a command line, not a path).
     if ($env:WW_TEST_ENGINE_COMMAND) { $engineCommand = $env:WW_TEST_ENGINE_COMMAND }
     $launch = "`$ProgressPreference='SilentlyContinue'; `$prompt = (Get-Content -LiteralPath '$safePrompt' -Raw -Encoding UTF8).TrimEnd(); $engineCommand; if (`$null -eq `$LASTEXITCODE) { exit 1 } else { exit `$LASTEXITCODE }"

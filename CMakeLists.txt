@@ -24,8 +24,10 @@ add_executable(ProcessCommander
     src/llm_stream_opencode.cpp
     src/llm_stream_agy.cpp
     src/llm_stream_codex.cpp
+    src/activity_tree.cpp
     src/gui_dashboard.cpp
     src/app.rc
+    src/agent_template.rc
     src/Terminal/src/ConPtySession.cpp
     src/Terminal/src/ImageManager.cpp
     src/Terminal/src/TerminalBuffer.cpp
@@ -94,7 +96,12 @@ add_executable(pcder
     src/ipc_client.cpp
     src/common.cpp
     src/pcder.rc
+    src/agent_template.rc
 )
+
+# Rebuild the embedded template when pc-runner.md changes.
+set_source_files_properties(src/agent_template.rc PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/agents/pc-runner.md")
 
 add_dependencies(pcder ProcessCommander)
 
@@ -171,4 +178,74 @@ add_custom_command(TARGET taskqueue_smoke POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/lib/OpenConsole.exe"
         "$<TARGET_FILE_DIR:taskqueue_smoke>/OpenConsole.exe"
     COMMENT "Copying lib/conpty.dll and lib/OpenConsole.exe for taskqueue_smoke"
+)
+
+# Headless smoke test for the LLM stream tracker (Claude sub-agent events, token accounting).
+add_executable(llm_stream_smoke
+    tests/llm_stream_smoke.cpp
+    src/llm_stream.cpp
+    src/llm_stream_claude.cpp
+    src/llm_stream_opencode.cpp
+    src/llm_stream_agy.cpp
+    src/llm_stream_codex.cpp
+    src/common.cpp
+)
+
+target_compile_definitions(llm_stream_smoke PRIVATE PC_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Headless test for the monitor tree rules (src/activity_tree.cpp).
+add_executable(activity_tree_smoke
+    tests/activity_tree_smoke.cpp
+    src/activity_tree.cpp
+    src/llm_stream.cpp
+    src/llm_stream_claude.cpp
+    src/llm_stream_opencode.cpp
+    src/llm_stream_agy.cpp
+    src/llm_stream_codex.cpp
+    src/common.cpp
+)
+
+target_include_directories(activity_tree_smoke PRIVATE
+    src
+    include
+)
+
+if(MSVC)
+    target_compile_options(activity_tree_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(activity_tree_smoke PRIVATE
+    user32
+    gdi32
+    comctl32
+    shell32
+    advapi32
+    psapi
+    ole32
+    shlwapi
+    imm32
+    winmm
+)
+
+target_include_directories(llm_stream_smoke PRIVATE
+    src
+    include
+)
+
+if(MSVC)
+    target_compile_options(llm_stream_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(llm_stream_smoke PRIVATE
+    user32
+    gdi32
+    comctl32
+    shell32
+    advapi32
+    psapi
+    ole32
+    shlwapi
+    imm32
+    winmm
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/libsixel.lib"
 )

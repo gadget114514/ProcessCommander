@@ -96,3 +96,12 @@ pcder.exe mcp install                     # .mcp.json (Claude Code)
 pcder.exe mcp install --client opencode   # opencode.json
 pcder.exe mcp install --dry-run --json    # 書き込まずに確認
 ```
+
+**pc-runner サブエージェント（Claude Code）を配置する:**
+
+```powershell
+pcder.exe agent install-template                  # .claude\agents\pc-runner.md を書く
+pcder.exe agent install-template --path C:\proj --dry-run
+```
+
+`pc-runner` は長いビルドやテストを ProcessCommander の MCP ツールで実行し、要約だけを返す。既存のファイルは上書きしない。

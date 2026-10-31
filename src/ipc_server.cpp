@@ -528,8 +528,9 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             << ",\"cost_usd\":" << st.costUsd
             << ",\"stream_file\":\"" << JsonEscape(st.streamFilePath) << "\""
             << ",\"supervisor_notes\":\"" << JsonEscape(st.supervisorNotes) << "\""
-            << ",\"supervisor_goal\":\"" << JsonEscape(st.supervisorGoal) << "\""
-            << ",\"updated_at\":\"" << JsonEscape(st.updatedAt) << "\"}";
+            << ",\"supervisor_goal\":\"" << JsonEscape(st.supervisorGoal) << "\"";
+        if (!st.subagents.empty()) oss << ",\"subagents\":" << LlmSubagentsToJson(st.subagents);
+        oss << ",\"updated_at\":\"" << JsonEscape(st.updatedAt) << "\"}";
         return oss.str();
     }
     else if (action == "update_agent_info") {

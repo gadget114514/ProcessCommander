@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstddef>
+#include <new>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -157,6 +159,19 @@ bool IsUsageHistoryPersistence() {
 }
 
 uint64_t GetLlmUsageRecordCalls() { return g_recordCalls; }
+
+// Event retention for every stream tracker (see llm_stream.h).
+static std::atomic<int64_t> g_llmMaxEvents{kDefaultLlmMaxEvents};
+
+int64_t ClampLlmMaxEvents(int64_t requested) {
+    if (requested == -1) return -1;
+    if (requested < kMinLlmMaxEvents) return kMinLlmMaxEvents;
+    if (requested > kMaxLlmMaxEvents) return kMaxLlmMaxEvents;
+    return requested;
+}
+
+void SetLlmMaxEvents(int64_t requested) { g_llmMaxEvents.store(ClampLlmMaxEvents(requested)); }
+int64_t GetLlmMaxEvents() { return g_llmMaxEvents.load(); }
 std::vector<LlmUsagePoint> GetLlmUsageHistory(int64_t sinceEpochSec) {
     std::lock_guard<std::mutex> lock(g_usageHistoryMutex);
     LoadUsageHistoryLocked();
@@ -816,6 +831,27 @@ bool DescribeLlmActivity(const LlmStreamEvent& ev, std::string& kind, std::strin
     return true;
 }
 
+std::string LlmSubagentsToJson(const std::vector<LlmSubagentState>& subagents) {
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& s : subagents) {
+        nlohmann::json item;
+        item["id"] = s.id;
+        item["tool_use_id"] = s.toolUseId;
+        item["parent_agent_id"] = s.parentAgentId;
+        item["subagent_type"] = s.subagentType;
+        item["description"] = s.description;
+        item["status"] = s.status;
+        item["started_epoch_ms"] = s.startedEpochMs;
+        item["ended_epoch_ms"] = s.endedEpochMs;
+        item["total_tokens"] = s.totalTokens;
+        item["tool_uses"] = s.toolUses;
+        item["activity"] = s.activity;
+        item["activity_target"] = s.activityTarget;
+        arr.push_back(item);
+    }
+    return arr.dump();
+}
+
 std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const LlmAgentState& state) {
     nlohmann::json root;
     root["ok"] = true;
@@ -851,6 +887,7 @@ std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const Llm
                               {"utilization", state.rateLimitUtilization},
                               {"resets_at_epoch_sec", state.rateLimitResetsAtSec}};
     }
+    if (!state.subagents.empty()) root["subagents"] = nlohmann::json::parse(LlmSubagentsToJson(state.subagents));
 
     nlohmann::json evArr = nlohmann::json::array();
     for (const auto& ev : events) {
@@ -866,6 +903,12 @@ std::string LlmEventsToJson(const std::vector<LlmStreamEvent>& events, const Llm
         item["content"] = ev.content;
         item["status"] = ev.status;
         item["step"] = ev.stepIndex;
+        if (!ev.toolUseId.empty()) item["tool_use_id"] = ev.toolUseId;
+        if (!ev.parentToolUseId.empty()) item["parent_tool_use_id"] = ev.parentToolUseId;
+        if (!ev.agentId.empty()) item["agent_id"] = ev.agentId;
+        if (!ev.subagentType.empty()) item["subagent_type"] = ev.subagentType;
+        if (!ev.taskDescription.empty()) item["task_description"] = ev.taskDescription;
+        if (!ev.taskStatus.empty()) item["task_status"] = ev.taskStatus;
         if (ev.totalTokens > 0) item["total_tokens"] = ev.totalTokens;
         if (ev.inputTokens > 0) item["input_tokens"] = ev.inputTokens;
         if (ev.outputTokens > 0) item["output_tokens"] = ev.outputTokens;
@@ -1066,12 +1109,68 @@ void LlmStreamTracker::ApplyPartialEvent(LlmStreamEvent& ev) {
     ApplyActivity(ev);
 }
 
+LlmStreamTracker::UsageBaseline& LlmStreamTracker::MessageBaselineLocked(const std::string& messageId) {
+    auto it = messageBaselines_.find(messageId);
+    if (it != messageBaselines_.end()) return it->second;
+    // Bounded by kMaxTrackedMessages: forget the oldest message ids first.
+    while (messageBaselineOrder_.size() >= kMaxTrackedMessages) {
+        messageBaselines_.erase(messageBaselineOrder_.front());
+        messageBaselineOrder_.pop_front();
+    }
+    messageBaselineOrder_.push_back(messageId);
+    return messageBaselines_[messageId];
+}
+
+LlmSubagentState& LlmStreamTracker::SubagentEntryLocked(const std::string& agentId, const std::string& toolUseId,
+                                                        int64_t nowMs) {
+    for (auto& sub : state_.subagents) {
+        if ((!agentId.empty() && sub.id == agentId) || (!toolUseId.empty() && sub.toolUseId == toolUseId)) return sub;
+    }
+    // Bounded by kMaxSubagents (large): past it, the oldest finished sub-agent goes first.
+    if (state_.subagents.size() >= kMaxSubagents) {
+        auto finished = std::find_if(state_.subagents.begin(), state_.subagents.end(),
+                                     [](const LlmSubagentState& s) { return s.status != "running"; });
+        state_.subagents.erase(finished != state_.subagents.end() ? finished : state_.subagents.begin());
+    }
+    LlmSubagentState sub;
+    sub.id = agentId.empty() ? toolUseId : agentId;
+    sub.toolUseId = toolUseId;
+    sub.parentAgentId = ParentAgentIdLocked(toolUseId);
+    sub.startedEpochMs = nowMs;
+    state_.subagents.push_back(sub);
+    return state_.subagents.back();
+}
+
+bool LlmStreamTracker::AnySubagentRunningLocked() const {
+    for (const auto& sub : state_.subagents) {
+        if (sub.status == "running") return true;
+    }
+    return false;
+}
+
+void LlmStreamTracker::RecordToolUseOwnerLocked(const std::string& toolUseId, const std::string& agentId) {
+    if (toolUseId.empty() || toolUseOwners_.count(toolUseId)) return;
+    // Bounded by kMaxToolUseOwners: forget the oldest tool_use ids first.
+    while (toolUseOwnerOrder_.size() >= kMaxToolUseOwners) {
+        toolUseOwners_.erase(toolUseOwnerOrder_.front());
+        toolUseOwnerOrder_.pop_front();
+    }
+    toolUseOwnerOrder_.push_back(toolUseId);
+    toolUseOwners_[toolUseId] = agentId;
+}
+
+std::string LlmStreamTracker::ParentAgentIdLocked(const std::string& toolUseId) const {
+    auto it = toolUseOwners_.find(toolUseId);
+    return it == toolUseOwners_.end() ? std::string() : it->second;
+}
+
 void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
     if (ev.transient) {
-        ApplyPartialEvent(ev);
+        // A sub-agent's chunks do not touch the main agent's live state.
+        if (ev.parentToolUseId.empty()) ApplyPartialEvent(ev);
         // Usage chunks still count below; other chunks stop here.
         if (ev.type != "usage") return;
-    } else if (ev.type != "usage") {
+    } else if (ev.type != "usage" && ev.parentToolUseId.empty()) {
         // A complete block replaces the chunks that led up to it.
         partialTextType_.clear();
         partialText_.clear();
@@ -1085,6 +1184,12 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
         if (!agentType_.empty()) ev.agentType = agentType_;
     }
 
+    // A sub-agent's line (Claude: parent_tool_use_id set) updates only that sub-agent's entry and
+    // the token totals. Its status, activity, tool and message fields belong to the main agent.
+    const bool childLine = !ev.parentToolUseId.empty();
+    // The agent that issued a tool_use owns it: a sub-agent started by that tool_use is its child.
+    if (ev.type == "tool_call") RecordToolUseOwnerLocked(ev.toolUseId, ev.agentId);
+
     // Update agent state
     state_.eventCount = static_cast<int>(events_.size()) + 1;
     state_.updatedAt = ev.timestamp;
@@ -1095,7 +1200,7 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
     if (ev.stepIndex > 0) {
         state_.stepCount = ev.stepIndex;
     }
-    if (!ev.model.empty()) {
+    if (!childLine && !ev.model.empty()) {
         state_.model = ev.model;
     }
     // agy does not report model in stream-json; recover it from the agy transcript file.
@@ -1145,19 +1250,10 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
     }
     // Claude reports usage per message: its assistant lines repeat the usage from the start of
     // the message, a message_delta chunk (--include-partial-messages) has the final usage, and the
-    // "result" event has the run total. Count per message: reset the baselines when message.id
-    // changes and only count growth within a message. The result event then adds whatever the
+    // "result" event has the run total. Count per message: each message.id keeps its own baselines
+    // and only growth within a message counts. The result event then adds whatever the
     // messages did not report. Cost only comes from the result event.
     const bool perMessageUsage = !perStepUsage && (ev.agentType == "claude" || agentType_ == "claude");
-    if (perMessageUsage && !ev.messageId.empty() && ev.messageId != lastMessageId_) {
-        lastMessageId_ = ev.messageId;
-        lastUsageTotal_ = 0;
-        lastInput_ = 0;
-        lastOutput_ = 0;
-        lastThinking_ = 0;
-        lastCacheRead_ = 0;
-        lastCacheWrite_ = 0;
-    }
     const bool countTokens = !perMessageUsage || !ev.messageId.empty();
     // Other agents' usage values are usually cumulative; keep the high-water mark so
     // totals do not double-count per-response deltas.
@@ -1176,6 +1272,8 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
             // Claude's output_tokens already include its thinking tokens.
             deltaTotal = deltaInput + deltaOutput + deltaCacheRead + deltaCacheWrite;
         } else if (countTokens) {
+            // Claude: the baseline of this line's message id. Others: one shared baseline.
+            UsageBaseline& base = perMessageUsage ? MessageBaselineLocked(ev.messageId) : lastUsage_;
             // Within a message the usage only grows; a lower value repeats an earlier line.
             auto growth = [&](uint64_t value, uint64_t& last) -> uint64_t {
                 if (value < last) {
@@ -1187,15 +1285,15 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
                 last = value;
                 return d;
             };
-            deltaInput = growth(ev.inputTokens, lastInput_);
-            deltaOutput = growth(ev.outputTokens, lastOutput_);
-            deltaThinking = growth(ev.thinkingTokens, lastThinking_);
-            deltaCacheRead = growth(ev.cacheReadTokens, lastCacheRead_);
-            deltaCacheWrite = growth(ev.cacheWriteTokens, lastCacheWrite_);
+            deltaInput = growth(ev.inputTokens, base.input);
+            deltaOutput = growth(ev.outputTokens, base.output);
+            deltaThinking = growth(ev.thinkingTokens, base.thinking);
+            deltaCacheRead = growth(ev.cacheReadTokens, base.cacheRead);
+            deltaCacheWrite = growth(ev.cacheWriteTokens, base.cacheWrite);
             // Claude's output_tokens already include its thinking tokens.
             deltaTotal = deltaInput + deltaOutput + deltaCacheRead + deltaCacheWrite + (perMessageUsage ? 0 : deltaThinking);
-            if (!perMessageUsage && deltaTotal == 0 && eventTokens >= lastUsageTotal_) deltaTotal = eventTokens - lastUsageTotal_;
-            lastUsageTotal_ = eventTokens;
+            if (!perMessageUsage && deltaTotal == 0 && eventTokens >= base.total) deltaTotal = eventTokens - base.total;
+            base.total = eventTokens;
         }
         if (perMessageUsage) {
             state_.totalTokens += deltaTotal;
@@ -1204,6 +1302,10 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
             countedThinking_ += deltaThinking;
             countedCacheRead_ += deltaCacheRead;
             countedCacheWrite_ += deltaCacheWrite;
+            if (childLine && !ev.runTotal) {
+                LlmSubagentState& sub = SubagentEntryLocked(ev.agentId, ev.parentToolUseId, ev.recvEpochMs);
+                sub.totalTokens += deltaTotal;
+            }
         }
         double deltaCost = 0.0;
         if (ev.costUsd > 0.0) {
@@ -1226,7 +1328,7 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
     }
 
     if (!ev.sessionId.empty()) state_.sessionId = ev.sessionId;
-    if (!ev.stopReason.empty()) state_.stopReason = ev.stopReason;
+    if (!ev.stopReason.empty() && !childLine) state_.stopReason = ev.stopReason;
     if (!ev.cwd.empty()) state_.cwd = ev.cwd;
     if (ev.toolsOffered > 0) state_.toolsOffered = ev.toolsOffered;
     if (ev.numTurns > 0) state_.numTurns = ev.numTurns;
@@ -1239,39 +1341,115 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
         state_.rateLimitResetsAtSec = ev.rateLimitResetsAtSec;
     }
 
-    if (ev.type == "tool_call") {
-        state_.status = "calling_tool";
-        state_.currentTool = ev.toolName;
-        state_.currentToolAction = ev.toolAction;
-        state_.toolCalls++;
-    } else if (ev.type == "tool_result") {
-        state_.status = "tool_finished";
-        if (ev.toolError) state_.toolErrors++;
-    } else if (ev.type == "thinking") {
-        state_.status = "thinking";
-        if (!ev.content.empty()) {
-            state_.lastThought = Utf8Prefix(ev.content, 160);
+    // Sub-agent lifecycle: the entry in the list. A sub-agent's own lines update its entry below.
+    if (ev.type == "subagent_start") {
+        LlmSubagentState& sub = SubagentEntryLocked(ev.agentId, ev.toolUseId, ev.recvEpochMs);
+        sub.subagentType = ev.subagentType;
+        if (!ev.taskDescription.empty()) sub.description = ev.taskDescription;
+        sub.status = "running";
+        sub.startedEpochMs = ev.recvEpochMs;
+    } else if (ev.type == "subagent_end") {
+        LlmSubagentState& sub = SubagentEntryLocked(ev.agentId, ev.toolUseId, ev.recvEpochMs);
+        sub.status = ev.taskStatus.empty() ? "completed" : ev.taskStatus;
+        sub.endedEpochMs = ev.recvEpochMs;
+        if (ev.taskTokens > 0) sub.totalTokens = ev.taskTokens;
+        if (ev.taskToolUses > 0) sub.toolUses = static_cast<int>(ev.taskToolUses);
+        sub.activity.clear();
+        sub.activityTarget.clear();
+        // The run's result came first and was waiting for this sub-agent: the run is done now.
+        if (resultPending_ && !AnySubagentRunningLocked()) {
+            resultPending_ = false;
+            state_.status = "completed";
+            state_.activity = "done";
+            state_.activityTarget.clear();
+            state_.activitySinceEpochMs = ev.recvEpochMs;
         }
-    } else if (ev.type == "message") {
-        state_.status = "generating";
-        if (!ev.content.empty()) {
-            state_.lastMessage = Utf8Prefix(ev.content, 160);
-        }
-    } else if (ev.type == "status") {
-        if (!ev.status.empty()) state_.status = ev.status;
-    } else if (ev.type == "error") {
-        state_.status = "error";
-        state_.lastError = ev.content;
-    } else if (ev.type == "result") {
-        state_.status = "completed";
     }
 
-    ApplyActivity(ev);
+    if (childLine) {
+        // Only the sub-agent's own counts and what it is doing now.
+        LlmSubagentState& sub = SubagentEntryLocked(ev.agentId, ev.parentToolUseId, ev.recvEpochMs);
+        if (sub.subagentType.empty()) sub.subagentType = ev.subagentType;
+        if (sub.description.empty()) sub.description = ev.taskDescription;
+        if (ev.type == "tool_call") sub.toolUses++;
+        std::string subKind, subTarget;
+        if (DescribeLlmActivity(ev, subKind, subTarget)) {
+            sub.activity = subKind;
+            sub.activityTarget = subTarget;
+        }
+    } else {
+        if (ev.type == "tool_call") {
+            state_.status = "calling_tool";
+            state_.currentTool = ev.toolName;
+            state_.currentToolAction = ev.toolAction;
+            state_.toolCalls++;
+        } else if (ev.type == "tool_result") {
+            state_.status = "tool_finished";
+            if (ev.toolError) state_.toolErrors++;
+        } else if (ev.type == "thinking") {
+            state_.status = "thinking";
+            if (!ev.content.empty()) {
+                state_.lastThought = Utf8Prefix(ev.content, 160);
+            }
+        } else if (ev.type == "message") {
+            state_.status = "generating";
+            if (!ev.content.empty()) {
+                state_.lastMessage = Utf8Prefix(ev.content, 160);
+            }
+        } else if (ev.type == "status") {
+            if (!ev.status.empty()) state_.status = ev.status;
+        } else if (ev.type == "error") {
+            state_.status = "error";
+            state_.lastError = ev.content;
+        } else if (ev.type == "result") {
+            state_.status = "completed";
+        }
+
+        ApplyActivity(ev);
+
+        // A result can arrive while a background sub-agent still runs. The run is not done
+        // until that sub-agent ends (its subagent_end then completes the run).
+        if (ev.type == "result") {
+            resultPending_ = AnySubagentRunningLocked();
+            if (resultPending_) {
+                state_.status = "running";
+                state_.activity = "subagent";
+                state_.activityTarget.clear();
+                for (const auto& sub : state_.subagents) {
+                    if (sub.status != "running") continue;
+                    state_.activityTarget = sub.description;
+                    state_.activitySinceEpochMs = sub.startedEpochMs;
+                    break;
+                }
+            }
+        } else if (ev.type != "subagent_start" && ev.type != "subagent_end" && !ev.transient) {
+            resultPending_ = false;
+        }
+    }
 
     if (ev.transient) return;  // a usage chunk: counted above, not stored
-    events_.push_back(ev);
-    while (events_.size() > kMaxEvents) {
-        events_.pop_front();
+    try {
+        events_.push_back(ev);
+    } catch (const std::bad_alloc&) {
+        // Out of memory while keeping every event (-1 setting). Free the older half first, then log
+        // once and store the event again. Nothing is allocated before the old events are gone.
+        events_.erase(events_.begin(), events_.begin() + static_cast<std::ptrdiff_t>(events_.size() / 2));
+        if (!loggedAllocFailure_) {
+            loggedAllocFailure_ = true;
+            WriteAuditLog("llm_stream", "out of memory keeping events (retention -1): dropped the older half of "
+                                        "one process's events; lower the event retention setting");
+        }
+        try {
+            events_.push_back(ev);
+        } catch (const std::bad_alloc&) {
+            // Still no memory: this event is not kept, the run goes on.
+        }
+    }
+    const int64_t maxEvents = GetLlmMaxEvents();
+    if (maxEvents > 0) {
+        while (events_.size() > static_cast<size_t>(maxEvents)) {
+            events_.pop_front();
+        }
     }
 }
 
