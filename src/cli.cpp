@@ -5,10 +5,75 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 
 namespace pc {
 
 namespace {
+
+// pc-runner.md, embedded from tools/agents/pc-runner.md (src/agent_template.rc).
+constexpr WORD kRunnerTemplateResourceId = 101;
+
+bool LoadRunnerTemplate(std::string& outText) {
+    HRSRC res = FindResourceW(nullptr, MAKEINTRESOURCEW(kRunnerTemplateResourceId), RT_RCDATA);
+    if (!res) return false;
+    HGLOBAL handle = LoadResource(nullptr, res);
+    if (!handle) return false;
+    const char* data = static_cast<const char*>(LockResource(handle));
+    if (!data) return false;
+    outText.assign(data, SizeofResource(nullptr, res));
+    return true;
+}
+
+// pcder agent install-template [--path <dir>] [--dry-run] [--json]
+// Writes <dir>\.claude\agents\pc-runner.md (default dir: the current directory). An existing file
+// is never overwritten.
+int RunAgentInstallTemplate(const std::vector<std::string>& args, size_t startIdx, bool jsonOutput) {
+    std::string dir = ".";
+    bool dryRun = false;
+    for (size_t i = startIdx; i < args.size(); ++i) {
+        if (args[i] == "--path" && i + 1 < args.size()) dir = args[++i];
+        else if (args[i] == "--dry-run") dryRun = true;
+    }
+
+    auto fail = [&](const std::string& message) {
+        if (jsonOutput) {
+            std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(message) << "\"}\n";
+        } else {
+            std::cerr << "Error: " << message << "\n";
+        }
+        return 1;
+    };
+
+    std::filesystem::path target = std::filesystem::path(Utf8ToWide(dir)) / L".claude" / L"agents" / L"pc-runner.md";
+    const std::string targetUtf8 = WideToUtf8(target.wstring());
+
+    std::string text;
+    if (!LoadRunnerTemplate(text)) return fail("pc-runner template is not embedded in this build");
+
+    std::error_code ec;
+    if (std::filesystem::exists(target, ec)) {
+        return fail("already exists, not overwritten: " + targetUtf8);
+    }
+    if (!dryRun) {
+        std::filesystem::create_directories(target.parent_path(), ec);
+        if (ec) return fail("cannot create " + WideToUtf8(target.parent_path().wstring()) + ": " + ec.message());
+        std::ofstream out(target, std::ios::binary);
+        if (!out) return fail("cannot write " + targetUtf8);
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!out) return fail("cannot write " + targetUtf8);
+    }
+
+    if (jsonOutput) {
+        std::cout << "{\"ok\":true,\"path\":\"" << JsonEscape(targetUtf8) << "\",\"written\":"
+                  << (dryRun ? "false" : "true") << ",\"dry_run\":" << (dryRun ? "true" : "false")
+                  << ",\"bytes\":" << text.size() << "}\n";
+    } else {
+        std::cout << (dryRun ? "Would write " : "Wrote ") << targetUtf8 << " (" << text.size() << " bytes)\n";
+    }
+    return 0;
+}
 
 std::string ResolveGuiExePathUtf8() {
     wchar_t exePath[MAX_PATH] = {};
@@ -301,6 +366,11 @@ COMMANDS:
 
   agent info <id> [--notes "<notes>"] [--goal "<goal>"]
       Update supervisor notes or goal for an ongoing agent.
+
+  agent install-template [--path <dir>] [--dry-run]
+      Write the pc-runner subagent to <dir>\.claude\agents\pc-runner.md (default: the current
+      directory). It runs long commands through ProcessCommander and returns a short summary.
+      An existing file is not overwritten.
 
   mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
@@ -598,17 +668,20 @@ void PrintCliUsageJson() {
     {
       "name": "agent",
       "description": "Inspect and supervise LLM agents (Claude, agy, opencode, codex, aider, ollama) running under ProcessCommander. JSON stream events are parsed into <log>.stream.jsonl and visible in the GUI (LLM JSON Stream dialog). Use pcder/ProcessCommander to supervise and watch streams.",
-      "usage": "pcder agent <status|stream|info> <id> [options]",
+      "usage": "pcder agent <status|stream|info|install-template> [<id>] [options]",
       "subcommands": [
-        {"name": "status", "usage": "pcder agent status <id>", "description": "Display current agent status, model, active tool, thoughts, message, and supervisor context."},
-        {"name": "stream", "usage": "pcder agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]", "description": "View captured JSON streaming events from <log>.stream.jsonl (parsed tool_call/tool_result/thinking/message)."},
-        {"name": "info", "usage": "pcder agent info <id> [--notes <notes>] [--goal <goal>]", "description": "Update supervisor instructions, notes, or goals."}
+        {"name": "status", "usage": "pcder agent status <id>", "description": "Display current agent status, model, active tool, thoughts, message, supervisor context, and Claude sub-agents (subagents array)."},
+        {"name": "stream", "usage": "pcder agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]", "description": "View captured JSON streaming events from <log>.stream.jsonl (parsed tool_call/tool_result/thinking/message, subagent_start/subagent_end with parent_tool_use_id and agent_id)."},
+        {"name": "info", "usage": "pcder agent info <id> [--notes <notes>] [--goal <goal>]", "description": "Update supervisor instructions, notes, or goals."},
+        {"name": "install-template", "usage": "pcder agent install-template [--path <dir>] [--dry-run] [--json]", "description": "Write .claude/agents/pc-runner.md (a Claude Code subagent that runs long commands through ProcessCommander) under <dir>. Default: the current directory. An existing file is not overwritten."}
       ],
       "options": [
         {"name": "--tail", "value": "<n>", "description": "For stream: number of recent events."},
         {"name": "--type", "value": "<type>", "description": "For stream: filter by event type (tool_call/tool_result/thinking/message/...)."},
         {"name": "--since", "value": "<seq>", "description": "For stream: only events with seq > N."},
         {"name": "--summary", "description": "For stream: show summary view."},
+        {"name": "--path", "value": "<dir>", "description": "For install-template: project directory that receives .claude/agents/pc-runner.md. Default: current directory."},
+        {"name": "--dry-run", "description": "For install-template: print the target without writing it."},
         {"name": "--notes", "value": "<text>", "description": "For info: supervisor notes."},
         {"name": "--goal", "value": "<text>", "description": "For info: supervisor goal."}
       ]
@@ -1208,6 +1281,17 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
         if (!notes.empty()) {
             std::cout << "  Notes       : " << notes << "\n";
         }
+        auto subagents = ExtractJsonObjectArray(respJson, "subagents");
+        if (!subagents.empty()) {
+            std::cout << "  Subagents   : " << subagents.size() << "\n";
+            for (const auto& sub : subagents) {
+                std::cout << "    [" << JsonGetString(sub, "status", "") << "] "
+                          << JsonGetString(sub, "subagent_type", "") << " "
+                          << JsonGetString(sub, "description", "")
+                          << " (tokens " << JsonGetInt(sub, "total_tokens", 0)
+                          << ", tool uses " << JsonGetInt(sub, "tool_uses", 0) << ")\n";
+            }
+        }
         return 0;
     }
 
@@ -1650,6 +1734,8 @@ int RunCli(const std::vector<std::string>& rawArgs) {
     else if (subcmd == "agent") {
         std::string op = (args.size() >= 3 && args[2][0] != '-') ? args[2] : "status";
         size_t startIdx = (args.size() >= 3 && args[2][0] != '-') ? 3 : 2;
+        // Local file write only: no process ID and no IPC.
+        if (op == "install-template") return RunAgentInstallTemplate(args, startIdx, jsonOutput);
         int id = 0;
         int tail = 50;
         std::string typeFilter;

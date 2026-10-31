@@ -123,6 +123,15 @@ pcder.exe mcp install --client opencode   # opencode.json
 pcder.exe mcp install --dry-run --json    # preview without writing
 ```
 
+**Install the `pc-runner` subagent (Claude Code):**
+
+```powershell
+pcder.exe agent install-template                  # writes .claude\agents\pc-runner.md
+pcder.exe agent install-template --path C:\proj --dry-run
+```
+
+`pc-runner` runs long builds and tests through ProcessCommander's MCP tools and returns only a short summary. The file is never overwritten.
+
 `pcder.exe help` is a complete, self-contained usage guide. It covers **PCDER CONCEPTS** (process IDs, modes, stdin, logs, `.done` files, cwd/env), **exit codes**, **environment variables**, **examples**, the **per-invocation `--data-dir`** and how to keep one project's data consistent, the **task queue**, **MCP auto-registration**, the **LLM orchestration model**, and the full **19-tool MCP list**.
 
 `pcder.exe help --json` returns the same material as machine-readable JSON:

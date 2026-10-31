@@ -1,8 +1,9 @@
 // Claude Code stream-json (claude -p --output-format stream-json --verbose).
 // "assistant" and "user" lines keep their payload in message.content[], one block per entry:
 // thinking, tool_use and text for assistant; tool_result and text for user. Each block becomes
-// its own event. system/init, rate_limit_event and result lines are one event each. Other lines
-// (for example system subtypes other than init) fall back to the generic parser.
+// its own event. system/init, system task_started / task_notification, rate_limit_event and result
+// lines are one event each. Other lines (for example system subtypes other than these) fall back
+// to the generic parser. A sub-agent's lines carry parent_tool_use_id, agent_id and subagent_type.
 
 #include "llm_stream_internal.h"
 
@@ -41,6 +42,11 @@ bool ParseClaudeMessageLine(const nlohmann::json& j, const std::string& trimmed,
     base.messageId = JsonStr(msg, "id");
     base.sessionId = JsonStr(j, "session_id");
     base.stopReason = JsonStr(msg, "stop_reason");
+    // Set on the lines of a sub-agent (Agent tool); null on the main agent's lines.
+    base.parentToolUseId = JsonStr(j, "parent_tool_use_id");
+    base.agentId = JsonStr(j, "agent_id");
+    base.subagentType = JsonStr(j, "subagent_type");
+    base.taskDescription = JsonStr(j, "task_description");
     // Every content block of one message repeats its usage; the tracker counts it once per message id.
     if (isAssistant && msg.contains("usage")) ApplyLlmUsageFields(msg["usage"], base);
 
@@ -65,6 +71,7 @@ bool ParseClaudeMessageLine(const nlohmann::json& j, const std::string& trimmed,
         if (isAssistant && btype == "tool_use") {
             ev.type = "tool_call";
             ev.status = "calling_tool";
+            ev.toolUseId = JsonStr(block, "id");
             ev.toolName = JsonStr(block, "name");
             if (block.contains("input")) {
                 ev.toolInput = block["input"].is_string() ? block["input"].get<std::string>() : block["input"].dump();
@@ -82,6 +89,7 @@ bool ParseClaudeMessageLine(const nlohmann::json& j, const std::string& trimmed,
         } else if (btype == "tool_result") {
             ev.type = "tool_result";
             ev.status = "tool_result";
+            ev.toolUseId = JsonStr(block, "tool_use_id");
             ev.toolError = block.contains("is_error") && block["is_error"].is_boolean() && block["is_error"].get<bool>();
             if (block.contains("content")) ev.content = ClaudeContentText(block["content"]);
         } else {
@@ -115,6 +123,30 @@ bool ParseClaudeLines(const nlohmann::json& j, const std::string& trimmed, const
         ev.content = "init";
         ev.cwd = JsonStr(j, "cwd");
         if (j.contains("tools") && j["tools"].is_array()) ev.toolsOffered = j["tools"].size();
+    } else if (type == "system" && JsonStr(j, "subtype") == "task_started") {
+        // A sub-agent starts: task_id is its agent id, tool_use_id the Agent call that spawned it.
+        ev.type = "subagent_start";
+        ev.status = "running";
+        ev.agentId = JsonStr(j, "task_id");
+        ev.toolUseId = JsonStr(j, "tool_use_id");
+        ev.subagentType = JsonStr(j, "subagent_type");
+        ev.taskDescription = JsonStr(j, "description");
+        ev.taskStatus = "running";
+        ev.content = ev.taskDescription;
+    } else if (type == "system" && JsonStr(j, "subtype") == "task_notification") {
+        // A sub-agent ends: its status, its final text (summary) and its usage.
+        ev.type = "subagent_end";
+        ev.agentId = JsonStr(j, "task_id");
+        ev.toolUseId = JsonStr(j, "tool_use_id");
+        ev.taskStatus = JsonStr(j, "status");
+        ev.status = ev.taskStatus;
+        ev.content = JsonStr(j, "summary");
+        if (j.contains("usage") && j["usage"].is_object()) {
+            const auto& u = j["usage"];
+            ev.taskTokens = JsonU64(u, "total_tokens");
+            ev.taskToolUses = JsonU64(u, "tool_uses");
+            ev.taskDurationMs = JsonU64(u, "duration_ms");
+        }
     } else if (type == "rate_limit_event" && j.contains("rate_limit_info") && j["rate_limit_info"].is_object()) {
         // How much of the plan window (five_hour, seven_day, ...) is used.
         const auto& info = j["rate_limit_info"];

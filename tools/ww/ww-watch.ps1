@@ -9,6 +9,7 @@ param(
     [double]$MinCpuDelta = 2.0,
     [ValidateSet("agy", "opencode", "claude", "codex")][string]$Engine = $(if ($env:WW_ENGINE) { $env:WW_ENGINE } else { "agy" }),
     [string]$Model = $env:WW_MODEL,
+    [string]$Agent = $env:WW_AGENT,
     [string]$Root = $env:WW_ROOT,
     [switch]$DryRun
 )
@@ -82,6 +83,7 @@ function Invoke-Leaf([string]$id, $card) {
         $env:WW_ROOT = $root
         if ($Engine) { $env:WW_ENGINE = $Engine }
         if ($Model) { $env:WW_MODEL = $Model }
+        if ($Agent) { $env:WW_AGENT = $Agent }
         $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runScript, $id)
         if ($extra) { $argList += "`"$extra`"" }
         $proc = Start-Process -FilePath "powershell" -ArgumentList $argList -PassThru -NoNewWindow

@@ -67,6 +67,14 @@ The parser is permissive and looks for common fields across agents:
 ### Status/error/result
 - `type` in `status`/`error`/`result`/`done`/`finish`/`completed`. `error` may be string or object with `message`.
 
+### Claude sub-agents (Agent tool)
+- `system` / `task_started`: `task_id`, `tool_use_id`, `description`, `subagent_type` become a `subagent_start` event (`agent_id` = `task_id`, `tool_use_id` = the Agent call).
+- `system` / `task_notification`: `task_id`, `tool_use_id`, `status`, `summary`, `usage` (`total_tokens`, `tool_uses`, `duration_ms`) become a `subagent_end` event.
+- A sub-agent's `assistant` / `user` lines carry `parent_tool_use_id` and `agent_id`. They update only that sub-agent. Their status, activity, tool and message fields do not replace the main agent's.
+- Token usage is counted once per message id, so lines of other agents between one message's blocks do not count it twice.
+- A `result` line that arrives while a sub-agent is still running leaves the run `running` (activity `subagent`) until that sub-agent ends.
+- Events carry `tool_use_id`, `parent_tool_use_id`, `agent_id`, `subagent_type`, `task_description`, `task_status` when present. The agent state carries a `subagents` array (`id`, `tool_use_id`, `parent_agent_id`, `subagent_type`, `description`, `status`, `started_epoch_ms`, `ended_epoch_ms`, `total_tokens`, `tool_uses`, `activity`, `activity_target`). Nested sub-agents are supported by `parent_agent_id`; the nested case is tested with synthetic lines only.
+
 ## Outputs
 
 - **Per-process stream file**: `<logfile>.stream.jsonl` (written by `LlmStreamTracker` as raw JSON lines are ingested).

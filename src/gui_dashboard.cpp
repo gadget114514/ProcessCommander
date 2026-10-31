@@ -1,6 +1,7 @@
 #include "gui_dashboard.h"
 #include "common.h"
 #include "llm_stream.h"
+#include "activity_tree.h"
 #include "TerminalView.h"
 #include "TerminalGridView.h"
 #include "nlohmann/json.hpp"
@@ -11,6 +12,7 @@
 #include <uxtheme.h>
 #include <commdlg.h>
 #include <mmsystem.h>
+#include <map>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -630,6 +632,7 @@ enum ControlId {
     IDC_SET_RESTORE_USAGE_GRAPH = 6036,
     IDC_SET_RESOURCE_LOCKS = 6037,
     IDC_SET_ACTIVITY_STYLE = 6038,
+    IDC_SET_LLM_MAX_EVENTS = 6039,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -688,6 +691,7 @@ struct DashboardState {
     int usageRangeIndex = 1;
     int usageGraphMode = 0; // 0: token kinds (default), 1: by provider/model
     bool restoreUsageGraph = false;
+    int64_t llmMaxEvents = kDefaultLlmMaxEvents;  // events kept per stream tracker; -1 = unlimited
     bool resourceLocks = true; // task queue resource locks (doc/resource-locks.md)
     RECT rcUsagePanel = {};
     RECT rcUsageSplitter = {};
@@ -3409,6 +3413,7 @@ struct ActivityRow {
     uint64_t tokOut = 0;     // output tokens
     uint64_t tokCache = 0;   // cache read + write tokens
     uint64_t tokThink = 0;   // thinking tokens
+    uint64_t tokAll = 0;     // sub-agent row: its total, which has no split into the other four
 };
 
 struct LlmStreamDlgState {
@@ -3416,7 +3421,13 @@ struct LlmStreamDlgState {
     int procId = 0;
     ProcessSnapshot snap;
     std::vector<LlmStreamEvent> events;
-    std::vector<ActivityRow> rows;     // embedded pane: what the list shows
+    std::vector<ActivityRow> rows;     // flat steps, oldest first: the time chart reads these
+    std::vector<ActivityTreeRow> treeRows;  // what the list shows, in display order (see BuildMonitorTreeRows)
+    ActivityTreeOverrides treeOverrides;    // branches the user opened (true) or closed (false), by sub-agent id
+    int overridesProcId = 0;                // process the overrides belong to
+    std::string listSig;                    // signature of the rows the list shows; a change rebuilds it
+    bool treeMode = false;                  // sub-agents present: time-ordered tree instead of newest-first
+    bool rebuilding = false;                // true while the list is being refilled (ignore its notifications)
     std::string goalJobKey;            // cache of the task queue job used for the goal / end condition
     std::string goalJobSummary;
     std::wstring goalJobSuccess;       // "exit 0, output /re/ ..."
@@ -3863,12 +3874,16 @@ static std::wstring ActivityRowStartTime(const ActivityRow& r) {
     return buf;
 }
 
+static uint64_t ActivityRowTotalTokens(const ActivityRow& r) {
+    return r.tokAll > 0 ? r.tokAll : r.tokIn + r.tokOut + r.tokCache + r.tokThink;
+}
+
 // One step as tab-separated values for the clipboard, with the full target rather than the cell's shortened text.
 static std::wstring ActivityRowCopyText(const ActivityRow& r) {
     return ActivityRowStartTime(r) + L"\t" + ActivityRowDuration(r) + L"\t" + ActivityLabel(r.kind) + L"\t" +
            Utf8ToWide(r.description) + L"\t" + Utf8ToWide(r.target) + L"\t" + TokenCellText(r.tokIn) + L"\t" + TokenCellText(r.tokOut) + L"\t" +
            TokenCellText(r.tokCache) + L"\t" + TokenCellText(r.tokThink) + L"\t" +
-           TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink);
+           TokenCellText(ActivityRowTotalTokens(r));
 }
 
 // Session facts from the stream: session, turns, API time, tool results, denials, plan limit.
@@ -3920,6 +3935,222 @@ static std::wstring AgentStatsText(const LlmAgentState& as) {
 }
 
 // The execution monitor pane: goal, where things stand now, and the activity history.
+// Sub-agent status in the user's language, then its tool calls.
+static std::wstring SubagentRowDescription(const ActivityTreeRow& t) {
+    std::wstring status;
+    if (t.kind == "running") status = Tr(L"実行中", L"Running", L"En curso");
+    else if (t.kind == "completed") status = Tr(L"完了", L"Completed", L"Completado");
+    else if (t.kind == "failed") status = Tr(L"失敗", L"Failed", L"Fallido");
+    else if (t.kind == "killed") status = Tr(L"強制終了", L"Killed", L"Forzado");
+    else if (t.kind == "stopped") status = Tr(L"停止", L"Stopped", L"Detenido");
+    else status = Utf8ToWide(t.kind);
+    return status + L"  |  " + Tr(L"ツール ", L"Tools ", L"Herramientas ") + std::to_wstring(t.toolUses);
+}
+
+// A tree row shown through the step cells: the same fields ActivityRow has.
+static ActivityRow ToActivityRow(const ActivityTreeRow& t) {
+    ActivityRow r;
+    r.startMs = t.sinceEpochMs;
+    r.endMs = t.ongoing ? NowEpochMs() : t.endEpochMs;
+    r.ongoing = t.ongoing;
+    r.firstEvent = t.firstEvent;
+    r.lastEvent = t.lastEvent;
+    r.tokIn = t.tokIn;
+    r.tokOut = t.tokOut;
+    r.tokCache = t.tokCache;
+    r.tokThink = t.tokThink;
+    if (t.isBranch) {
+        // A sub-agent: its status goes in the description column, its total in the last token column.
+        // One that did not complete keeps the error colour.
+        r.kind = (t.kind == "running" || t.kind == "completed") ? "subagent" : "error";
+        r.target = t.target;
+        r.description = WideToUtf8(SubagentRowDescription(t));
+        r.tokAll = t.tokens;
+    } else {
+        r.kind = t.kind;
+        r.target = t.target;
+        r.description = t.description;
+    }
+    return r;
+}
+
+// Without sub-agents the tree rows mirror the flat rows, newest first.
+// With sub-agents the rows are the tree in time order (top = oldest, running work at the bottom).
+// ds->rows (flat, oldest first) is left alone: the time chart reads it.
+static void BuildMonitorTreeRows(LlmStreamDlgState* ds, bool running) {
+    if (ds->overridesProcId != ds->procId) {
+        ds->treeOverrides.clear();
+        ds->overridesProcId = ds->procId;
+    }
+    ds->treeRows.clear();
+    ds->treeMode = !ds->agentState.subagents.empty();
+    const int eventCount = static_cast<int>(ds->events.size());
+    if (!ds->treeMode) {
+        for (int ri = static_cast<int>(ds->rows.size()) - 1; ri >= 0; --ri) {
+            const auto& r = ds->rows[ri];
+            ActivityTreeRow t;
+            t.kind = r.kind;
+            t.target = r.target;
+            t.description = r.description;
+            t.sinceEpochMs = r.startMs;
+            t.endEpochMs = r.endMs;
+            t.firstEvent = r.firstEvent;
+            t.lastEvent = r.lastEvent;
+            if (r.firstEvent >= 0 && r.firstEvent < eventCount) t.firstSeq = ds->events[r.firstEvent].seq;
+            t.ongoing = r.ongoing;
+            t.tokIn = r.tokIn;
+            t.tokOut = r.tokOut;
+            t.tokCache = r.tokCache;
+            t.tokThink = r.tokThink;
+            ds->treeRows.push_back(t);
+        }
+        return;
+    }
+    ds->treeRows = BuildActivityTree(ds->events, ds->agentState.subagents, NowEpochMs(), running, ds->treeOverrides);
+    // The last activity of each agent (root = "") is the one still running, if its agent is.
+    std::map<std::string, int> lastOfOwner;
+    for (int i = 0; i < static_cast<int>(ds->treeRows.size()); ++i) {
+        auto& t = ds->treeRows[i];
+        if (t.isBranch) {
+            t.ongoing = t.kind == "running";
+            continue;
+        }
+        ActivityRow tok;
+        // Other agents' events can lie between this row's first and last event.
+        for (int k = t.firstEvent; k <= t.lastEvent && k < eventCount; ++k) {
+            if (ds->events[k].agentId == t.agentId) AddEventTokens(tok, ds->events[k]);
+        }
+        t.tokIn = tok.tokIn;
+        t.tokOut = tok.tokOut;
+        t.tokCache = tok.tokCache;
+        t.tokThink = tok.tokThink;
+        lastOfOwner[t.agentId] = i;
+    }
+    for (const auto& entry : lastOfOwner) {
+        auto& t = ds->treeRows[entry.second];
+        bool ownerRunning = running;
+        if (!entry.first.empty()) {
+            ownerRunning = false;
+            for (const auto& s : ds->agentState.subagents) {
+                if (s.id == entry.first && s.status == "running") ownerRunning = running;
+            }
+        }
+        t.ongoing = ownerRunning && t.kind != "done" && t.kind != "error";
+    }
+}
+
+// Identity of a row across rebuilds, so the selection can be put back on the same row.
+static std::string MonitorRowKey(const ActivityTreeRow& t) {
+    if (t.isBranch) return "B" + t.agentId;
+    return "A" + t.agentId + "#" + std::to_string(t.firstSeq);
+}
+
+// What the list shows. A change means the list must be refilled.
+static std::string MonitorTreeSignature(const std::vector<ActivityTreeRow>& rows) {
+    std::string s;
+    for (const auto& t : rows) {
+        s += std::to_string(t.depth);
+        s += t.isBranch ? 'B' : 'A';
+        s += t.agentId;
+        s += '|';
+        s += t.open ? '1' : '0';
+        s += t.kind;
+        s += '|';
+        s += std::to_string(t.count);
+        s += ':';
+        s += std::to_string(t.lastEvent);
+        s += ';';
+    }
+    return s;
+}
+
+// Index into treeRows of a list item (its lParam), or -1.
+static int MonitorRowAt(const LlmStreamDlgState* ds, int listItem) {
+    if (!ds->hwndList || listItem < 0) return -1;
+    LVITEMW item = {};
+    item.mask = LVIF_PARAM;
+    item.iItem = listItem;
+    if (!ListView_GetItem(ds->hwndList, &item)) return -1;
+    const int ti = static_cast<int>(item.lParam);
+    return (ti >= 0 && ti < static_cast<int>(ds->treeRows.size())) ? ti : -1;
+}
+
+// Key of the selected row, read before the tree is rebuilt (the list still refers to the old rows).
+static std::string MonitorSelectedKey(const LlmStreamDlgState* ds) {
+    if (!ds->hwndList) return std::string();
+    const int ti = MonitorRowAt(ds, ListView_GetNextItem(ds->hwndList, -1, LVNI_SELECTED));
+    return ti >= 0 ? MonitorRowKey(ds->treeRows[ti]) : std::string();
+}
+
+// Refills the list from treeRows. lParam = index into treeRows. Keeps the selection,
+// and the scroll position unless the view was at the bottom (then it follows the running row).
+static void RebuildMonitorList(LlmStreamDlgState* ds, const std::string& selKey) {
+    HWND list = ds->hwndList;
+    const int oldCount = ListView_GetItemCount(list);
+    const int oldTop = oldCount > 0 ? ListView_GetTopIndex(list) : 0;
+    const bool atTail = oldCount == 0 || oldTop + ListView_GetCountPerPage(list) >= oldCount;
+    ds->rebuilding = true;
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    const int n = static_cast<int>(ds->treeRows.size());
+    int lastOngoing = -1;
+    for (int i = 0; i < n; ++i) {
+        const auto& t = ds->treeRows[i];
+        const ActivityRow r = ToActivityRow(t);
+        if (t.ongoing) lastOngoing = i;
+        std::wstring startStr = ActivityRowStartTime(r);
+        std::wstring durStr = ActivityRowDuration(r);
+        // Sub-agent rows show a triangle (open or closed) and their type; nested rows are indented.
+        std::wstring whatStr(static_cast<size_t>(t.depth) * 3, L' ');
+        if (t.isBranch) {
+            whatStr += t.open ? L"▼ " : L"▶ ";
+            if (g_activityStyle) whatStr += ActivityIcon("subagent");
+            whatStr += t.subagentType.empty() ? ActivityText("subagent") : Utf8ToWide(t.subagentType);
+        } else {
+            whatStr += ActivityLabel(r.kind);
+            if (t.count > 1) whatStr += L" ×" + std::to_wstring(t.count);
+        }
+        std::wstring targetStr = ShortTarget(r.target, 200);
+        std::wstring descStr = ShortTarget(r.description, 200);
+        LVITEMW lvi = {};
+        lvi.mask = LVIF_TEXT | LVIF_PARAM;
+        lvi.iItem = i;
+        lvi.pszText = startStr.data();
+        lvi.lParam = i;
+        ListView_InsertItem(list, &lvi);
+        ListView_SetItemText(list, i, 1, durStr.data());
+        ListView_SetItemText(list, i, 2, whatStr.data());
+        ListView_SetItemText(list, i, 3, descStr.data());
+        ListView_SetItemText(list, i, 4, targetStr.data());
+        ListView_SetItemText(list, i, 5, TokenCellText(r.tokIn).data());
+        ListView_SetItemText(list, i, 6, TokenCellText(r.tokOut).data());
+        ListView_SetItemText(list, i, 7, TokenCellText(r.tokCache).data());
+        ListView_SetItemText(list, i, 8, TokenCellText(r.tokThink).data());
+        ListView_SetItemText(list, i, 9, TokenCellText(ActivityRowTotalTokens(r)).data());
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(list, nullptr, FALSE);
+    ds->rebuilding = false;
+    if (!selKey.empty()) {
+        for (int i = 0; i < n; ++i) {
+            if (MonitorRowKey(ds->treeRows[i]) != selKey) continue;
+            ListView_SetItemState(list, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            break;
+        }
+    }
+    if (n == 0) return;
+    if (!ds->treeMode) {
+        ListView_EnsureVisible(list, 0, FALSE);  // newest step on top, as before
+    } else if (atTail) {
+        ListView_EnsureVisible(list, lastOngoing >= 0 ? lastOngoing : n - 1, FALSE);
+    } else {
+        // The user scrolled away from the bottom: keep the view where it was. The refilled list is at
+        // the top, and EnsureVisible stops at the page's last row, so ask for that row.
+        const int bottom = oldTop + ListView_GetCountPerPage(list) - 1;
+        ListView_EnsureVisible(list, bottom < n ? bottom : n - 1, FALSE);
+    }
+}
+
 static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
     const ProcessSnapshot& s = ds->snap;
     bool running = s.state == ProcState::Running;
@@ -4059,46 +4290,24 @@ static void ReloadMonitorPane(HWND hwnd, LlmStreamDlgState* ds) {
         if (text != cur) SetWindowTextW(ds->hwndHeader, text.c_str());  // avoid flicker / scroll reset
     }
 
+    const std::string selKey = MonitorSelectedKey(ds);  // read before the rows are replaced
     ds->rows = BuildActivityRows(ds->events, running);
+    BuildMonitorTreeRows(ds, running);
     uint64_t lastSeq = ds->events.empty() ? 0 : ds->events.back().seq;
-    if (ds->hwndList && (ds->lastEventCount != ds->events.size() || ds->lastEventSeq != lastSeq)) {
+    const std::string sig = MonitorTreeSignature(ds->treeRows);
+    const bool eventsChanged = ds->lastEventCount != ds->events.size() || ds->lastEventSeq != lastSeq;
+    if (ds->hwndList && (eventsChanged || sig != ds->listSig)) {
         ds->lastEventCount = ds->events.size();
         ds->lastEventSeq = lastSeq;
-        SendMessageW(ds->hwndList, WM_SETREDRAW, FALSE, 0);
-        ListView_DeleteAllItems(ds->hwndList);
-        const int rowCount = static_cast<int>(ds->rows.size());
-        for (int d = 0; d < rowCount; ++d) {
-            // Newest step on top: display row d shows rows[rowCount - 1 - d]. lParam keeps that index.
-            const int ri = rowCount - 1 - d;
-            const auto& r = ds->rows[ri];
-            std::wstring startStr = ActivityRowStartTime(r);
-            std::wstring durStr = ActivityRowDuration(r);
-            std::wstring whatStr = ActivityLabel(r.kind);
-            std::wstring targetStr = ShortTarget(r.target, 200);
-            std::wstring descStr = ShortTarget(r.description, 200);
-            LVITEMW lvi = {};
-            lvi.mask = LVIF_TEXT | LVIF_PARAM;
-            lvi.iItem = d;
-            lvi.pszText = startStr.data();
-            lvi.lParam = ri;
-            ListView_InsertItem(ds->hwndList, &lvi);
-            ListView_SetItemText(ds->hwndList, d, 1, durStr.data());
-            ListView_SetItemText(ds->hwndList, d, 2, whatStr.data());
-            ListView_SetItemText(ds->hwndList, d, 3, descStr.data());
-            ListView_SetItemText(ds->hwndList, d, 4, targetStr.data());
-            ListView_SetItemText(ds->hwndList, d, 5, TokenCellText(r.tokIn).data());
-            ListView_SetItemText(ds->hwndList, d, 6, TokenCellText(r.tokOut).data());
-            ListView_SetItemText(ds->hwndList, d, 7, TokenCellText(r.tokCache).data());
-            ListView_SetItemText(ds->hwndList, d, 8, TokenCellText(r.tokThink).data());
-            ListView_SetItemText(ds->hwndList, d, 9, TokenCellText(r.tokIn + r.tokOut + r.tokCache + r.tokThink).data());
+        ds->listSig = sig;
+        RebuildMonitorList(ds, selKey);
+    } else if (ds->hwndList) {
+        // Only the running steps' durations change between events. Their rows are updated in place.
+        for (int i = 0; i < static_cast<int>(ds->treeRows.size()); ++i) {
+            if (!ds->treeRows[i].ongoing) continue;
+            std::wstring durStr = ActivityRowDuration(ToActivityRow(ds->treeRows[i]));
+            ListView_SetItemText(ds->hwndList, i, 1, durStr.data());
         }
-        SendMessageW(ds->hwndList, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(ds->hwndList, nullptr, FALSE);
-        if (!ds->rows.empty()) ListView_EnsureVisible(ds->hwndList, 0, FALSE);
-    } else if (ds->hwndList && !ds->rows.empty() && ds->rows.back().ongoing) {
-        // Only the running step's duration changes between events. It is the top row.
-        std::wstring durStr = ActivityRowDuration(ds->rows.back());
-        ListView_SetItemText(ds->hwndList, 0, 1, durStr.data());
     }
     if (ds->rcUsageGraph.right > ds->rcUsageGraph.left) InvalidateRect(hwnd, &ds->rcUsageGraph, FALSE);
     if (ds->rcKindChart.right > ds->rcKindChart.left) InvalidateRect(hwnd, &ds->rcKindChart, FALSE);
@@ -4281,7 +4490,7 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 L"t",
                 L"a"
             };
-            const int monWidths[] = {60, 60, 150, 150, 170, 44, 44, 44, 44, 52};
+            const int monWidths[] = {60, 60, 210, 150, 170, 44, 44, 44, 44, 52};
             int colCount = ds->embedded ? 10 : 7;
             for (int i = 0; i < colCount; ++i) {
                 if (ds->embedded) {
@@ -4387,9 +4596,20 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     auto* pnmlv = reinterpret_cast<NMLISTVIEW*>(lParam);
                     int evIdx = pnmlv->iItem;
                     if (ds->embedded) {
-                        // The activity list is newest-first; lParam is the row's index in ds->rows.
+                        // lParam is the row's index in ds->treeRows. A sub-agent row has no event of its own.
                         int rowIdx = static_cast<int>(pnmlv->lParam);
-                        evIdx = (rowIdx >= 0 && rowIdx < static_cast<int>(ds->rows.size())) ? ds->rows[rowIdx].firstEvent : -1;
+                        bool valid = !ds->rebuilding && rowIdx >= 0 && rowIdx < static_cast<int>(ds->treeRows.size());
+                        evIdx = (valid && !ds->treeRows[rowIdx].isBranch) ? ds->treeRows[rowIdx].firstEvent : -1;
+                        if (valid && ds->treeRows[rowIdx].isBranch && (pnmlv->uNewState & LVIS_SELECTED)) {
+                            const auto& t = ds->treeRows[rowIdx];
+                            std::wstringstream sub;
+                            sub << L"=== Sub-agent ===\r\n"
+                                << L"Description : " << Utf8ToWide(t.target) << L"\r\n"
+                                << L"Status      : " << Utf8ToWide(t.kind) << L"\r\n"
+                                << L"Tokens      : " << t.tokens << L"\r\n"
+                                << L"Tool calls  : " << t.toolUses << L"\r\n";
+                            SetWindowTextW(ds->hwndEditPreview, sub.str().c_str());
+                        }
                     }
                     if ((pnmlv->uNewState & LVIS_SELECTED) && evIdx >= 0 &&
                         evIdx < static_cast<int>(ds->events.size())) {
@@ -4421,17 +4641,36 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                << Utf8ToWide(ev.rawJson) << L"\r\n";
                         SetWindowTextW(ds->hwndEditPreview, detail.str().c_str());
                     }
+                } else if (pnmh->code == NM_CLICK && ds->embedded) {
+                    // Click on the triangle column of a sub-agent row: open or close it.
+                    auto* act = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+                    if (act->iItem >= 0 && act->iSubItem == 2) {
+                        const int ti = MonitorRowAt(ds, act->iItem);
+                        if (ti >= 0 && ds->treeRows[ti].isBranch) {
+                            ds->treeOverrides[ds->treeRows[ti].agentId] = !ds->treeRows[ti].open;
+                            ReloadStreamDialogData(hwnd, ds);
+                        }
+                    }
+                    return 0;
+                } else if (pnmh->code == LVN_KEYDOWN && ds->embedded) {
+                    // Left / right on a sub-agent row: close / open it.
+                    auto* kd = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+                    if (kd->wVKey == VK_LEFT || kd->wVKey == VK_RIGHT) {
+                        const int ti = MonitorRowAt(ds, ListView_GetNextItem(ds->hwndList, -1, LVNI_SELECTED));
+                        const bool wantOpen = kd->wVKey == VK_RIGHT;
+                        if (ti >= 0 && ds->treeRows[ti].isBranch && ds->treeRows[ti].open != wantOpen) {
+                            ds->treeOverrides[ds->treeRows[ti].agentId] = wantOpen;
+                            ReloadStreamDialogData(hwnd, ds);
+                        }
+                    }
+                    return 0;
                 } else if (pnmh->code == NM_RCLICK && ds->embedded) {
                     // Right-click on a step: copy the whole row, or only its full target.
                     auto* act = reinterpret_cast<NMITEMACTIVATE*>(lParam);
                     if (act->iItem < 0) return 0;
-                    LVITEMW item = {};
-                    item.mask = LVIF_PARAM;
-                    item.iItem = act->iItem;
-                    ListView_GetItem(ds->hwndList, &item);
-                    int rowIdx = static_cast<int>(item.lParam);
-                    if (rowIdx < 0 || rowIdx >= static_cast<int>(ds->rows.size())) return 0;
-                    const auto& r = ds->rows[rowIdx];
+                    const int rowIdx = MonitorRowAt(ds, act->iItem);
+                    if (rowIdx < 0) return 0;
+                    const ActivityRow r = ToActivityRow(ds->treeRows[rowIdx]);
                     POINT pt = {};
                     GetCursorPos(&pt);
                     HMENU menu = CreatePopupMenu();
@@ -4446,8 +4685,8 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     // Hover: the full text of the step, not the shortened cell.
                     auto* tip = reinterpret_cast<NMLVGETINFOTIPW*>(lParam);
                     int rowIdx = static_cast<int>(tip->lParam);
-                    if (rowIdx >= 0 && rowIdx < static_cast<int>(ds->rows.size()) && tip->pszText && tip->cchTextMax > 0) {
-                        const auto& r = ds->rows[rowIdx];
+                    if (rowIdx >= 0 && rowIdx < static_cast<int>(ds->treeRows.size()) && tip->pszText && tip->cchTextMax > 0) {
+                        const ActivityRow r = ToActivityRow(ds->treeRows[rowIdx]);
                         std::wstring text = ActivityLabel(r.kind);
                         if (!r.target.empty()) text += L"\r\n" + Utf8ToWide(r.target);
                         wcsncpy_s(tip->pszText, tip->cchTextMax, text.c_str(), _TRUNCATE);
@@ -4465,9 +4704,9 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
                         lvcd->clrText = g_theme.listText;
                         lvcd->clrTextBk = selected ? g_theme.rowSelected : g_theme.panel;
-                        int idx = static_cast<int>(lvcd->nmcd.lItemlParam);  // rows index, see ReloadMonitorPane
-                        if (idx >= 0 && idx < static_cast<int>(ds->rows.size())) {
-                            const auto& r = ds->rows[idx];
+                        int idx = static_cast<int>(lvcd->nmcd.lItemlParam);  // treeRows index, see RebuildMonitorList
+                        if (idx >= 0 && idx < static_cast<int>(ds->treeRows.size())) {
+                            const ActivityRow r = ToActivityRow(ds->treeRows[idx]);
                             if (g_activityStyle) {
                                 bool longStep = r.startMs > 0 && r.endMs >= r.startMs &&
                                                 (r.endMs - r.startMs) >= kLongStepMs;
@@ -4487,12 +4726,12 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             int w = LOWORD(lParam);
             int h = HIWORD(lParam);
             if (ds->embedded) {
-                // Left half: goal text on top, usage graph below. Right half: the subtask list, full height.
+                // Left 2/5: goal text on top, usage graph below. Right 3/5: the subtask list, full height.
                 int pad = 4;
                 // Goal / Now / Ends / process summary need several wrapped lines.
                 int topH = (std::clamp)(h * 52 / 100, 110, 150);
                 int availW = (std::max)(300, w - pad * 2);
-                int leftW = availW / 2 - 4;
+                int leftW = availW * 2 / 5 - 4;
                 int contentX = pad + 28;
                 int textW = (std::max)(160, leftW - 28);
                 if (ds->hwndAgentIcon) MoveWindow(ds->hwndAgentIcon, pad, pad, 24, 24, TRUE);
@@ -4535,7 +4774,9 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (ds) {
                 int selIdx = ds->hwndList ? ListView_GetNextItem(ds->hwndList, -1, LVNI_SELECTED) : -1;
                 if (ds->embedded) {
-                    selIdx = (selIdx >= 0 && selIdx < static_cast<int>(ds->rows.size())) ? ds->rows[selIdx].firstEvent : -1;
+                    // The selected list row (tree index) -> its first event; a sub-agent row selects none.
+                    const int ti = MonitorRowAt(ds, selIdx);
+                    selIdx = (ti >= 0 && !ds->treeRows[ti].isBranch) ? ds->treeRows[ti].firstEvent : -1;
                 }
                 const LlmStreamEvent* sel = (selIdx >= 0 && selIdx < static_cast<int>(ds->events.size()))
                     ? &ds->events[selIdx] : nullptr;
@@ -4881,6 +5122,8 @@ static void LoadShellConfig(DashboardState* st) {
     st->usageGraphMode = graphMode;
     st->restoreUsageGraph = JsonGetBool(content, "restore_usage_graph", false);
     SetUsageHistoryPersistence(st->restoreUsageGraph);
+    st->llmMaxEvents = ClampLlmMaxEvents(JsonGetInt(content, "llm_max_events", kDefaultLlmMaxEvents));
+    SetLlmMaxEvents(st->llmMaxEvents);
     st->resourceLocks = JsonGetBool(content, "resource_locks", true);
     if (st->tqm) st->tqm->SetResourceLocksEnabled(st->resourceLocks);
     ApplyTheme();
@@ -4914,6 +5157,7 @@ static void SaveShellConfig(const DashboardState* st) {
         << "  \"kpi_saturation\": " << static_cast<int>(g_kpiSaturation * 100 + 0.5f) << ",\n"
         << "  \"usage_graph_mode\": " << st->usageGraphMode << ",\n"
         << "  \"restore_usage_graph\": " << (st->restoreUsageGraph ? "true" : "false") << ",\n"
+        << "  \"llm_max_events\": " << st->llmMaxEvents << ",\n"
         << "  \"resource_locks\": " << (st->resourceLocks ? "true" : "false") << "\n"
         << "}\n";
 
@@ -5479,7 +5723,23 @@ struct SettingsDlgState {
      HWND chkRestoreUsageGraph = nullptr;
       HWND chkResourceLocks = nullptr;
       HWND chkActivityStyle = nullptr;
+      HWND lblEventRetention = nullptr;
+      HWND editEventRetention = nullptr;
 };
+
+// Reads the event retention box, applies it to every stream tracker and saves it. Out-of-range
+// values are clamped (see ClampLlmMaxEvents), and the box shows the value that was applied.
+static void CommitEventRetention(SettingsDlgState* ds) {
+    if (!ds || !ds->dash || !ds->editEventRetention) return;
+    wchar_t text[64] = {};
+    GetWindowTextW(ds->editEventRetention, text, 64);
+    const int64_t applied = ClampLlmMaxEvents(_wtoi64(text));
+    SetLlmMaxEvents(applied);
+    ds->dash->llmMaxEvents = applied;
+    std::wstring shown = std::to_wstring(applied);
+    SetWindowTextW(ds->editEventRetention, shown.c_str());
+    SaveShellConfig(ds->dash);
+}
 
 static void CommitSoundSettings(SettingsDlgState* ds) {
     if (!ds || !ds->dash) return;
@@ -5518,6 +5778,10 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->chkResourceLocks, Tr(L"タスクキュー: リソースが競合するジョブを同時に実行しない", L"Task queue: never run jobs with conflicting resources together", L"Cola de tareas: no ejecutar a la vez trabajos con recursos en conflicto"));
     SetWindowTextW(ds->chkActivityStyle, Tr(L"実行状態監視ペイン: 行を色分けし、アイコンを表示", L"Execution monitor pane: colour rows and show icons", L"Panel de ejecución: colorear filas y mostrar iconos"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
+    SetWindowTextW(ds->lblEventRetention, Tr(
+        L"イベント保持件数 (100〜100000, -1 = 無制限: メモリを使い切る恐れあり):",
+        L"Events kept per process (100-100000, -1 = unlimited: may use up memory):",
+        L"Eventos guardados por proceso (100-100000, -1 = sin límite: puede agotar la memoria):"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
     SetWindowTextW(ds->btnBrowseSound, Tr(L"参照...", L"Browse...", L"Examinar..."));
@@ -5659,11 +5923,18 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SendMessageW(ds->chkActivityStyle, BM_SETCHECK,
                 g_activityStyle ? BST_CHECKED : BST_UNCHECKED, 0);
 
+            ds->lblEventRetention = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 530, 530, 20, hwnd, nullptr, hInst, nullptr);
+            ds->editEventRetention = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                560, 527, 110, 24, hwnd, (HMENU)IDC_SET_LLM_MAX_EVENTS, hInst, nullptr);
+            SetWindowTextW(ds->editEventRetention, std::to_wstring(ds->dash->llmMaxEvents).c_str());
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
                              ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
-                             ds->chkResourceLocks, ds->chkActivityStyle };
+                             ds->chkResourceLocks, ds->chkActivityStyle, ds->lblEventRetention, ds->editEventRetention };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
@@ -5674,6 +5945,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             int id = LOWORD(wParam);
             if (id == IDCANCEL || id == IDOK) {
                 if (ds) CommitSoundSettings(ds);
+                if (ds) CommitEventRetention(ds);
                 DestroyWindow(hwnd);
                 return 0;
             }
@@ -5690,6 +5962,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     (SendMessageW(ds->chkUsageGraph, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
                 SaveShellConfig(ds->dash);
                 InvalidateRect(ds->dash->hwndUsagePanel, nullptr, FALSE);
+                return 0;
+            }
+            if (id == IDC_SET_LLM_MAX_EVENTS) {
+                if (HIWORD(wParam) == EN_KILLFOCUS) CommitEventRetention(ds);
                 return 0;
             }
             if (id == IDC_SET_RESTORE_USAGE_GRAPH) {
@@ -5917,7 +6193,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 581;
+    int dlgH = 620;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 

@@ -31,6 +31,7 @@ A short Pros/Cons analysis for choosing how to run work: **LLM-native sub-agents
 - Runs real CLI agents/tools (`claude`, `opencode`, `codex`, build scripts) as managed OS processes with Win32 Job Object tree control.
 - Live dashboard: up to 16 terminals, idle detection, per-job timeouts, retries, dependencies, and persisted task queues.
 - `.done` markers and per-process logs enable simple, robust completion detection by LLMs/automation.
+- Claude Code sub-agents started by a ProcessCommander run are visible: the monitor pane shows each one as a tree branch with its steps, tokens and tool count, and `pcder agent status` lists them.
 - Lower token cost for heavy work; the LLM acts as supervisor only.
 - MCP + CLI integration and project-local data directories.
 - State recovery across restarts.
@@ -41,6 +42,7 @@ A short Pros/Cons analysis for choosing how to run work: **LLM-native sub-agents
 - Task specs must be explicit (command, timeout, success checks).
 - Adds operational complexity and resource overhead.
 - Interactive debugging requires attaching via the dashboard.
+- Sub-agent detail is only what the stream reports (steps, status, tokens, tool count); it does not show a sub-agent's reasoning.
 
 ### Recommendation
 
