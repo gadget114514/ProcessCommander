@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.3.5-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64-setup.exe)
-  (portable: [ProcessCommander-v2.3.5-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.3.6-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.6/ProcessCommander-v2.3.6-win64-setup.exe)
+  (portable: [ProcessCommander-v2.3.6-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.6/ProcessCommander-v2.3.6-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,9 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.3.6
+- **Security**: fixed a command injection in the dashboard auto-start. A path or data directory containing `‘` or `’` could run PowerShell commands as the current user.
 
 ### v2.3.5
 - **Sub-agents**: Claude sub-agents are tracked separately and shown as a tree in the monitor pane. `pcder worker status` and the IPC state list them.

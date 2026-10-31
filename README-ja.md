@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.3.5-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.3.5-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.3.6-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.6/ProcessCommander-v2.3.6-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.3.6-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.6/ProcessCommander-v2.3.6-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,9 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.3.6
+- **セキュリティ**: ダッシュボード自動起動のコマンドインジェクションを修正しました。`‘` や `’` を含むパスやデータディレクトリによって、実行中のユーザーの権限で PowerShell コマンドが実行されるおそれがありました。
 
 ### v2.3.5
 - **サブエージェント**: Claude のサブエージェントを個別に追跡し、タスク監視ペインにツリーで表示します。`pcder worker status` と IPC の状態にも一覧が出ます。
