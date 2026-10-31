@@ -156,7 +156,7 @@ int RunMcpServer() {
                 << "\"idle_timeout_sec\":{\"type\":\"integer\",\"description\":\"Auto-kill if no output for N seconds (0 = unlimited)\"},"
                 << "\"estimate_end\":{\"type\":\"string\",\"description\":\"Optional estimated end time shown in gray in the End Time column while running (e.g. '18:30' or '2026-10-22 18:30:00'). If omitted, timeout_sec makes the column show remaining seconds.\"},"
                 << "\"agent_type\":{\"type\":\"string\",\"description\":\"LLM agent type: 'claude', 'agy', 'opencode', 'codex', 'aider', 'ollama', or 'auto' (default: auto-detected from command/name). Enables JSONL stream parsing (<log>.stream.jsonl) and model capture.\",\"enum\":[\"auto\",\"claude\",\"agy\",\"antigravity\",\"opencode\",\"codex\",\"aider\",\"ollama\"]},"
-                << "\"json_stream\":{\"type\":\"boolean\",\"description\":\"Enable JSONL stream parser and event log written to <log>.stream.jsonl (automatically enabled when agent_type is detected or set). View via GUI 'LLM JSON Stream Events' or pcder agent stream <id>.\"},"
+                << "\"json_stream\":{\"type\":\"boolean\",\"description\":\"Enable JSONL stream parser and event log written to <log>.stream.jsonl (automatically enabled when agent_type is detected or set). View via GUI 'LLM JSON Stream Events' or pcder worker stream <id>.\"},"
                 << "\"supervisor_notes\":{\"type\":\"string\",\"description\":\"Notes or context provided by the supervisor LLM for this worker agent\"},"
                 << "\"supervisor_goal\":{\"type\":\"string\",\"description\":\"High-level goal or instruction provided by the supervisor LLM for this worker agent\"},"
                 << "\"wait\":{\"type\":\"boolean\",\"description\":\"Wait until the process exits before returning (blocking completion notification)\"},"
@@ -187,7 +187,7 @@ int RunMcpServer() {
                 << "},\"required\":[\"id\"]}"
                 << "},"
                 << "{"
-                << "\"name\":\"get_agent_stream\","
+                << "\"name\":\"get_worker_stream\","
                 << "\"description\":\"Read structured JSON streaming events (tools called, arguments, reasoning/thoughts, assistant responses, status) emitted by Claude, agy, or OpenCode worker agents. Events are automatically captured and saved to logs/proc_<id>_<name>_stream.jsonl.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID of the agent\"},"
@@ -198,14 +198,14 @@ int RunMcpServer() {
                 << "},\"required\":[\"id\"]}"
                 << "},"
                 << "{"
-                << "\"name\":\"get_agent_state\","
+                << "\"name\":\"get_worker_state\","
                 << "\"description\":\"Get current live state of an LLM agent process, including active tool, current tool action, thinking status, last thoughts, assistant message, token usage, supervisor notes and goal.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID of the agent\"}"
                 << "},\"required\":[\"id\"]}"
                 << "},"
                 << "{"
-                << "\"name\":\"update_agent_info\","
+                << "\"name\":\"update_worker_info\","
                 << "\"description\":\"Update supervisor instructions, notes, or goals for an ongoing or queued LLM worker agent process.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"integer\",\"description\":\"Managed process ID of the agent\"},"
@@ -446,7 +446,7 @@ int RunMcpServer() {
                        << ",\"id\":" << JsonGetInt(argsJson, "id", 0)
                        << ",\"wait_ms\":" << JsonGetInt(argsJson, "wait_ms", 0) << "}";
             }
-            else if (toolName == "get_agent_stream") {
+            else if (toolName == "get_worker_stream" || toolName == "get_agent_stream") {
                 int64_t id = JsonGetInt(argsJson, "id", 0);
                 int64_t tail = JsonGetInt(argsJson, "tail", 50);
                 std::string typeFilter = JsonGetString(argsJson, "type", "");
@@ -459,11 +459,11 @@ int RunMcpServer() {
                        << ",\"since_seq\":" << sinceSeq
                        << ",\"format\":\"" << JsonEscape(format) << "\"}";
             }
-            else if (toolName == "get_agent_state") {
+            else if (toolName == "get_worker_state" || toolName == "get_agent_state") {
                 int64_t id = JsonGetInt(argsJson, "id", 0);
                 ipcReq << "{\"action\":\"get_agent_state\",\"id\":" << id << "}";
             }
-            else if (toolName == "update_agent_info") {
+            else if (toolName == "update_worker_info" || toolName == "update_agent_info") {
                 int64_t id = JsonGetInt(argsJson, "id", 0);
                 std::string notes = JsonGetString(argsJson, "supervisor_notes", "");
                 if (notes.empty()) notes = JsonGetString(argsJson, "notes", "");

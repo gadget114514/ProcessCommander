@@ -68,7 +68,7 @@
 ## 7. Settings Dialog, Theme & Localization
 - Click **`[Settings]`** to open the settings dialog.
 - **Language**: switch between **Japanese / English / Español** buttons; the dashboard, dialogs, menus, and status bar update immediately.
-- **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, or **High Contrast**. Buttons, list headers (both process list and job queue list), scrollbars, and tab labels follow the active theme colors.
+- **Theme (colors)**: **Windows** (default; follows the Windows light/dark mode and personalization accent color), **Dark**, **Light**, **High Contrast**, **Pastel**, the pastel-background **Pastel Blue / Orange / Pink / Red / Green**, and the Midnight, Ember, Berry, Crimson, Forest and Mist colour themes. Buttons, list headers (both process list and job queue list), scrollbars, and tab labels follow the active theme colors.
 - **`[Shell Config...]`**, **`[Reset Process IDs]`**, **`[Clear Ended]`**, and the **Hide Ended Processes** and **Execution monitor pane: colour rows and show icons** checkboxes are available here (keeping the toolbar clean and focused).
 - Settings, language, theme, list/terminal visibility, and layout are **auto-saved** to `logs/config.json` and restored on the next start.
 

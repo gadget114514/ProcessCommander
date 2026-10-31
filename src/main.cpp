@@ -113,7 +113,7 @@ MCP SERVER SETUP:
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
     Worker (5):
-      run_worker, wait_worker, get_agent_stream, get_agent_state, update_agent_info
+      run_worker, wait_worker, get_worker_stream, get_worker_state, update_worker_info
     Task queue (13):
       taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
@@ -121,7 +121,7 @@ MCP SERVER SETUP:
       taskqueue_graph
 
   HOW TO USE (decision guide):
-    - One command, e.g. a build script, CLI agent or shell -> start_process
+    - One command, e.g. a build script, CLI worker or shell -> start_process
     - One task for a worker LLM, final result only         -> run_worker
       Harnesses do not see this as a native sub-agent; a thin custom agent that
       calls run_worker makes it one, at the cost of the wrapper's tokens.

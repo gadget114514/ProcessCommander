@@ -210,7 +210,7 @@ DATA DIRECTORY (per invocation):
 PCDER CONCEPTS:
   Process IDs : Numeric IDs assigned by the dashboard (#1, #2, ...). Use them with
                 list --id, logs --id, send --id, wait --id and kill --id.
-  Modes       : pipe    = anonymous pipes (default; non-interactive CLI agents)
+  Modes       : pipe    = anonymous pipes (default; non-interactive CLI workers)
                 pty     = Win32 ConPTY (interactive TUI: opencode, claude)
                 console = separate visible console window
   stdin       : pipe mode keeps stdin writable (pcder send) unless --close-stdin;
@@ -272,8 +272,8 @@ COMMANDS:
                                  If omitted, --timeout shows "remaining N seconds".
          --estimate-end <time>    Alias for --eta
          --agent-type <claude|agy|antigravity|opencode|codex|aider|ollama>
-                                  Hint agent type for JSON stream parsing (auto-detected if omitted).
-         --json-stream            Enable JSONL stream parsing and write <log>.stream.jsonl for LLM agent output.
+                                  Hint worker type for JSON stream parsing (auto-detected if omitted).
+         --json-stream            Enable JSONL stream parsing and write <log>.stream.jsonl for LLM worker output.
          --wait                   Block until process exits (unlimited unless --wait-ms is set)
         --wait-ms <ms>           Max wait when --wait is set; initial output wait otherwise
                                  (default: 500; 0 = unlimited with --wait)
@@ -293,14 +293,14 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
-  agent status <id>
-      Show current agent status, active tool, thoughts, message, and supervisor context.
+  worker status <id>
+      Show current worker status, active tool, thoughts, message, and supervisor context.
 
-  agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
-      View captured JSON streaming events for claude, agy, or opencode agents.
+  worker stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
+      View captured JSON streaming events for claude, agy, or opencode workers.
 
-  agent info <id> [--notes "<notes>"] [--goal "<goal>"]
-      Update supervisor notes or goal for an ongoing agent.
+  worker info <id> [--notes "<notes>"] [--goal "<goal>"]
+      Update supervisor notes or goal for an ongoing worker.
 
   mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
@@ -412,8 +412,8 @@ SETUP FOR LLM AGENTS:
 "    MCP tools (24):\n"
 "      Process:    start_process, list_processes, get_process_output,\n"
 "                  send_process_input, wait_process, kill_process\n"
-"      Worker:     run_worker, wait_worker, get_agent_stream, get_agent_state,\n"
-"                  update_agent_info\n"
+"      Worker:     run_worker, wait_worker, get_worker_stream, get_worker_state,\n"
+"                  update_worker_info\n"
 "      Task queue: taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,\n"
 "                  taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,\n"
 "                  taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,\n"
@@ -527,8 +527,8 @@ void PrintCliUsageJson() {
         {"name": "--timeout", "value": "<sec>", "description": "Maximum runtime in seconds (0 = unlimited)."},
         {"name": "--idle-timeout", "value": "<sec>", "description": "Kill if no output for N seconds (0 = unlimited)."},
         {"name": "--eta", "aliases": ["--estimate-end"], "value": "<time>", "description": "Estimated end time shown in gray in the End Time column while the process is running (e.g. '18:30' or '2026-10-22 18:30:00'). If omitted, --timeout causes the column to show remaining seconds."},
-        {"name": "--agent-type", "value": "<claude|agy|antigravity|opencode|codex|aider|ollama>", "description": "Hint agent type for JSON stream parsing (auto-detected if omitted)."},
-        {"name": "--json-stream", "description": "Enable JSONL stream parsing and write <log>.stream.jsonl for LLM agent output."},
+        {"name": "--agent-type", "value": "<claude|agy|antigravity|opencode|codex|aider|ollama>", "description": "Hint worker type for JSON stream parsing (auto-detected if omitted)."},
+        {"name": "--json-stream", "description": "Enable JSONL stream parsing and write <log>.stream.jsonl for LLM worker output."},
         {"name": "--wait", "description": "Block until the process exits (unlimited unless --wait-ms is set)."},
         {"name": "--wait-ms", "value": "<ms>", "description": "With --wait: maximum wait (0 = unlimited). Without --wait: initial output wait. Default: 500."}
       ]
@@ -605,13 +605,13 @@ void PrintCliUsageJson() {
       "options": []
     },
     {
-      "name": "agent",
-      "description": "Inspect and supervise LLM agents (Claude, agy, opencode, codex, aider, ollama) running under ProcessCommander. JSON stream events are parsed into <log>.stream.jsonl and visible in the GUI (LLM JSON Stream dialog). Use pcder/ProcessCommander to supervise and watch streams.",
-      "usage": "pcder agent <status|stream|info> <id> [options]",
+      "name": "worker",
+      "description": "Inspect and supervise LLM workers (Claude, agy, opencode, codex, aider, ollama) running under ProcessCommander. JSON stream events are parsed into <log>.stream.jsonl and visible in the GUI (LLM JSON Stream dialog). Use pcder/ProcessCommander to supervise and watch streams.",
+      "usage": "pcder worker <status|stream|info> <id> [options]",
       "subcommands": [
-        {"name": "status", "usage": "pcder agent status <id>", "description": "Display current agent status, model, active tool, thoughts, message, and supervisor context."},
-        {"name": "stream", "usage": "pcder agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]", "description": "View captured JSON streaming events from <log>.stream.jsonl (parsed tool_call/tool_result/thinking/message)."},
-        {"name": "info", "usage": "pcder agent info <id> [--notes <notes>] [--goal <goal>]", "description": "Update supervisor instructions, notes, or goals."}
+        {"name": "status", "usage": "pcder worker status <id>", "description": "Display current worker status, model, active tool, thoughts, message, and supervisor context."},
+        {"name": "stream", "usage": "pcder worker stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]", "description": "View captured JSON streaming events from <log>.stream.jsonl (parsed tool_call/tool_result/thinking/message)."},
+        {"name": "info", "usage": "pcder worker info <id> [--notes <notes>] [--goal <goal>]", "description": "Update supervisor instructions, notes, or goals."}
       ],
       "options": [
         {"name": "--tail", "value": "<n>", "description": "For stream: number of recent events."},
@@ -678,17 +678,17 @@ void PrintCliUsageJson() {
           }
         }
       },
-      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "run_worker", "wait_worker", "get_agent_stream", "get_agent_state", "update_agent_info", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph"]
+      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "run_worker", "wait_worker", "get_worker_stream", "get_worker_state", "update_worker_info", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph"]
     }
   },
   "agent": {
-    "purpose": "Reliable execution of CLI agents and build jobs: one OS command per job with timeouts, tree kill, logs, completion markers, and a persistent dependency-aware task queue.",
+    "purpose": "Reliable execution of CLI workers and build jobs: one OS command per job with timeouts, tree kill, logs, completion markers, and a persistent dependency-aware task queue.",
     "llm_stream_setup": {
-      "description": "To see live agent state/stream in the GUI and parsed events, enable JSONL streaming for LLM CLIs.",
+      "description": "To see live worker state/stream in the GUI and parsed events, enable JSONL streaming for LLM CLIs.",
       "pcder_start_example": "pcder start --name opencode --cmd \"opencode run ...\" --json-stream --agent-type opencode --wait --wait-ms 0 --json",
       "notes": [
-        "ProcessCommander auto-detects common agents (claude, agy/antigravity, opencode, codex, aider, ollama) and enables JSON stream parsing if detected.",
-        "Parsed events are written to <logfile>.stream.jsonl. Use GUI context menu 'LLM JSON Stream Events...' or 'pcder agent stream <id>'.",
+        "ProcessCommander auto-detects common worker CLIs (claude, agy/antigravity, opencode, codex, aider, ollama) and enables JSON stream parsing if detected.",
+        "Parsed events are written to <logfile>.stream.jsonl. Use GUI context menu 'LLM JSON Stream Events...' or 'pcder worker stream <id>'.",
         "Model is captured from stream fields (model/modelId/llm.model/metadata.model) when present; hover the agent icon in the stream dialog to see it.",
         "Format reference: doc/LLM-jsonstream-format.md"
       ]
@@ -1164,7 +1164,7 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
         }
         std::string stateObj = ExtractJsonObject(respJson, "state");
         if (!stateObj.empty()) {
-            std::cout << "Agent State: [" << JsonGetString(stateObj, "agent_type", "") << "] "
+            std::cout << "Worker State: [" << JsonGetString(stateObj, "agent_type", "") << "] "
                       << JsonGetString(stateObj, "status", "") << "\n";
             std::string curTool = JsonGetString(stateObj, "current_tool", "");
             if (!curTool.empty()) {
@@ -1190,7 +1190,7 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
     }
 
     if (action == "get_agent_state") {
-        std::cout << "Agent #" << JsonGetInt(respJson, "id", 0)
+        std::cout << "Worker #" << JsonGetInt(respJson, "id", 0)
                   << " [" << JsonGetString(respJson, "agent_type", "generic") << "] "
                   << "Status: " << JsonGetString(respJson, "status", "idle") << "\n";
         std::string curTool = JsonGetString(respJson, "current_tool", "");
@@ -1223,7 +1223,7 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
     }
 
     if (action == "update_agent_info") {
-        std::cout << "Updated supervisor info for agent #" << JsonGetInt(respJson, "id", 0) << ".\n";
+        std::cout << "Updated supervisor info for worker #" << JsonGetInt(respJson, "id", 0) << ".\n";
         return 0;
     }
 
@@ -1658,7 +1658,7 @@ int RunCli(const std::vector<std::string>& rawArgs) {
                             " (add, list, get, retry, cancel, pause, resume, graph, wait, purge)");
         }
     }
-    else if (subcmd == "agent") {
+    else if (subcmd == "worker" || subcmd == "agent") {  // agent: name used up to v2.3.1
         std::string op = (args.size() >= 3 && args[2][0] != '-') ? args[2] : "status";
         size_t startIdx = (args.size() >= 3 && args[2][0] != '-') ? 3 : 2;
         int id = 0;
@@ -1694,9 +1694,9 @@ int RunCli(const std::vector<std::string>& rawArgs) {
 
         if (id <= 0) {
             if (jsonOutput) {
-                std::cout << "{\"ok\":false,\"error\":\"Process ID required for agent command (e.g. pcder agent status 1).\"}\n";
+                std::cout << "{\"ok\":false,\"error\":\"Process ID required for worker command (e.g. pcder worker status 1).\"}\n";
             } else {
-                std::cerr << "Error: Process ID required for agent command (e.g. pcder agent status 1).\n";
+                std::cerr << "Error: Process ID required for worker command (e.g. pcder worker status 1).\n";
             }
             return 1;
         }
@@ -1719,9 +1719,9 @@ int RunCli(const std::vector<std::string>& rawArgs) {
             subcmd = "update_agent_info";
         } else {
             if (jsonOutput) {
-                std::cout << "{\"ok\":false,\"error\":\"Unknown agent command: " << JsonEscape(op) << " (status, stream, info)\"}\n";
+                std::cout << "{\"ok\":false,\"error\":\"Unknown worker command: " << JsonEscape(op) << " (status, stream, info)\"}\n";
             } else {
-                std::cerr << "Error: Unknown agent command: " << op << " (status, stream, info)\n";
+                std::cerr << "Error: Unknown worker command: " << op << " (status, stream, info)\n";
             }
             return 1;
         }

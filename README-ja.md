@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.3.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.3.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.3.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.2/ProcessCommander-v2.3.2-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.3.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.2/ProcessCommander-v2.3.2-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -83,6 +83,25 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 ---
 
 （以下の help 本文は英語です）
+
+## リリースノート
+
+### v2.3.2
+- **テーマ**: 背景が淡色のパステルテーマを5種類追加しました（パステル青、橙、桃、赤、緑）。
+- **KPI カード**: 色の帯の高さを2倍にしました。
+- **CLI**: `pcder agent` を `pcder worker` に改名しました。旧名も使えます。
+- **MCP**: `get_agent_stream` / `get_agent_state` / `update_agent_info` を `get_worker_stream` / `get_worker_state` / `update_worker_info` に改名しました。旧名も使えますが、ツール一覧には表示されません。
+
+### v2.3.1
+- **MCP**: `run_agent` / `wait_agent` を `run_worker` / `wait_worker` に改名しました。ハーネス標準のサブエージェント機能との誤解を避けるためです。旧名も使えますが、ツール一覧には表示されません。
+
+### v2.3.0
+- **MCP**: 1つのタスクをワーカー LLM に任せ、最終結果だけを返すツールを追加しました。
+- **モニターペイン**: ツール呼び出しの説明を専用の列に表示し、サブタスクリストの幅を3分の2に広げました。
+- **タスク一覧**: ホバーで「リソース」の全文を表示でき、セルをコピーできます。
+- **ww-run**: stdout が閉じた時点ではなく、エンジンの終了時に完了します。
+
+それ以前のバージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)
 
 ## 付録: `ProcessCommander.exe --help` の出力
 
@@ -184,7 +203,7 @@ MCP SERVER SETUP:
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
     Worker (5):
-      run_worker, wait_worker, get_agent_stream, get_agent_state, update_agent_info
+      run_worker, wait_worker, get_worker_stream, get_worker_state, update_worker_info
     Task queue (13):
       taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
@@ -192,7 +211,7 @@ MCP SERVER SETUP:
       taskqueue_graph
 
   HOW TO USE (decision guide):
-    - One command, e.g. a build script, CLI agent or shell -> start_process
+    - One command, e.g. a build script, CLI worker or shell -> start_process
     - One task for a worker LLM, final result only         -> run_worker
       Harnesses do not see this as a native sub-agent; a thin custom agent that
       calls run_worker makes it one, at the cost of the wrapper's tokens.
@@ -263,7 +282,7 @@ DATA DIRECTORY (per invocation):
 PCDER CONCEPTS:
   Process IDs : Numeric IDs assigned by the dashboard (#1, #2, ...). Use them with
                 list --id, logs --id, send --id, wait --id and kill --id.
-  Modes       : pipe    = anonymous pipes (default; non-interactive CLI agents)
+  Modes       : pipe    = anonymous pipes (default; non-interactive CLI workers)
                 pty     = Win32 ConPTY (interactive TUI: opencode, claude)
                 console = separate visible console window
   stdin       : pipe mode keeps stdin writable (pcder send) unless --close-stdin;
@@ -325,8 +344,8 @@ COMMANDS:
                                  If omitted, --timeout shows "remaining N seconds".
          --estimate-end <time>    Alias for --eta
          --agent-type <claude|agy|antigravity|opencode|codex|aider|ollama>
-                                  Hint agent type for JSON stream parsing (auto-detected if omitted).
-         --json-stream            Enable JSONL stream parsing and write <log>.stream.jsonl for LLM agent output.
+                                  Hint worker type for JSON stream parsing (auto-detected if omitted).
+         --json-stream            Enable JSONL stream parsing and write <log>.stream.jsonl for LLM worker output.
          --wait                   Block until process exits (unlimited unless --wait-ms is set)
         --wait-ms <ms>           Max wait when --wait is set; initial output wait otherwise
                                  (default: 500; 0 = unlimited with --wait)
@@ -346,14 +365,14 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
-  agent status <id>
-      Show current agent status, active tool, thoughts, message, and supervisor context.
+  worker status <id>
+      Show current worker status, active tool, thoughts, message, and supervisor context.
 
-  agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
-      View captured JSON streaming events for claude, agy, or opencode agents.
+  worker stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
+      View captured JSON streaming events for claude, agy, or opencode workers.
 
-  agent info <id> [--notes "<notes>"] [--goal "<goal>"]
-      Update supervisor notes or goal for an ongoing agent.
+  worker info <id> [--notes "<notes>"] [--goal "<goal>"]
+      Update supervisor notes or goal for an ongoing worker.
 
   mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
@@ -463,8 +482,8 @@ SETUP FOR LLM AGENTS:
     MCP tools (24):
       Process:    start_process, list_processes, get_process_output,
                   send_process_input, wait_process, kill_process
-      Worker:     run_worker, wait_worker, get_agent_stream, get_agent_state,
-                  update_agent_info
+      Worker:     run_worker, wait_worker, get_worker_stream, get_worker_state,
+                  update_worker_info
       Task queue: taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
                   taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
                   taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,

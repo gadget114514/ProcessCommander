@@ -384,7 +384,7 @@ each run it writes:
 | `ww-data/logs/<Task>-<stamp>.prompt.txt` | the exact prompt passed to opencode |
 | `ww-data/logs/<Task>-<stamp>.log` | start/end summary (unchanged) |
 
-Pass `-JsonStdout` (or set `WW_JSON_STDOUT=1`) to stream raw JSON lines to stdout for ProcessCommander (`pcder agent status|stream`), suppressing formatted progress lines on the console.
+Pass `-JsonStdout` (or set `WW_JSON_STDOUT=1`) to stream raw JSON lines to stdout for ProcessCommander (`pcder worker status|stream`), suppressing formatted progress lines on the console.
 
 Progress lines look like `HH:mm:ss  <kind>  <short target>`:
 

@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.3.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64-setup.exe)
-  (portable: [ProcessCommander-v2.3.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.1/ProcessCommander-v2.3.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.3.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.2/ProcessCommander-v2.3.2-win64-setup.exe)
+  (portable: [ProcessCommander-v2.3.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.2/ProcessCommander-v2.3.2-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -81,6 +81,25 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 | [tools/ww](tools/ww/README-ww.md) | Optional, independent task-card runner template (not part of ProcessCommander) |
 
 ---
+
+## Release Notes
+
+### v2.3.2
+- **Themes**: five new pastel themes with pale backgrounds: Pastel Blue, Orange, Pink, Red and Green.
+- **KPI cards**: the colour bar is twice as tall.
+- **CLI**: `pcder agent` is now `pcder worker`. The old name still works.
+- **MCP**: `get_agent_stream`, `get_agent_state` and `update_agent_info` are now `get_worker_stream`, `get_worker_state` and `update_worker_info`. The old names still work but are no longer listed.
+
+### v2.3.1
+- **MCP**: `run_agent` and `wait_agent` are now `run_worker` and `wait_worker`, so they are not mistaken for your harness's native sub-agent feature. The old names still work but are no longer listed.
+
+### v2.3.0
+- **MCP**: added tools that hand one task to a worker LLM and return only its final result.
+- **Monitor pane**: a tool call's description has its own column, and the subtask list takes two thirds of the width.
+- **Task list**: hover to see the full Resources text, and copy cells.
+- **ww-run**: finishes when the engine exits, not when its stdout closes.
+
+Older versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases)
 
 ## Appendix: `ProcessCommander.exe --help`
 
@@ -182,7 +201,7 @@ MCP SERVER SETUP:
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
     Worker (5):
-      run_worker, wait_worker, get_agent_stream, get_agent_state, update_agent_info
+      run_worker, wait_worker, get_worker_stream, get_worker_state, update_worker_info
     Task queue (13):
       taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
@@ -190,7 +209,7 @@ MCP SERVER SETUP:
       taskqueue_graph
 
   HOW TO USE (decision guide):
-    - One command, e.g. a build script, CLI agent or shell -> start_process
+    - One command, e.g. a build script, CLI worker or shell -> start_process
     - One task for a worker LLM, final result only         -> run_worker
       Harnesses do not see this as a native sub-agent; a thin custom agent that
       calls run_worker makes it one, at the cost of the wrapper's tokens.
@@ -261,7 +280,7 @@ DATA DIRECTORY (per invocation):
 PCDER CONCEPTS:
   Process IDs : Numeric IDs assigned by the dashboard (#1, #2, ...). Use them with
                 list --id, logs --id, send --id, wait --id and kill --id.
-  Modes       : pipe    = anonymous pipes (default; non-interactive CLI agents)
+  Modes       : pipe    = anonymous pipes (default; non-interactive CLI workers)
                 pty     = Win32 ConPTY (interactive TUI: opencode, claude)
                 console = separate visible console window
   stdin       : pipe mode keeps stdin writable (pcder send) unless --close-stdin;
@@ -323,8 +342,8 @@ COMMANDS:
                                  If omitted, --timeout shows "remaining N seconds".
          --estimate-end <time>    Alias for --eta
          --agent-type <claude|agy|antigravity|opencode|codex|aider|ollama>
-                                  Hint agent type for JSON stream parsing (auto-detected if omitted).
-         --json-stream            Enable JSONL stream parsing and write <log>.stream.jsonl for LLM agent output.
+                                  Hint worker type for JSON stream parsing (auto-detected if omitted).
+         --json-stream            Enable JSONL stream parsing and write <log>.stream.jsonl for LLM worker output.
          --wait                   Block until process exits (unlimited unless --wait-ms is set)
         --wait-ms <ms>           Max wait when --wait is set; initial output wait otherwise
                                  (default: 500; 0 = unlimited with --wait)
@@ -344,14 +363,14 @@ COMMANDS:
   clear
       Remove finished processes from the dashboard list.
 
-  agent status <id>
-      Show current agent status, active tool, thoughts, message, and supervisor context.
+  worker status <id>
+      Show current worker status, active tool, thoughts, message, and supervisor context.
 
-  agent stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
-      View captured JSON streaming events for claude, agy, or opencode agents.
+  worker stream <id> [--tail <n>] [--type <type>] [--since <seq>] [--summary]
+      View captured JSON streaming events for claude, agy, or opencode workers.
 
-  agent info <id> [--notes "<notes>"] [--goal "<goal>"]
-      Update supervisor notes or goal for an ongoing agent.
+  worker info <id> [--notes "<notes>"] [--goal "<goal>"]
+      Update supervisor notes or goal for an ongoing worker.
 
   mcp install [--client claude|opencode] [--path <file>] [--name <name>] [--data-dir <path>] [--dry-run]
       Register ProcessCommander as an MCP server automatically. Writes or updates
@@ -461,8 +480,8 @@ SETUP FOR LLM AGENTS:
     MCP tools (24):
       Process:    start_process, list_processes, get_process_output,
                   send_process_input, wait_process, kill_process
-      Worker:     run_worker, wait_worker, get_agent_stream, get_agent_state,
-                  update_agent_info
+      Worker:     run_worker, wait_worker, get_worker_stream, get_worker_state,
+                  update_worker_info
       Task queue: taskqueue_add, taskqueue_list, taskqueue_get, taskqueue_retry,
                   taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
                   taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,
