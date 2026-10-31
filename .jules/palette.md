@@ -4,3 +4,6 @@
 ## 2024-10-23 - Focus Visible Styles for Owner-Drawn Buttons
 **Learning:** In Win32, owner-drawn buttons (`BS_OWNERDRAW`) lose their default keyboard focus indicator (`ODS_FOCUS`), making keyboard navigation difficult and hindering accessibility.
 **Action:** Always verify if owner-drawn controls handle the `ODS_FOCUS` state and use `DrawFocusRect` to render a visible focus ring.
+## 2024-11-20 - Missing Tooltips on Icon-Only Owner-Drawn Toggles
+**Learning:** Found that the "Usage" toggle button (📊) was an icon-only `BS_OWNERDRAW` button lacking both an ARIA-equivalent tooltip and a latched (pressed) visual state when active, making its state and purpose unclear.
+**Action:** Always ensure icon-only buttons have tooltips via `TTM_ADDTOOLW`/`TTM_UPDATETIPTEXTW` and that toggle buttons reflect their active state visually in the `WM_DRAWITEM` handler.
