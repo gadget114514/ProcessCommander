@@ -67,6 +67,12 @@ The parser is permissive and looks for common fields across agents:
 ### Status/error/result
 - `type` in `status`/`error`/`result`/`done`/`finish`/`completed`. `error` may be string or object with `message`.
 
+### Claude partial messages (`--include-partial-messages`)
+- `stream_event` lines are transient: they update the live state (status, last thought/message, current tool, activity) and count usage, but they are not stored in the event list or saved to `<stream>.jsonl`.
+- `message_delta` carries the final usage of a message. Usage is counted once per `message.id`, and the `result` line's usage fills in whatever the messages did not report.
+- `system` lines other than `init` (status, thinking_tokens, task_summary, ...) are transient too.
+- `thinking_tokens` in `output_tokens_details` are read as thinking tokens. Claude's output tokens already include them, so they are not added to the total again.
+
 ## Outputs
 
 - **Per-process stream file**: `<logfile>.stream.jsonl` (written by `LlmStreamTracker` as raw JSON lines are ingested).
