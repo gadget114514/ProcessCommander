@@ -69,7 +69,8 @@ static HICON LoadAppSmallIcon() {
 
 enum class UiLanguage { Japanese, English, Spanish };
 enum class UiTheme { System, Dark, Light, Pastel, HighContrast, Midnight, Ember, Berry, Crimson, Forest, Mist,
-    PastelBlue, PastelOrange, PastelPink, PastelRed, PastelGreen };
+    PastelBlue, PastelOrange, PastelPink, PastelRed, PastelGreen, PastelPurple, PastelYellow,
+    DeepPurple, DeepYellow };
 
 struct ThemeColors {
     COLORREF windowBg;
@@ -240,6 +241,34 @@ static ThemeColors ThemeFor(UiTheme theme) {
                 RGB(22, 36, 26), RGB(230, 246, 232), RGB(36, 68, 44), RGB(204, 232, 208),
                 RGB(220, 244, 226), RGB(252, 238, 210), RGB(220, 235, 250), RGB(250, 220, 224)
             };
+        case UiTheme::PastelPurple:
+            return {
+                RGB(232, 224, 250), RGB(245, 241, 253), RGB(206, 194, 232),
+                RGB(58, 44, 92), RGB(112, 98, 146), RGB(140, 108, 210),
+                RGB(30, 24, 46), RGB(239, 233, 251), RGB(58, 44, 92), RGB(220, 208, 244),
+                RGB(220, 244, 226), RGB(252, 238, 210), RGB(220, 235, 250), RGB(250, 220, 224)
+            };
+        case UiTheme::PastelYellow:
+            return {
+                RGB(252, 245, 200), RGB(254, 251, 228), RGB(228, 216, 150),
+                RGB(78, 66, 20), RGB(130, 116, 64), RGB(204, 164, 30),
+                RGB(38, 34, 18), RGB(253, 248, 214), RGB(78, 66, 20), RGB(244, 232, 170),
+                RGB(220, 244, 226), RGB(252, 238, 210), RGB(220, 235, 250), RGB(250, 220, 224)
+            };
+        case UiTheme::DeepPurple:
+            return {
+                RGB(36, 18, 64), RGB(54, 30, 92), RGB(96, 68, 146),
+                RGB(236, 226, 252), RGB(170, 150, 204), RGB(168, 120, 250),
+                RGB(22, 10, 42), RGB(44, 24, 78), RGB(236, 226, 252), RGB(90, 54, 150),
+                RGB(30, 66, 62), RGB(72, 52, 54), RGB(40, 44, 96), RGB(90, 30, 62)
+            };
+        case UiTheme::DeepYellow:
+            return {
+                RGB(84, 66, 4), RGB(108, 86, 10), RGB(168, 138, 40),
+                RGB(255, 247, 208), RGB(216, 196, 130), RGB(250, 204, 21),
+                RGB(34, 26, 0), RGB(72, 56, 2), RGB(255, 247, 208), RGB(150, 118, 14),
+                RGB(52, 92, 40), RGB(128, 92, 12), RGB(46, 74, 96), RGB(124, 46, 26)
+            };
         case UiTheme::Dark:
         default:
             return {
@@ -252,7 +281,7 @@ static ThemeColors ThemeFor(UiTheme theme) {
 }
 
 static bool IsPastelTheme(UiTheme theme) {
-    return theme == UiTheme::Pastel || (theme >= UiTheme::PastelBlue && theme <= UiTheme::PastelGreen);
+    return theme == UiTheme::Pastel || (theme >= UiTheme::PastelBlue && theme <= UiTheme::PastelYellow);
 }
 
 static bool IsDarkUiTheme(UiTheme theme) {
@@ -264,6 +293,8 @@ static bool IsDarkUiTheme(UiTheme theme) {
         case UiTheme::Berry:
         case UiTheme::Crimson:
         case UiTheme::Forest:
+        case UiTheme::DeepPurple:
+        case UiTheme::DeepYellow:
             return true;
         case UiTheme::System:
             return IsSystemDarkMode();
@@ -328,6 +359,13 @@ static void ApplyNativeThemeToWindow(HWND hwnd) {
     }
 }
 
+static COLORREF BlendColor(COLORREF from, COLORREF to, float t);
+
+// List header background: the window colour with a slight tint of the theme accent.
+static COLORREF HeaderBgColor() {
+    return BlendColor(g_theme.windowBg, g_theme.accent, 0.12f);
+}
+
 static void DrawHeaderItem(DRAWITEMSTRUCT* dis) {
     if (!dis || !dis->hwndItem) return;
     wchar_t text[256] = {};
@@ -336,7 +374,7 @@ static void DrawHeaderItem(DRAWITEMSTRUCT* dis) {
     hdiText.pszText = text;
     hdiText.cchTextMax = 256;
     SendMessageW(dis->hwndItem, HDM_GETITEMW, dis->itemID, reinterpret_cast<LPARAM>(&hdiText));
-    HBRUSH bgBrush = CreateSolidBrush(g_theme.windowBg);
+    HBRUSH bgBrush = CreateSolidBrush(HeaderBgColor());
     FillRect(dis->hDC, &dis->rcItem, bgBrush);
     DeleteObject(bgBrush);
 
@@ -365,7 +403,7 @@ static LRESULT CALLBACK HeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, L
         HDC hdc = reinterpret_cast<HDC>(wParam);
         RECT rc = {};
         GetClientRect(hwnd, &rc);
-        HBRUSH brush = CreateSolidBrush(g_theme.windowBg);
+        HBRUSH brush = CreateSolidBrush(HeaderBgColor());
         FillRect(hdc, &rc, brush);
         DeleteObject(brush);
         return 1;
@@ -381,7 +419,7 @@ static LRESULT CALLBACK HeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 if (rcLast.right < rcClient.right) {
                     HDC hdc = GetDC(hwnd);
                     RECT rcEmpty = { rcLast.right, rcClient.top, rcClient.right, rcClient.bottom };
-                    HBRUSH brush = CreateSolidBrush(g_theme.windowBg);
+                    HBRUSH brush = CreateSolidBrush(HeaderBgColor());
                     FillRect(hdc, &rcEmpty, brush);
                     DeleteObject(brush);
                     HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
@@ -427,6 +465,26 @@ static void PaintListScrollThumb(HDC hdc, HWND hwnd, int which, const RECT& bar,
     FillRect(hdc, &thumb, thumbBrush);
 }
 
+// Composes one scrollbar off screen and copies it in one step, so the bare track is never visible.
+static void PaintListScrollBarBuffered(HDC hdc, HWND hwnd, int which, const RECT& bar,
+                                       HBRUSH trackBrush, HBRUSH thumbBrush) {
+    int w = bar.right - bar.left;
+    int h = bar.bottom - bar.top;
+    if (w <= 0 || h <= 0) return;
+    HDC memDc = CreateCompatibleDC(hdc);
+    HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
+    if (memDc && bmp) {
+        HGDIOBJ oldBmp = SelectObject(memDc, bmp);
+        RECT local = {0, 0, w, h};
+        FillRect(memDc, &local, trackBrush);
+        PaintListScrollThumb(memDc, hwnd, which, local, thumbBrush);
+        BitBlt(hdc, bar.left, bar.top, w, h, memDc, 0, 0, SRCCOPY);
+        SelectObject(memDc, oldBmp);
+    }
+    if (bmp) DeleteObject(bmp);
+    if (memDc) DeleteDC(memDc);
+}
+
 // The native list scrollbars are painted by the system in the theme's default colours. Repaint them
 // over with the active theme after each message, so the track and thumb follow the theme.
 static void PaintThemedListScrollBars(HWND hwnd) {
@@ -452,13 +510,11 @@ static void PaintThemedListScrollBars(HWND hwnd) {
     HBRUSH thumbBrush = CreateSolidBrush(g_theme.border);
     if (vert) {
         RECT bar = {offX + cw, offY, offX + cw + sbw, offY + ch - (horz ? sbh : 0)};
-        FillRect(hdc, &bar, trackBrush);
-        PaintListScrollThumb(hdc, hwnd, SB_VERT, bar, thumbBrush);
+        PaintListScrollBarBuffered(hdc, hwnd, SB_VERT, bar, trackBrush, thumbBrush);
     }
     if (horz) {
         RECT bar = {offX, offY + ch, offX + cw - (vert ? sbw : 0), offY + ch + sbh};
-        FillRect(hdc, &bar, trackBrush);
-        PaintListScrollThumb(hdc, hwnd, SB_HORZ, bar, thumbBrush);
+        PaintListScrollBarBuffered(hdc, hwnd, SB_HORZ, bar, trackBrush, thumbBrush);
     }
     if (vert && horz) {
         RECT corner = {offX + cw, offY + ch, offX + cw + sbw, offY + ch + sbh};
@@ -592,6 +648,10 @@ static const char* ThemeCode(UiTheme theme) {
         case UiTheme::PastelPink: return "pastel_pink";
         case UiTheme::PastelRed: return "pastel_red";
         case UiTheme::PastelGreen: return "pastel_green";
+        case UiTheme::PastelPurple: return "pastel_purple";
+        case UiTheme::PastelYellow: return "pastel_yellow";
+        case UiTheme::DeepPurple: return "deep_purple";
+        case UiTheme::DeepYellow: return "deep_yellow";
         default:                    return "system";
     }
 }
@@ -611,6 +671,10 @@ static UiTheme ParseTheme(const std::string& code) {
     if (code == "pastel_pink") return UiTheme::PastelPink;
     if (code == "pastel_red") return UiTheme::PastelRed;
     if (code == "pastel_green") return UiTheme::PastelGreen;
+    if (code == "pastel_purple") return UiTheme::PastelPurple;
+    if (code == "pastel_yellow") return UiTheme::PastelYellow;
+    if (code == "deep_purple") return UiTheme::DeepPurple;
+    if (code == "deep_yellow") return UiTheme::DeepYellow;
     return UiTheme::System;
 }
 
@@ -672,19 +736,23 @@ enum ControlId {
     IDC_SET_THEME_PASTEL_PINK = 6023,
     IDC_SET_THEME_PASTEL_RED = 6024,
     IDC_SET_THEME_PASTEL_GREEN = 6025,
-    IDC_SET_SHELL_CONFIG = 6026,
-    IDC_SET_RESET_IDS = 6027,
-    IDC_SET_CLEAR_ENDED = 6028,
-    IDC_SET_HIDE_ENDED = 6029,
-    IDC_SET_SOUND_ENABLED = 6030,
-    IDC_SET_SOUND_PATH = 6031,
-    IDC_SET_SOUND_BROWSE = 6032,
-    IDC_SET_SOUND_TEST = 6033,
-    IDC_SET_KPI_SAT = 6034,
-    IDC_SET_USAGE_GRAPH_MODE = 6035,
-    IDC_SET_RESTORE_USAGE_GRAPH = 6036,
-    IDC_SET_RESOURCE_LOCKS = 6037,
-    IDC_SET_ACTIVITY_STYLE = 6038,
+    IDC_SET_THEME_DEEP_PURPLE = 6026,
+    IDC_SET_THEME_PASTEL_PURPLE = 6027,
+    IDC_SET_THEME_DEEP_YELLOW = 6028,
+    IDC_SET_THEME_PASTEL_YELLOW = 6029,
+    IDC_SET_SHELL_CONFIG = 6030,
+    IDC_SET_RESET_IDS = 6031,
+    IDC_SET_CLEAR_ENDED = 6032,
+    IDC_SET_HIDE_ENDED = 6033,
+    IDC_SET_SOUND_ENABLED = 6034,
+    IDC_SET_SOUND_PATH = 6035,
+    IDC_SET_SOUND_BROWSE = 6036,
+    IDC_SET_SOUND_TEST = 6037,
+    IDC_SET_KPI_SAT = 6038,
+    IDC_SET_USAGE_GRAPH_MODE = 6039,
+    IDC_SET_RESTORE_USAGE_GRAPH = 6040,
+    IDC_SET_RESOURCE_LOCKS = 6041,
+    IDC_SET_ACTIVITY_STYLE = 6042,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -5483,6 +5551,10 @@ static UiTheme ThemeForButton(int id) {
         case IDC_SET_THEME_PASTEL_PINK: return UiTheme::PastelPink;
         case IDC_SET_THEME_PASTEL_RED: return UiTheme::PastelRed;
         case IDC_SET_THEME_PASTEL_GREEN: return UiTheme::PastelGreen;
+        case IDC_SET_THEME_DEEP_PURPLE: return UiTheme::DeepPurple;
+        case IDC_SET_THEME_PASTEL_PURPLE: return UiTheme::PastelPurple;
+        case IDC_SET_THEME_DEEP_YELLOW: return UiTheme::DeepYellow;
+        case IDC_SET_THEME_PASTEL_YELLOW: return UiTheme::PastelYellow;
         default:                     return UiTheme::System;
     }
 }
@@ -5504,6 +5576,10 @@ static int ThemeButtonId(UiTheme theme) {
         case UiTheme::PastelPink: return IDC_SET_THEME_PASTEL_PINK;
         case UiTheme::PastelRed: return IDC_SET_THEME_PASTEL_RED;
         case UiTheme::PastelGreen: return IDC_SET_THEME_PASTEL_GREEN;
+        case UiTheme::DeepPurple: return IDC_SET_THEME_DEEP_PURPLE;
+        case UiTheme::PastelPurple: return IDC_SET_THEME_PASTEL_PURPLE;
+        case UiTheme::DeepYellow: return IDC_SET_THEME_DEEP_YELLOW;
+        case UiTheme::PastelYellow: return IDC_SET_THEME_PASTEL_YELLOW;
         default:                     return IDC_SET_THEME_SYSTEM;
     }
 }
@@ -5532,6 +5608,10 @@ struct SettingsDlgState {
     HWND btnPastelPink = nullptr;
     HWND btnPastelRed = nullptr;
     HWND btnPastelGreen = nullptr;
+    HWND btnDeepPurple = nullptr;
+    HWND btnPastelPurple = nullptr;
+    HWND btnDeepYellow = nullptr;
+    HWND btnPastelYellow = nullptr;
     HWND btnShell = nullptr;
     HWND btnReset = nullptr;
     HWND btnClear = nullptr;
@@ -5584,6 +5664,10 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->btnPastelPink, Tr(L"パステル桃", L"Pastel Pink", L"Pastel rosa"));
     SetWindowTextW(ds->btnPastelRed, Tr(L"パステル赤", L"Pastel Red", L"Pastel rojo"));
     SetWindowTextW(ds->btnPastelGreen, Tr(L"パステル緑", L"Pastel Green", L"Pastel verde"));
+    SetWindowTextW(ds->btnDeepPurple, Tr(L"濃い紫", L"Deep Purple", L"Púrpura oscuro"));
+    SetWindowTextW(ds->btnPastelPurple, Tr(L"薄い紫", L"Pale Purple", L"Púrpura claro"));
+    SetWindowTextW(ds->btnDeepYellow, Tr(L"濃い黄", L"Deep Yellow", L"Amarillo oscuro"));
+    SetWindowTextW(ds->btnPastelYellow, Tr(L"薄い黄", L"Pale Yellow", L"Amarillo claro"));
     SetWindowTextW(ds->btnShell, Tr(L"シェル構成...", L"Shell Config...", L"Configurar shell..."));
     SetWindowTextW(ds->btnReset, Tr(L"プロセスIDをリセット", L"Reset Process IDs", L"Restablecer IDs"));
     SetWindowTextW(ds->btnClear, Tr(L"終了履歴を消去", L"Clear Ended", L"Limpiar finalizados"));
@@ -5613,7 +5697,7 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     CheckRadioButton(hwnd, IDC_SET_LANG_JA, IDC_SET_LANG_ES,
         g_uiLanguage == UiLanguage::Japanese ? IDC_SET_LANG_JA :
         g_uiLanguage == UiLanguage::Spanish ? IDC_SET_LANG_ES : IDC_SET_LANG_EN);
-    CheckRadioButton(hwnd, IDC_SET_THEME_SYSTEM, IDC_SET_THEME_PASTEL_GREEN, ThemeButtonId(g_uiTheme));
+    CheckRadioButton(hwnd, IDC_SET_THEME_SYSTEM, IDC_SET_THEME_PASTEL_YELLOW, ThemeButtonId(g_uiTheme));
 }
 
 static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -5678,42 +5762,51 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             ds->btnPastelGreen = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 530, 214, 120, 30, hwnd, (HMENU)IDC_SET_THEME_PASTEL_GREEN, hInst, nullptr);
 
+            ds->btnDeepPurple = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                18, 250, 120, 30, hwnd, (HMENU)IDC_SET_THEME_DEEP_PURPLE, hInst, nullptr);
+            ds->btnPastelPurple = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                146, 250, 120, 30, hwnd, (HMENU)IDC_SET_THEME_PASTEL_PURPLE, hInst, nullptr);
+            ds->btnDeepYellow = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                274, 250, 120, 30, hwnd, (HMENU)IDC_SET_THEME_DEEP_YELLOW, hInst, nullptr);
+            ds->btnPastelYellow = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                402, 250, 120, 30, hwnd, (HMENU)IDC_SET_THEME_PASTEL_YELLOW, hInst, nullptr);
+
             ds->hwndSatLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 252, 220, 20, hwnd, nullptr, hInst, nullptr);
+                18, 288, 220, 20, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSatLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
 
             ds->hwndSatCombo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                18, 274, 220, 200, hwnd, (HMENU)IDC_SET_KPI_SAT, hInst, nullptr);
+                18, 310, 220, 200, hwnd, (HMENU)IDC_SET_KPI_SAT, hInst, nullptr);
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"30%");
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"50%");
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"70%");
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"100%");
 
             ds->btnShell = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                18, 312, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
+                18, 348, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
             ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                210, 312, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
+                210, 348, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
             ds->btnClear = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                402, 312, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
+                402, 348, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
             ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                560, 432, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
+                560, 508, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
 
             ds->hwndSoundLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 320, 300, 20, hwnd, nullptr, hInst, nullptr);
+                18, 396, 300, 20, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSoundLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
 
             ds->chkSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 344, 340, 24, hwnd, (HMENU)IDC_SET_SOUND_ENABLED, hInst, nullptr);
+                18, 420, 340, 24, hwnd, (HMENU)IDC_SET_SOUND_ENABLED, hInst, nullptr);
             ds->editSound = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                18, 374, 470, 26, hwnd, (HMENU)IDC_SET_SOUND_PATH, hInst, nullptr);
+                18, 450, 470, 26, hwnd, (HMENU)IDC_SET_SOUND_PATH, hInst, nullptr);
             ds->btnBrowseSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                496, 374, 90, 26, hwnd, (HMENU)IDC_SET_SOUND_BROWSE, hInst, nullptr);
+                496, 450, 90, 26, hwnd, (HMENU)IDC_SET_SOUND_BROWSE, hInst, nullptr);
             ds->btnTestSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                594, 374, 80, 26, hwnd, (HMENU)IDC_SET_SOUND_TEST, hInst, nullptr);
+                594, 450, 80, 26, hwnd, (HMENU)IDC_SET_SOUND_TEST, hInst, nullptr);
             ds->hwndSoundHint = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 404, 470, 18, hwnd, nullptr, hInst, nullptr);
+                18, 480, 470, 18, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSoundHint, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             SendMessageW(ds->chkSound, BM_SETCHECK,
@@ -5721,33 +5814,34 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SetWindowTextW(ds->editSound, Utf8ToWide(ds->dash->completionSoundPath).c_str());
 
             ds->chkHideEnded = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 436, 380, 24, hwnd, (HMENU)IDC_SET_HIDE_ENDED, hInst, nullptr);
+                18, 512, 380, 24, hwnd, (HMENU)IDC_SET_HIDE_ENDED, hInst, nullptr);
             SendMessageW(ds->chkHideEnded, BM_SETCHECK,
                 ds->dash->hideEndedProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 460, 380, 24, hwnd, (HMENU)IDC_SET_USAGE_GRAPH_MODE, hInst, nullptr);
+                18, 536, 380, 24, hwnd, (HMENU)IDC_SET_USAGE_GRAPH_MODE, hInst, nullptr);
             SendMessageW(ds->chkUsageGraph, BM_SETCHECK,
                 ds->dash->usageGraphMode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkRestoreUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 484, 380, 24, hwnd, (HMENU)IDC_SET_RESTORE_USAGE_GRAPH, hInst, nullptr);
+                18, 560, 380, 24, hwnd, (HMENU)IDC_SET_RESTORE_USAGE_GRAPH, hInst, nullptr);
             SendMessageW(ds->chkRestoreUsageGraph, BM_SETCHECK,
                 ds->dash->restoreUsageGraph ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkResourceLocks = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 508, 520, 24, hwnd, (HMENU)IDC_SET_RESOURCE_LOCKS, hInst, nullptr);
+                18, 584, 520, 24, hwnd, (HMENU)IDC_SET_RESOURCE_LOCKS, hInst, nullptr);
             SendMessageW(ds->chkResourceLocks, BM_SETCHECK,
                 ds->dash->resourceLocks ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkActivityStyle = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 532, 520, 24, hwnd, (HMENU)IDC_SET_ACTIVITY_STYLE, hInst, nullptr);
+                18, 608, 520, 24, hwnd, (HMENU)IDC_SET_ACTIVITY_STYLE, hInst, nullptr);
             SendMessageW(ds->chkActivityStyle, BM_SETCHECK,
                 g_activityStyle ? BST_CHECKED : BST_UNCHECKED, 0);
 
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
                              ds->btnPastelBlue, ds->btnPastelOrange, ds->btnPastelPink, ds->btnPastelRed, ds->btnPastelGreen,
+                             ds->btnDeepPurple, ds->btnPastelPurple, ds->btnDeepYellow, ds->btnPastelYellow,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
                              ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
                              ds->chkResourceLocks, ds->chkActivityStyle };
@@ -5842,7 +5936,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
             }
-            if (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_PASTEL_GREEN) {
+            if (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_PASTEL_YELLOW) {
                 g_uiTheme = ThemeForButton(id);
                 ApplyTheme();
                 SaveShellConfig(ds->dash);
@@ -5893,7 +5987,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             if (!dis || !ds) break;
             int id = static_cast<int>(dis->CtlID);
             bool radio = (id >= IDC_SET_LANG_JA && id <= IDC_SET_LANG_ES) ||
-                         (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_PASTEL_GREEN);
+                         (id >= IDC_SET_THEME_SYSTEM && id <= IDC_SET_THEME_PASTEL_YELLOW);
             bool checked = false;
             if (id == IDC_SET_LANG_JA) checked = (g_uiLanguage == UiLanguage::Japanese);
             else if (id == IDC_SET_LANG_EN) checked = (g_uiLanguage == UiLanguage::English);
@@ -6004,7 +6098,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 617;
+    int dlgH = 693;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 

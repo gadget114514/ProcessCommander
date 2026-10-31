@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.3.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.2/ProcessCommander-v2.3.2-win64-setup.exe)
-  (portable: [ProcessCommander-v2.3.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.2/ProcessCommander-v2.3.2-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.3.3-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.3/ProcessCommander-v2.3.3-win64-setup.exe)
+  (portable: [ProcessCommander-v2.3.3-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.3/ProcessCommander-v2.3.3-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,12 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.3.3
+- **Themes**: added Deep Purple, Pale Purple, Deep Yellow and Pale Yellow.
+- **List headers**: the background now has a slight tint of the theme accent colour.
+- **Scrollbars**: the process and task list scrollbars are double-buffered to reduce flicker.
+- **Settings**: fixed the sound section overlapping the buttons above it.
 
 ### v2.3.2
 - **Themes**: five new pastel themes with pale backgrounds: Pastel Blue, Orange, Pink, Red and Green.
