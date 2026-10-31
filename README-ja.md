@@ -22,14 +22,48 @@
 
 ## Express
 
-- [ProcessCommander-v2.0.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.1/ProcessCommander-v2.0.1-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.0.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.0.1/ProcessCommander-v2.0.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.3.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.0/ProcessCommander-v2.3.0-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.3.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.0/ProcessCommander-v2.3.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
 
 LLM は `processcommander help --json` を実行して使い方を理解します。
 手元の LLM を監督役（フロントエンド）として使い、別の LLM をワーカーとして指定できます。
+
+---
+
+## サブエージェントのように委任する: `run_agent`
+
+MCP ツール `run_agent` は、1つのタスクをワーカーの LLM CLI に任せ、終了まで待って最終結果だけを返します。ワーカーのやり取りは監督役のコンテキストに入らず、生のストリームは `stream_file` に残ります。
+
+```json
+{
+  "name": "run_agent",
+  "arguments": {
+    "cmd": "claude -p \"失敗しているテストを要約して\" --output-format stream-json --verbose",
+    "name": "test-summary",
+    "cwd": "D:/work/myproject",
+    "timeout_sec": 1800
+  }
+}
+```
+
+| 引数 | 意味 |
+| :--- | :--- |
+| `cmd`（必須） | ワーカーのコマンドライン。1コマンドのみ |
+| `name`, `cwd` | ダッシュボードの表示名、作業ディレクトリ |
+| `agent_type` | ストリーム形式: `claude`, `agy`, `opencode`, `auto`（既定はコマンドから判定） |
+| `timeout_sec`, `idle_timeout_sec` | この実行時間を超えたとき、またはこの時間出力がないときに強制終了（0 = 無制限） |
+| `supervisor_goal`, `supervisor_notes` | ダッシュボードに表示するテキスト |
+| `wait_ms` | 最大待ち時間（ミリ秒。既定の 0 はワーカー終了まで） |
+
+応答には `finished`, `success`, `state`, `exit_code`, `result`, `result_source`, `result_truncated`, `tool_calls`, `tool_errors`, `num_turns`, `permission_denials`, `total_tokens`, `cost_usd`, `log_file`, `stream_file` が含まれます。
+
+- `result` の上限は 64 KB で、切り詰めると `result_truncated` が true になります。ストリームに結果のイベントがないときは、`result` に出力の末尾の行が入り、`result_source` は `output` になります。
+- `wait_ms` が切れると、応答は `finished: false` とワーカーの現在の動作を返し、ワーカーは動き続けます。続きは、返された `id` を `wait_agent` に渡して待ちます。
+- ハーネスからはネイティブのサブエージェントには見えません。そう見せたいときは、`run_agent` を呼んで結果を返すだけの薄いカスタムエージェント（Claude Code なら `.claude/agents/<name>.md`、安価なモデル、このツールのみ）を定義します。その分のトークンがかかるため、`run_agent` を直接呼ぶのが最も安上がりです。
+- 順序・依存・リトライのある複数ステップには、[タスクキュー](doc/taskqueue-ja.md)を使ってください。
 
 ---
 
@@ -41,7 +75,7 @@ LLM は `processcommander help --json` を実行して使い方を理解しま�
 | [主な特徴](doc/features-ja.md) | ダッシュボード GUI、シェル起動、履歴、トレイ、ログ、設定、タスクキュー概要 |
 | [CLI](doc/cli-ja.md) | `pcder.exe` の使い方、stdin モード、完了通知 |
 | [タスクキュー](doc/taskqueue-ja.md) | 順序・依存・ジョブのフィールド・状態・ChainGuard |
-| [MCP サーバー](doc/mcp-ja.md) | MCP 登録と 19 個の MCP ツール |
+| [MCP サーバー](doc/mcp-ja.md) | MCP 登録と MCP ツール |
 | [データディレクトリ](doc/data-directory-ja.md) | プロジェクト内・git 管理の `--data-dir` |
 | [Pros/Cons（英語）](doc/pros-cons-comparison.md) | サブエージェント等との使い分け |
 | [tools/ww](tools/ww/README-ww.md) | 任意・独立のタスクカード実行テンプレート（ProcessCommander の一部ではない） |
@@ -159,6 +193,9 @@ MCP SERVER SETUP:
 
   HOW TO USE (decision guide):
     - One command, e.g. a build script, CLI agent or shell -> start_process
+    - One task for a worker LLM, final result only         -> run_agent
+      Harnesses do not see this as a native sub-agent; a thin custom agent that
+      calls run_agent makes it one, at the cost of the wrapper's tokens.
     - Multiple steps, order, dependencies or retries      -> taskqueue_add + dependsOn
     - Never write &&, ||, a single &, PowerShell ';', newline chains or polling
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
