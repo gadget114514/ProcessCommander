@@ -4,3 +4,6 @@
 ## 2024-10-23 - Focus Visible Styles for Owner-Drawn Buttons
 **Learning:** In Win32, owner-drawn buttons (`BS_OWNERDRAW`) lose their default keyboard focus indicator (`ODS_FOCUS`), making keyboard navigation difficult and hindering accessibility.
 **Action:** Always verify if owner-drawn controls handle the `ODS_FOCUS` state and use `DrawFocusRect` to render a visible focus ring.
+## 2024-11-01 - Icon-only Usage Toggle Button Lacks Tooltip
+**Learning:** Icon-only toggles (like "📊") used for layout control in ProcessCommander frequently lack tooltips (`TOOLINFOW` structures in native Win32) if they were added later in development without copying the `addTool` pattern from primary toolbar buttons. This harms accessibility since screen readers and users cannot infer the icon's purpose without a text equivalent.
+**Action:** When auditing or adding new icon-only `BS_OWNERDRAW` buttons, ensure `TTM_ADDTOOLW` and `TTM_UPDATETIPTEXTW` (via `UpdateControlTooltip`) are explicitly called, especially for dynamic layout buttons like the Usage Graph toggle.
