@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.3.4-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.4/ProcessCommander-v2.3.4-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.3.4-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.4/ProcessCommander-v2.3.4-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.3.5-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.3.5-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,15 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.3.5
+- **サブエージェント**: Claude のサブエージェントを個別に追跡し、タスク監視ペインにツリーで表示します。`pcder worker status` と IPC の状態にも一覧が出ます。
+- **ストリーム**: Claude の部分メッセージ（`--include-partial-messages`）と `codex exec --json` のイベントを解析します。
+- **ツールバー**: 時計の左に更新アイコンボタンを追加しました。
+- **設定**: プロセスごとに保持するストリームイベント数を変更できます（既定 2000、-1 でメモリが尽きるまで保持）。
+- **ツール**: `pcder worker install-template`（pc-runner エージェント）、ww-run と ww-watch の `-Agent` / `WW_AGENT`、`tools/ww-unity` を追加しました。
+- **リスト**: スクロールバーを押さえている間は更新を止め、タスクリストは更新してもスクロール位置を保ちます。
+- **トークン**: Claude の使用量をメッセージごとに1回だけ数え、result 行ではメッセージに出なかった分だけを足します。
 
 ### v2.3.4
 - **タスク監視**: 目標欄とプレビュー欄のスクロールバーをテーマの色に合わせました。

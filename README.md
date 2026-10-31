@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.3.4-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.4/ProcessCommander-v2.3.4-win64-setup.exe)
-  (portable: [ProcessCommander-v2.3.4-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.4/ProcessCommander-v2.3.4-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.3.5-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64-setup.exe)
+  (portable: [ProcessCommander-v2.3.5-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.5/ProcessCommander-v2.3.5-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,15 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.3.5
+- **Sub-agents**: Claude sub-agents are tracked separately and shown as a tree in the monitor pane. `pcder worker status` and the IPC state list them.
+- **Streams**: Claude partial messages (`--include-partial-messages`) and `codex exec --json` events are parsed.
+- **Toolbar**: added a refresh icon button to the left of the clock.
+- **Settings**: the number of stream events kept per process is configurable (default 2000; -1 keeps them until memory runs out).
+- **Tools**: added `pcder worker install-template` (pc-runner agent), `-Agent` / `WW_AGENT` for ww-run and ww-watch, and `tools/ww-unity`.
+- **Lists**: updates pause while a list scrollbar is held, and the task list keeps its scroll position when it refreshes.
+- **Tokens**: Claude usage is counted once per message, and the result line adds only what the messages did not report.
 
 ### v2.3.4
 - **Task monitor**: the scrollbars of the goal and preview fields now follow the theme colours.
