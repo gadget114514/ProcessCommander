@@ -9,3 +9,7 @@
 ## 2024-11-20 - [Optimize TerminalView::ExtractLastNonEmptyLine String Allocation]
 **Learning:** Terminal emulation often maintains 2D grids (like TerminalBuffer) pre-filled with empty/space characters. Converting these raw cell grids into strings blindly iterates over all allocated cells regardless of actual content. In high-frequency calls like `ExtractLastNonEmptyLine` (which runs per-process, per-tick for dashboards), allocating the string and then trimming it caused noticeable CPU overhead. The right way is using backward scanning (bottom-to-top, right-to-left) and in-place bound checking to avoid O(N) string allocations and redundant trimming.
 **Action:** When extracting strings from TerminalBuffer 2D character grids, use backward scanning (right-to-left) and in-place bound checking to find exact string boundaries, then use `std::wstring::reserve` to allocate exactly the required length, avoiding unnecessary space trimming and allocations.
+
+## 2024-05-18 - Avoid std::ostringstream for frequent JSON serialization
+**Learning:** `std::ostringstream` introduces significant overhead due to virtual function calls, locale checking, and dynamic memory reallocation, which creates a noticeable bottleneck during heavy API polling of task queues where `JobToJson` is called frequently.
+**Action:** In C++, prefer `std::string` concatenation with pre-allocation (`reserve`) and sequential `+=` or `.append()` calls over `std::ostringstream` for repetitive string appending in hot paths to avoid significant stream overhead.
