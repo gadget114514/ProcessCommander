@@ -5204,8 +5204,12 @@ static void ShowTaskContextMenu(DashboardState* st, int procId, POINT ptScreen) 
         st->pm->RemoveProcess(procId);
         RefreshDashboardData(st);
     } else if (cmd == 3006) {
-        st->pm->ClearFinished();
-        RefreshDashboardData(st);
+        if (MessageBoxW(st->hwndMain,
+                Tr(L"終了済みプロセスの履歴を消去しますか？", L"Are you sure you want to clear finished process history?", L"¿Seguro que desea borrar el historial de procesos finalizados?"),
+                Tr(L"履歴消去の確認", L"Confirm Clear", L"Confirmar borrado"), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            st->pm->ClearFinished();
+            RefreshDashboardData(st);
+        }
     }
 }
 
@@ -5379,6 +5383,9 @@ static void UpdateToolbarLabels(DashboardState* st) {
         if (st->hwndBtnHideTray)
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnHideTray,
                 Tr(L"トレイに格納", L"Tray", L"Bandeja"));
+        if (st->hwndBtnUsage)
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                Tr(L"Usage", L"Usage", L"Uso"));
     }
     UpdatePanelToggleLabels(st);
     if (st->hwndBtnViewTasks) {
@@ -7071,6 +7078,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnStreamPane);
                 addTool(st->hwndBtnHideTray);
                 addTool(st->hwndBtnRefresh);
+                addTool(st->hwndBtnUsage);
             }
 
             LoadShellConfig(st);
