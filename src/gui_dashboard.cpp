@@ -1890,13 +1890,17 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
                 st->showStreamPane ? Tr(L"タスク監視ペインを非表示", L"Hide Monitor Pane", L"Ocultar panel de monitor")
                                    : Tr(L"タスク監視ペインを表示", L"Show Monitor Pane", L"Mostrar panel de monitor"));
         }
+        if (st->hwndBtnUsage) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                Tr(L"トークン使用量グラフ", L"Token Usage Graph", L"Gráfico de uso de tokens"));
+        }
         if (st->hwndBtnRefresh) {
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnRefresh,
                 Tr(L"すべてのリストを最新の情報に更新", L"Refresh All Lists", L"Actualizar todas las listas"));
         }
     }
     // Repaint the toggles so their latched (pressed) look follows the state.
-    for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane}) {
+    for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnUsage}) {
         if (b) InvalidateRect(b, nullptr, FALSE);
     }
 }
@@ -7069,6 +7073,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnToggleList);
                 addTool(st->hwndBtnToggleTerm);
                 addTool(st->hwndBtnStreamPane);
+                addTool(st->hwndBtnUsage);
                 addTool(st->hwndBtnHideTray);
                 addTool(st->hwndBtnRefresh);
             }
