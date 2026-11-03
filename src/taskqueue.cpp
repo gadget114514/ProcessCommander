@@ -299,31 +299,34 @@ namespace pc {
 // JSON serialization (taskqueue.json format, snake_case keys)
 // ---------------------------------------------------------------------------
 
+// Optimization: avoid std::ostringstream overhead by using std::string pre-allocation and append
 static std::string AttemptToJson(const TaskQueueAttempt& a) {
-    std::ostringstream oss;
-    oss << "{\"n\":" << a.n
-        << ",\"process_id\":" << a.processId
-        << ",\"start\":\"" << JsonEscape(a.start) << "\""
-        << ",\"end\":\"" << JsonEscape(a.end) << "\""
-        << ",\"reason\":\"" << JsonEscape(a.reason) << "\""
-        << ",\"exit_code\":" << a.exitCode
-        << ",\"instructions_rev\":" << a.instructionsRev
-        << ",\"last_lines_file\":\"" << JsonEscape(a.lastLinesFile) << "\""
-        << ",\"check_detail\":\"" << JsonEscape(a.checkDetail) << "\"}";
-    return oss.str();
+    std::string out;
+    out.reserve(256);
+    out.append("{\"n\":").append(std::to_string(a.n))
+       .append(",\"process_id\":").append(std::to_string(a.processId))
+       .append(",\"start\":\"").append(JsonEscape(a.start)).append("\"")
+       .append(",\"end\":\"").append(JsonEscape(a.end)).append("\"")
+       .append(",\"reason\":\"").append(JsonEscape(a.reason)).append("\"")
+       .append(",\"exit_code\":").append(std::to_string(a.exitCode))
+       .append(",\"instructions_rev\":").append(std::to_string(a.instructionsRev))
+       .append(",\"last_lines_file\":\"").append(JsonEscape(a.lastLinesFile)).append("\"")
+       .append(",\"check_detail\":\"").append(JsonEscape(a.checkDetail)).append("\"}");
+    return out;
 }
 
 static std::string EnvToJson(const std::map<std::string, std::string>& env) {
-    std::ostringstream oss;
-    oss << "{";
+    std::string out;
+    out.reserve(env.size() * 64 + 2);
+    out += "{";
     bool first = true;
     for (const auto& kv : env) {
-        if (!first) oss << ",";
+        if (!first) out += ",";
         first = false;
-        oss << "\"" << JsonEscape(kv.first) << "\":\"" << JsonEscape(kv.second) << "\"";
+        out.append("\"").append(JsonEscape(kv.first)).append("\":\"").append(JsonEscape(kv.second)).append("\"");
     }
-    oss << "}";
-    return oss.str();
+    out += "}";
+    return out;
 }
 
 static std::string DepsToJson(const std::vector<TaskQueueDependency>& deps) {
