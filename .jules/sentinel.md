@@ -12,6 +12,11 @@
 **Learning:** Untrusted URIs executed via `ShellExecuteW` must have their scheme validated against an explicitly safe allowlist (like `http://`, `https://`, `mailto:`, `file://`) before any execution or custom command substitution logic.
 **Prevention:** Always validate the URI scheme before executing untrusted inputs using `ShellExecuteW`.
 
+## 2024-11-05 - [Command Injection via Double Quotes in Untrusted URIs]
+**Vulnerability:** Untrusted URIs executed via custom command substitution or `ShellExecuteW` did not reject URIs containing double quotes (`"`), leading to potential command injection.
+**Learning:** Even if a URI scheme is validated (e.g., `http://`), an attacker can craft a URI containing double quotes to break out of the string context in custom command substitutions or shell executions.
+**Prevention:** Always explicitly reject URIs containing double quotes (`"`) before passing them to custom command substitutions or `ShellExecuteW`.
+
 ## 2024-05-18 - Prevent Command Injection in PowerShell Execution
 **Vulnerability:** Command injection vulnerability in IPC client auto-start logic via direct string interpolation of file paths in PowerShell commands.
 **Learning:** `Invoke-CimMethod -Arguments @{CommandLine='...'}` uses single quotes, which can be escaped, but if an attacker controls `guiExePath` or the data directory, they could potentially break out of the string context if other injections are found. Passing user-controlled data via environment variables introduces race conditions in multi-threaded C++ code. The most secure approach is to Base64 encode the arguments, inject the Base64 string into the script template to be decoded at runtime by `[System.Convert]::FromBase64String`, and then Base64 encode the entire script itself for execution via `-EncodedCommand`.
