@@ -4878,8 +4878,8 @@ static LRESULT CALLBACK LlmStreamWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (ds->embedded) {
                 // Left 2/5: goal text on top, usage graph below. Right 3/5: the subtask list, full height.
                 int pad = 4;
-                // Goal / Now / Ends / process summary need several wrapped lines.
-                int topH = (std::clamp)(h * 52 / 100, 110, 150);
+                // Goal / Now / Ends / process summary: half the pane height.
+                int topH = h / 2;
                 int availW = (std::max)(300, w - pad * 2);
                 int leftW = availW * 2 / 5 - 4;
                 int contentX = pad + 28;
