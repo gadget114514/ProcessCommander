@@ -17,6 +17,10 @@
 #pragma comment(lib, "comctl32.lib")
 
 static bool isSafeUrlScheme(const std::wstring& url) {
+    // Explicitly reject URIs containing double quotes to prevent command injection
+    if (url.find(L'\"') != std::wstring::npos) {
+        return false;
+    }
     return _wcsnicmp(url.c_str(), L"http://", 7) == 0 ||
            _wcsnicmp(url.c_str(), L"https://", 8) == 0 ||
            _wcsnicmp(url.c_str(), L"mailto:", 7) == 0 ||
