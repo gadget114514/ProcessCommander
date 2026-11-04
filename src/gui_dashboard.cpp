@@ -6452,8 +6452,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
             if (id == IDC_SET_CLEAR_ENDED) {
                 if (ds->dash && ds->dash->pm) {
+                if (MessageBoxW(hwnd,
+                        Tr(L"終了済みプロセスの履歴を消去しますか？", L"Are you sure you want to clear finished process history?", L"¿Seguro que desea borrar el historial de procesos finalizados?"),
+                        Tr(L"履歴消去の確認", L"Confirm Clear", L"Confirmar borrado"), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
                     ds->dash->pm->ClearFinished();
                     RefreshDashboardData(ds->dash);
+                }
                 }
                 return 0;
             } else if (id == IDC_SET_KPI_SAT && HIWORD(wParam) == CBN_SELCHANGE) {
