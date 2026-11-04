@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.3.7-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.7/ProcessCommander-v2.3.7-win64-setup.exe)
-  (portable: [ProcessCommander-v2.3.7-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.7/ProcessCommander-v2.3.7-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.5.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64-setup.exe)
+  (portable: [ProcessCommander-v2.5.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,11 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.5.0
+- **Dashboard refresh**: the update interval now defaults to 2000 ms and can be set in ms in the Settings dialog (100-60000 ms). It doubles while no process or queue job is running.
+- **Dashboard redraw**: the process and task lists and the KPI cards are repainted only when their contents change, so idle refresh ticks do less drawing.
+- **Task monitor**: the ID column is 1.5x wider and the Queue column is 3/4 as wide.
 
 ### v2.3.7
 - **Task monitor**: the goal field takes half the pane height, without the old 150px limit.

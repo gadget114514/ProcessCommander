@@ -23,5 +23,5 @@ private:
     int m_tabGridCellW = 240;
     int m_tabGridCellH = 170;
     bool m_tabGridRefreshEnabled = true;
-    int m_tabGridRefreshIntervalMs = 500;
+    int m_tabGridRefreshIntervalMs = 2000;
 };

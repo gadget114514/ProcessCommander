@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.3.7-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.7/ProcessCommander-v2.3.7-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.3.7-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.3.7/ProcessCommander-v2.3.7-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.5.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.5.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,11 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.5.0
+- **ダッシュボードの更新間隔**: 既定を 2000 ms にし、設定画面で ms 単位に変更できるようにしました（100〜60000 ms）。実行中のプロセスやキューのジョブがないときは間隔を 2 倍にします。
+- **ダッシュボードの再描画**: プロセス・タスク一覧と KPI カードは内容が変わったときだけ描き直すようにし、アイドル時の更新で描画する量を減らしました。
+- **タスク監視**: ID 列の幅を 1.5 倍、キュー列の幅を 3/4 にしました。
 
 ### v2.3.7
 - **タスク監視**: 目標欄の高さをペインの高さの半分にしました（以前の 150px の上限はなくなりました）。

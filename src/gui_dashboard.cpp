@@ -4,6 +4,7 @@
 #include "activity_tree.h"
 #include "TerminalView.h"
 #include "TerminalGridView.h"
+#include "SettingsManager.h"
 #include "nlohmann/json.hpp"
 #include <commctrl.h>
 #include <windowsx.h>
@@ -50,6 +51,13 @@ constexpr UINT WM_PC_CREATE_TERMVIEW  = WM_APP + 102;
 constexpr UINT WM_PC_DESTROY_TERMVIEW = WM_APP + 103;
 constexpr UINT WM_PC_TRAYICON         = WM_APP + 104;
 constexpr UINT_PTR TIMER_REFRESH_ID   = 1;
+// Periodic dashboard / terminal-grid refresh interval (ms). User-configurable in the Settings dialog.
+constexpr int kDefaultRefreshIntervalMs = 2000;
+constexpr int kMinRefreshIntervalMs = 100;
+constexpr int kMaxRefreshIntervalMs = 60000;
+static int ClampRefreshIntervalMs(int ms) {
+    return (std::clamp)(ms, kMinRefreshIntervalMs, kMaxRefreshIntervalMs);
+}
 constexpr UINT_PTR TIMER_KPI_ANIM_ID  = 2;
 constexpr UINT TRAY_ICON_ID           = 1;
 constexpr int  APP_ICON_RESOURCE_ID   = 1;
@@ -764,6 +772,7 @@ enum ControlId {
     IDC_SET_RESOURCE_LOCKS = 6041,
     IDC_SET_ACTIVITY_STYLE = 6042,
     IDC_SET_LLM_MAX_EVENTS = 6043,
+    IDC_SET_REFRESH_INTERVAL = 6044,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -824,6 +833,9 @@ struct DashboardState {
     bool restoreUsageGraph = false;
     int64_t llmMaxEvents = kDefaultLlmMaxEvents;  // events kept per stream tracker; -1 = unlimited
     bool resourceLocks = true; // task queue resource locks (doc/resource-locks.md)
+    int refreshIntervalMs = kDefaultRefreshIntervalMs; // dashboard + terminal grid refresh period (ms)
+    int runningTotalCount = 0;  // processes in Running state + running queue jobs, from the last refresh
+    int appliedRefreshMs = 0;   // period currently set on TIMER_REFRESH_ID
     RECT rcUsagePanel = {};
     RECT rcUsageSplitter = {};
     bool usageSplitterDragging = false;
@@ -841,6 +853,14 @@ struct DashboardState {
     std::vector<std::string> taskJobStates;
     std::vector<int> taskJobProcIds;     // latest attempt's process per task row (0 = none)
     int lastFollowedProcId = -1;         // process the monitor pane last auto-followed
+    // What the lists and KPI cards showed last time, so an idle refresh tick can skip redrawing them.
+    std::vector<std::vector<std::wstring>> procListCells;  // per row: lParam id, then 14 column texts
+    std::vector<COLORREF> procListRowBg;
+    std::string lastTaskListJson;
+    int lastTaskListLang = -1;
+    std::vector<std::wstring> lastTaskRows;
+    std::wstring lastKpiSignature;
+    int lastUsagePanelProcId = -2;
     // JSON stream bottom pane below the process / task lists
     HWND hwndBtnStreamPane = nullptr;
     HWND hwndBtnRefresh = nullptr;
@@ -1421,6 +1441,8 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
         tqCounts = st->tqm->GetJobCounts();
     }
     st->activeRunningCount = activeRunning + tqCounts.running;
+    // Any process still in the Running state (including idle-waiting ones) or any running queue job.
+    st->runningTotalCount = activeRunning + idleWaiting + tqCounts.running;
 
     int64_t minRemainingSec = -1;
     for (const auto& s : kpiSnaps) {
@@ -2259,6 +2281,14 @@ static void RefreshTaskQueueData(DashboardState* st) {
     if (st->listDisplayMode == ListDisplayMode::ProcessOnly) return;
     std::string err;
     std::string resp = st->tqm->TaskQueueList("", "", err);
+    // Nothing to do when the queue is unchanged and no job is running (only running rows show a countdown).
+    int lang = static_cast<int>(g_uiLanguage);
+    if (resp == st->lastTaskListJson && lang == st->lastTaskListLang &&
+        resp.find("\"state\":\"running\"") == std::string::npos) {
+        return;
+    }
+    st->lastTaskListJson = resp;
+    st->lastTaskListLang = lang;
     auto jobs = SplitJsonObjectArray(resp, "jobs");
 
     std::unordered_map<std::string, std::string> stateById;
@@ -2296,21 +2326,12 @@ static void RefreshTaskQueueData(DashboardState* st) {
         return false;
     });
 
-    // Rebuilding the list drops the highlight, so remember which job was selected and select it again.
-    std::string keepSelectedJob;
-    int prevSel = ListView_GetNextItem(st->hwndTaskList, -1, LVNI_SELECTED);
-    if (prevSel >= 0 && prevSel < static_cast<int>(st->taskJobIds.size())) keepSelectedJob = st->taskJobIds[prevSel];
-    // It also resets the scroll position, so put that back afterwards too.
-    int keepTopIndex = ListView_GetTopIndex(st->hwndTaskList);
-    int keepScrollX = GetScrollPos(st->hwndTaskList, SB_HORZ);
-
-    st->taskJobIds.clear();
-    st->taskJobStates.clear();
-    st->taskJobProcIds.clear();
-    SendMessageW(st->hwndTaskList, WM_SETREDRAW, FALSE, 0);
-    ListView_DeleteAllItems(st->hwndTaskList);
-
-    int row = 0;
+    // Work out every row first; the list is rebuilt only when some row's text differs from last time.
+    std::vector<std::string> newJobIds;
+    std::vector<std::string> newJobStates;
+    std::vector<int> newJobProcIds;
+    std::vector<std::wstring> newRows;  // 9 cells per row, flattened
+    newRows.reserve(jobs.size() * 9);
     for (const auto& j : jobs) {
         std::string jobId = JsonGetString(j, "id", "");
         std::string state = JsonGetString(j, "state", "");
@@ -2321,13 +2342,13 @@ static void RefreshTaskQueueData(DashboardState* st) {
         } else if (state == "failed") {
             kind = (lastReason == "timed_out" || lastReason == "idle_timed_out") ? "timeout" : "failed";
         }
-        st->taskJobIds.push_back(jobId);
-        st->taskJobStates.push_back(kind);
+        newJobIds.push_back(jobId);
+        newJobStates.push_back(kind);
         // The process of the latest attempt, so selecting this row can show it in the monitor pane.
         int64_t latestPid = 0;
         auto attemptsOfRow = SplitJsonObjectArray(j, "attempts");
         if (!attemptsOfRow.empty()) latestPid = JsonGetInt(attemptsOfRow.back(), "process_id", 0);
-        st->taskJobProcIds.push_back(static_cast<int>(latestPid));
+        newJobProcIds.push_back(static_cast<int>(latestPid));
 
         std::wstring idStr = Utf8ToWide(jobId);
         std::wstring summaryStr = Utf8ToWide(JsonGetString(j, "summary", ""));
@@ -2415,21 +2436,48 @@ static void RefreshTaskQueueData(DashboardState* st) {
         std::wstring queueStr = Utf8ToWide(JsonGetString(j, "taskqueue", ""));
         std::wstring resourcesStr = TaskQueueResourcesDisplay(j);
 
+        newRows.push_back(std::move(idStr));
+        newRows.push_back(std::move(summaryStr));
+        newRows.push_back(std::move(stateStr));
+        newRows.push_back(std::move(startStr));
+        newRows.push_back(std::move(endStr));
+        newRows.push_back(std::move(taskDoingStr));
+        newRows.push_back(std::move(depsStr));
+        newRows.push_back(std::move(queueStr));
+        newRows.push_back(std::move(resourcesStr));
+    }
+
+    st->taskJobStates = std::move(newJobStates);
+    st->taskJobProcIds = std::move(newJobProcIds);
+    if (newRows == st->lastTaskRows && newJobIds == st->taskJobIds &&
+        ListView_GetItemCount(st->hwndTaskList) == static_cast<int>(newJobIds.size())) {
+        return;
+    }
+
+    // Rebuilding the list drops the highlight, so remember which job was selected and select it again.
+    std::string keepSelectedJob;
+    int prevSel = ListView_GetNextItem(st->hwndTaskList, -1, LVNI_SELECTED);
+    if (prevSel >= 0 && prevSel < static_cast<int>(st->taskJobIds.size())) keepSelectedJob = st->taskJobIds[prevSel];
+    // It also resets the scroll position, so put that back afterwards too.
+    int keepTopIndex = ListView_GetTopIndex(st->hwndTaskList);
+    int keepScrollX = GetScrollPos(st->hwndTaskList, SB_HORZ);
+
+    st->taskJobIds = std::move(newJobIds);
+    st->lastTaskRows = std::move(newRows);
+    SendMessageW(st->hwndTaskList, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(st->hwndTaskList);
+
+    for (int row = 0; row < static_cast<int>(st->taskJobIds.size()); ++row) {
+        std::wstring* cells = &st->lastTaskRows[static_cast<size_t>(row) * 9];
         LVITEMW lvi = {};
         lvi.mask = LVIF_TEXT;
         lvi.iItem = row;
         lvi.iSubItem = 0;
-        lvi.pszText = idStr.data();
+        lvi.pszText = cells[0].data();
         ListView_InsertItem(st->hwndTaskList, &lvi);
-        ListView_SetItemText(st->hwndTaskList, row, 1, summaryStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 2, stateStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 3, startStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 4, endStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 5, taskDoingStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 6, depsStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 7, queueStr.data());
-        ListView_SetItemText(st->hwndTaskList, row, 8, resourcesStr.data());
-        row++;
+        for (int col = 1; col < 9; ++col) {
+            ListView_SetItemText(st->hwndTaskList, row, col, cells[col].data());
+        }
     }
     if (!keepSelectedJob.empty()) {
         for (int r = 0; r < static_cast<int>(st->taskJobIds.size()); ++r) {
@@ -2542,8 +2590,57 @@ static std::wstring ActivityLine(const std::string& kind, const std::string& tar
     return line;
 }
 
+// Everything the KPI cards show (see DrawDashboardCanvas), so they are repainted only when it changes.
+static std::wstring KpiSignature(DashboardState* st) {
+    const auto& snaps = st->allSnapshots.empty() ? st->cachedSnapshots : st->allSnapshots;
+    int running = 0, idle = 0, ok = 0, failed = 0;
+    uint32_t treeProcs = 0;
+    uint64_t memBytes = 0;
+    int64_t minRemainingSec = -1;
+    for (const auto& s : snaps) {
+        if (s.state == ProcState::Running) {
+            if (s.idleMs >= 10000) idle++;
+            else running++;
+            treeProcs += s.treeProcessCount;
+            memBytes += s.treeMemoryBytes;
+            if (s.timeoutSec > 0) {
+                int64_t remSec = (static_cast<int64_t>(s.timeoutSec) * 1000 - static_cast<int64_t>(s.elapsedMs) + 999) / 1000;
+                if (remSec < 0) remSec = 0;
+                if (minRemainingSec < 0 || remSec < minRemainingSec) minRemainingSec = remSec;
+            }
+        } else if (s.state == ProcState::Completed) {
+            ok++;
+        } else {
+            failed++;
+        }
+    }
+    TaskQueueCounts tq;
+    if (st->tqm) tq = st->tqm->GetJobCounts();
+    wchar_t buf[256] = {};
+    swprintf_s(buf, L"%d|%zu|%d|%d|%d|%d|%u|%lld|%d|%d|%d|%d|%d|%d|%d|%d|%lld|%lld|",
+               static_cast<int>(g_uiLanguage), snaps.size(), running, idle, ok, failed, treeProcs,
+               static_cast<long long>(minRemainingSec), tq.running, tq.waiting, tq.pending, tq.blocked,
+               tq.succeeded, tq.failed, tq.cancelled, tq.total,
+               static_cast<long long>(tq.minRemainingSec), static_cast<long long>(tq.sumRemainingSec));
+    return buf + Utf8ToWide(FormatBytes(memBytes));
+}
+
 static void RefreshDashboardData(DashboardState* st) {
     if (!st || !st->pm) return;
+    // Hidden in the tray: no one sees the lists, so only watch for finished processes (completion sound).
+    if (!IsWindowVisible(st->hwndMain) || IsIconic(st->hwndMain)) {
+        st->allSnapshots = st->pm->GetAllSnapshots();
+        bool finished = false;
+        for (const auto& s : st->allSnapshots) {
+            auto it = st->lastProcStates.find(s.id);
+            if (it != st->lastProcStates.end() && it->second == ProcState::Running && s.state != ProcState::Running) {
+                finished = true;
+            }
+            st->lastProcStates[s.id] = s.state;
+        }
+        if (finished) PlayCompletionSound(*st);
+        return;
+    }
     // Hold every update while a list scrollbar is dragged; the next tick after release catches up.
     if (g_scrollDragWnd && (g_scrollDragWnd == st->hwndList || g_scrollDragWnd == st->hwndTaskList)) return;
     st->allSnapshots = st->pm->GetAllSnapshots();
@@ -2598,13 +2695,21 @@ static void RefreshDashboardData(DashboardState* st) {
 
     int currentCount = ListView_GetItemCount(st->hwndList);
     int targetCount = static_cast<int>(st->cachedSnapshots.size());
+    if (static_cast<int>(st->procListCells.size()) != currentCount) {
+        st->procListCells.assign(static_cast<size_t>(currentCount), {});
+        st->procListRowBg.assign(static_cast<size_t>(currentCount), CLR_INVALID);
+    }
+    bool rowsAddedOrRemoved = (currentCount != targetCount);
+    std::vector<int> changedRows;
 
-    SendMessageW(st->hwndList, WM_SETREDRAW, FALSE, 0);
+    if (rowsAddedOrRemoved) SendMessageW(st->hwndList, WM_SETREDRAW, FALSE, 0);
 
     while (currentCount > targetCount) {
         ListView_DeleteItem(st->hwndList, currentCount - 1);
         currentCount--;
     }
+    st->procListCells.resize(static_cast<size_t>(targetCount));
+    st->procListRowBg.resize(static_cast<size_t>(targetCount), CLR_INVALID);
 
     for (int i = 0; i < targetCount; ++i) {
         const auto& s = st->cachedSnapshots[i];
@@ -2670,36 +2775,43 @@ static void RefreshDashboardData(DashboardState* st) {
             jobStr = Utf8ToWide(s.jobKey) + L" #" + std::to_wstring(s.attemptN);
         }
 
+        std::vector<std::wstring> cells = {
+            std::to_wstring(s.id), idStr, winPidStr, nameStr, statusStr, startStr, endStr, uptimeStr,
+            treeProcsStr, memStr, cpuStr, idleStr, previewStr, cmdStr, jobStr};
+        COLORREF rowBg = GetStateRowBgColor(s);
+        std::vector<std::wstring>& prev = st->procListCells[static_cast<size_t>(i)];
+
         if (i >= currentCount) {
             LVITEMW lvi = {};
             lvi.mask = LVIF_TEXT | LVIF_PARAM;
             lvi.iItem = i;
             lvi.iSubItem = 0;
-            lvi.pszText = idStr.data();
+            lvi.pszText = cells[1].data();
             lvi.lParam = s.id;
             ListView_InsertItem(st->hwndList, &lvi);
-        } else {
+            prev.assign(cells.size(), std::wstring());
+            prev[0] = cells[0];
+            prev[1] = cells[1];
+        } else if (prev.size() != cells.size() || prev[0] != cells[0]) {
             LVITEMW lvi = {};
             lvi.mask = LVIF_PARAM;
             lvi.iItem = i;
             lvi.lParam = s.id;
             ListView_SetItem(st->hwndList, &lvi);
-            ListView_SetItemText(st->hwndList, i, 0, idStr.data());
+            prev.assign(cells.size(), std::wstring(1, L'\x1'));  // force every column below to be written
+            prev[0] = cells[0];
         }
 
-        ListView_SetItemText(st->hwndList, i, 1, winPidStr.data());
-        ListView_SetItemText(st->hwndList, i, 2, nameStr.data());
-        ListView_SetItemText(st->hwndList, i, 3, statusStr.data());
-        ListView_SetItemText(st->hwndList, i, 4, startStr.data());
-        ListView_SetItemText(st->hwndList, i, 5, endStr.data());
-        ListView_SetItemText(st->hwndList, i, 6, uptimeStr.data());
-        ListView_SetItemText(st->hwndList, i, 7, treeProcsStr.data());
-        ListView_SetItemText(st->hwndList, i, 8, memStr.data());
-        ListView_SetItemText(st->hwndList, i, 9, cpuStr.data());
-        ListView_SetItemText(st->hwndList, i, 10, idleStr.data());
-        ListView_SetItemText(st->hwndList, i, 11, previewStr.data());
-        ListView_SetItemText(st->hwndList, i, 12, cmdStr.data());
-        ListView_SetItemText(st->hwndList, i, 13, jobStr.data());
+        bool rowChanged = (st->procListRowBg[static_cast<size_t>(i)] != rowBg);
+        for (int col = 0; col < 14; ++col) {
+            std::wstring& cell = cells[static_cast<size_t>(col) + 1];
+            if (prev[static_cast<size_t>(col) + 1] == cell) continue;
+            ListView_SetItemText(st->hwndList, i, col, cell.data());
+            prev[static_cast<size_t>(col) + 1] = cell;
+            rowChanged = true;
+        }
+        st->procListRowBg[static_cast<size_t>(i)] = rowBg;
+        if (rowChanged) changedRows.push_back(i);
     }
 
     int selIdx = -1;
@@ -2716,11 +2828,24 @@ static void RefreshDashboardData(DashboardState* st) {
         }
     }
 
-    SendMessageW(st->hwndList, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(st->hwndList, nullptr, FALSE);
+    if (rowsAddedOrRemoved) {
+        SendMessageW(st->hwndList, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(st->hwndList, nullptr, FALSE);
+    } else {
+        // Repaint only the rows whose text or colour changed (an idle list repaints nothing).
+        for (int row : changedRows) ListView_RedrawItems(st->hwndList, row, row);
+    }
     RefreshTaskQueueData(st);
-    InvalidateRect(st->hwndMain, &st->rcKpiArea, FALSE);
-    if (st->showUsagePanel) InvalidateRect(st->hwndUsagePanel, nullptr, FALSE);
+    std::wstring kpiSig = KpiSignature(st);
+    if (kpiSig != st->lastKpiSignature) {
+        st->lastKpiSignature = std::move(kpiSig);
+        InvalidateRect(st->hwndMain, &st->rcKpiArea, FALSE);
+    }
+    // The usage panel repaints itself every second; repaint it here only when the highlighted process changes.
+    if (st->showUsagePanel && st->selectedProcId != st->lastUsagePanelProcId) {
+        st->lastUsagePanelProcId = st->selectedProcId;
+        InvalidateRect(st->hwndUsagePanel, nullptr, FALSE);
+    }
     SyncStreamPane(st);
 }
 
@@ -2734,7 +2859,7 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
     // Summary takes ~half of the visible list width; the other columns share the rest.
     int summaryW = total / 2;
     // Columns other than Summary: ID, State, Start, End, Running, Depends, Queue, Resources.
-    const int base[8] = {90, 100, 105, 115, 190, 110, 110, 200};
+    const int base[8] = {135, 100, 105, 115, 190, 110, 82, 200};
     int baseSum = 0;
     for (int i = 0; i < 8; ++i) baseSum += base[i];
 
@@ -2742,10 +2867,22 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
     // A minimum here would push the sum past the list and cut off the last column (Resources).
     // The last column takes whatever remains.
     int remaining = total - summaryW;
+    // ID is shown at 1.5x its proportional share and Queue at 3/4x. The other columns (State, Start,
+    // End, Running, Depends) absorb the difference so the total still fits the list.
+    constexpr int kIdIdx = 0, kQueueIdx = 6;
+    const double idW = base[kIdIdx] * static_cast<double>(remaining) / baseSum * 1.5;
+    const double queueW = base[kQueueIdx] * static_cast<double>(remaining) / baseSum * 0.75;
+    const double otherBase = baseSum - base[kIdIdx] - base[kQueueIdx] - base[7];
+    // Resources (index 7) is the last column and takes the rounding remainder.
+    const double freeW = remaining - idW - queueW - (base[7] * static_cast<double>(remaining) / baseSum);
     int widths[8] = {};
     int assigned = 0;
     for (int i = 0; i < 7; ++i) {
-        widths[i] = base[i] * remaining / baseSum;
+        double w;
+        if (i == kIdIdx) w = idW;
+        else if (i == kQueueIdx) w = queueW;
+        else w = freeW * base[i] / otherBase;
+        widths[i] = static_cast<int>(w);
         assigned += widths[i];
     }
     widths[7] = remaining - assigned;
@@ -5222,6 +5359,16 @@ static std::wstring GetConfigFilePathWide() {
     return GetLogsDirectoryWide() + L"\\config.json";
 }
 
+// Sets TIMER_REFRESH_ID to the configured interval, doubled while nothing is running.
+// Only calls SetTimer when the period actually changes.
+static void ApplyDashboardRefreshTimer(DashboardState* st) {
+    if (!st || !st->hwndMain) return;
+    const int ms = st->refreshIntervalMs * (st->runningTotalCount > 0 ? 1 : 2);
+    if (ms == st->appliedRefreshMs) return;
+    st->appliedRefreshMs = ms;
+    SetTimer(st->hwndMain, TIMER_REFRESH_ID, static_cast<UINT>(ms), nullptr);
+}
+
 static void LoadShellConfig(DashboardState* st) {
     if (!st) return;
     st->defaultShell = ShellType::PowerShell;
@@ -5276,6 +5423,9 @@ static void LoadShellConfig(DashboardState* st) {
     SetLlmMaxEvents(st->llmMaxEvents);
     st->resourceLocks = JsonGetBool(content, "resource_locks", true);
     if (st->tqm) st->tqm->SetResourceLocksEnabled(st->resourceLocks);
+    st->refreshIntervalMs = ClampRefreshIntervalMs(
+        static_cast<int>(JsonGetInt(content, "refresh_interval_ms", kDefaultRefreshIntervalMs)));
+    SettingsManager::Instance().SetTabGridRefreshIntervalMs(st->refreshIntervalMs);
     ApplyTheme();
 }
 
@@ -5308,7 +5458,8 @@ static void SaveShellConfig(const DashboardState* st) {
         << "  \"usage_graph_mode\": " << st->usageGraphMode << ",\n"
         << "  \"restore_usage_graph\": " << (st->restoreUsageGraph ? "true" : "false") << ",\n"
         << "  \"llm_max_events\": " << st->llmMaxEvents << ",\n"
-        << "  \"resource_locks\": " << (st->resourceLocks ? "true" : "false") << "\n"
+        << "  \"resource_locks\": " << (st->resourceLocks ? "true" : "false") << ",\n"
+        << "  \"refresh_interval_ms\": " << st->refreshIntervalMs << "\n"
         << "}\n";
 
     WriteFileAtomicWide(GetConfigFilePathWide(), ss.str());
@@ -5352,6 +5503,9 @@ static void UpdateClock(DashboardState* st) {
     GetLocalTime(&t);
     wchar_t buf[16] = {};
     swprintf_s(buf, L"%02d:%02d:%02d", t.wHour, t.wMinute, t.wSecond);
+    wchar_t shown[16] = {};
+    GetWindowTextW(st->hwndClock, shown, 16);
+    if (wcscmp(shown, buf) == 0) return;  // called 4x a second; repaint only when the second changes
     SetWindowTextW(st->hwndClock, buf);
     InvalidateRect(st->hwndClock, nullptr, TRUE);
 }
@@ -5902,6 +6056,8 @@ struct SettingsDlgState {
       HWND chkActivityStyle = nullptr;
       HWND lblEventRetention = nullptr;
       HWND editEventRetention = nullptr;
+      HWND lblRefreshInterval = nullptr;
+      HWND editRefreshInterval = nullptr;
 };
 
 // Reads the event retention box, applies it to every stream tracker and saves it. Out-of-range
@@ -5915,6 +6071,20 @@ static void CommitEventRetention(SettingsDlgState* ds) {
     ds->dash->llmMaxEvents = applied;
     std::wstring shown = std::to_wstring(applied);
     SetWindowTextW(ds->editEventRetention, shown.c_str());
+    SaveShellConfig(ds->dash);
+}
+
+// Reads the refresh interval box (ms), clamps it, restarts the dashboard refresh timer,
+// pushes the value to the terminal grid, and saves it.
+static void CommitRefreshInterval(SettingsDlgState* ds) {
+    if (!ds || !ds->dash || !ds->editRefreshInterval) return;
+    wchar_t text[64] = {};
+    GetWindowTextW(ds->editRefreshInterval, text, 64);
+    const int applied = ClampRefreshIntervalMs(_wtoi(text));
+    ds->dash->refreshIntervalMs = applied;
+    SettingsManager::Instance().SetTabGridRefreshIntervalMs(applied);
+    ApplyDashboardRefreshTimer(ds->dash);
+    SetWindowTextW(ds->editRefreshInterval, std::to_wstring(applied).c_str());
     SaveShellConfig(ds->dash);
 }
 
@@ -5968,6 +6138,10 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
         L"イベント保持件数 (100〜100000, -1 = 無制限: メモリを使い切る恐れあり):",
         L"Events kept per process (100-100000, -1 = unlimited: may use up memory):",
         L"Eventos guardados por proceso (100-100000, -1 = sin límite: puede agotar la memoria):"));
+    SetWindowTextW(ds->lblRefreshInterval, Tr(
+        L"更新間隔 (ms, 100〜60000, 既定 2000):",
+        L"Update interval (ms, 100-60000, default 2000):",
+        L"Intervalo de actualización (ms, 100-60000, predeterminado 2000):"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
     SetWindowTextW(ds->btnBrowseSound, Tr(L"参照...", L"Browse...", L"Examinar..."));
@@ -6136,13 +6310,21 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 560, 632, 110, 24, hwnd, (HMENU)IDC_SET_LLM_MAX_EVENTS, hInst, nullptr);
             SetWindowTextW(ds->editEventRetention, std::to_wstring(ds->dash->llmMaxEvents).c_str());
 
+            ds->lblRefreshInterval = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 671, 530, 20, hwnd, nullptr, hInst, nullptr);
+            ds->editRefreshInterval = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
+                560, 668, 110, 24, hwnd, (HMENU)IDC_SET_REFRESH_INTERVAL, hInst, nullptr);
+            SetWindowTextW(ds->editRefreshInterval, std::to_wstring(ds->dash->refreshIntervalMs).c_str());
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
                              ds->btnPastelBlue, ds->btnPastelOrange, ds->btnPastelPink, ds->btnPastelRed, ds->btnPastelGreen,
                              ds->btnDeepPurple, ds->btnPastelPurple, ds->btnDeepYellow, ds->btnPastelYellow,
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
                              ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
-                             ds->chkResourceLocks, ds->chkActivityStyle, ds->lblEventRetention, ds->editEventRetention };
+                             ds->chkResourceLocks, ds->chkActivityStyle, ds->lblEventRetention, ds->editEventRetention,
+                             ds->lblRefreshInterval, ds->editRefreshInterval };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
@@ -6154,10 +6336,15 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             if (id == IDCANCEL || id == IDOK) {
                 if (ds) CommitSoundSettings(ds);
                 if (ds) CommitEventRetention(ds);
+                if (ds) CommitRefreshInterval(ds);
                 DestroyWindow(hwnd);
                 return 0;
             }
             if (!ds) return 0;
+            if (id == IDC_SET_REFRESH_INTERVAL) {
+                if (HIWORD(wParam) == EN_KILLFOCUS) CommitRefreshInterval(ds);
+                return 0;
+            }
             if (id == IDC_SET_HIDE_ENDED) {
                 ds->dash->hideEndedProcesses =
                     (SendMessageW(ds->chkHideEnded, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -6364,6 +6551,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
         case WM_CLOSE:
             if (ds) CommitSoundSettings(ds);
+            if (ds) CommitRefreshInterval(ds);
             DestroyWindow(hwnd);
             return 0;
     }
@@ -6401,7 +6589,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 721;
+    int dlgH = 765;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 
@@ -7183,9 +7371,9 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             UpdateClock(st);
             ApplyNativeThemeToWindow(hwnd);
 
-            SetTimer(hwnd, TIMER_REFRESH_ID, 250, nullptr);
             SetTimer(hwnd, TIMER_KPI_ANIM_ID, 60, nullptr);
             RefreshDashboardData(st);
+            ApplyDashboardRefreshTimer(st);
             return 0;
         }
 
@@ -7259,6 +7447,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             if (wParam == TIMER_REFRESH_ID && st) {
                 UpdateClock(st);
                 RefreshDashboardData(st);
+                ApplyDashboardRefreshTimer(st);
             } else if (wParam == TIMER_KPI_ANIM_ID && st) {
                 if (st->activeRunningCount > 0) {
                     g_kpiBarPhase += 0.05f;
