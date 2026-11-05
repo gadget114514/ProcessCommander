@@ -149,7 +149,19 @@ void IpcServer::AcceptLoop() {
             break;
         }
         if (connected) {
-            std::thread(&IpcServer::HandleClient, this, hPipe).detach();
+            std::thread([this, hPipe] {
+                try {
+                    HandleClient(hPipe);
+                } catch (const std::exception& e) {
+                    WriteAuditLog("CRASH_GUARD", std::string("IPC client exception: ") + e.what());
+                    DisconnectNamedPipe(hPipe);
+                    CloseHandle(hPipe);
+                } catch (...) {
+                    WriteAuditLog("CRASH_GUARD", "IPC client exception: unknown");
+                    DisconnectNamedPipe(hPipe);
+                    CloseHandle(hPipe);
+                }
+            }).detach();
         } else {
             CloseHandle(hPipe);
         }

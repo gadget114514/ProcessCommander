@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 #include <ctime>
 #include <cstdio>
 #include <cmath>
@@ -59,6 +60,10 @@ static int ClampRefreshIntervalMs(int ms) {
     return (std::clamp)(ms, kMinRefreshIntervalMs, kMaxRefreshIntervalMs);
 }
 constexpr UINT_PTR TIMER_KPI_ANIM_ID  = 2;
+constexpr UINT_PTR TIMER_END_BLINK_ID = 3;     // list rows blinking after a process/task ends
+constexpr UINT kEndBlinkTimerMs = 200;         // repaint period while a blink is running
+constexpr ULONGLONG kEndBlinkHalfPeriodMs = 400;  // on/off toggle period of the blink
+constexpr int kDefaultEndBlinkSec = 5;
 constexpr UINT TRAY_ICON_ID           = 1;
 constexpr int  APP_ICON_RESOURCE_ID   = 1;
 
@@ -779,6 +784,9 @@ enum ControlId {
     IDC_SET_LIST_BG_TIMEOUT = 6048,
     IDC_SET_LIST_BG_FAILED = 6049,
     IDC_SET_LIST_BG_RESET = 6050,
+    IDC_SET_END_BLINK_ENABLED = 6051,
+    IDC_SET_END_BLINK_SECONDS = 6052,
+    IDC_SET_TAB = 6053,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -900,6 +908,12 @@ struct DashboardState {
     bool completionSoundEnabled = true;
     std::string completionSoundPath;
     std::unordered_map<int, ProcState> lastProcStates;
+
+    bool endBlinkEnabled = true;                    // blink list rows when a process/task ends
+    int endBlinkSeconds = kDefaultEndBlinkSec;
+    std::unordered_map<int, ULONGLONG> procEndBlinkUntil;        // process id -> GetTickCount64 end time
+    std::unordered_map<std::string, ULONGLONG> taskEndBlinkUntil; // task job id -> GetTickCount64 end time
+    std::unordered_set<std::string> runningTaskJobs;             // jobs that were running at the last refresh
 
     std::unique_ptr<TerminalGridView> gridView;
 
@@ -2088,6 +2102,82 @@ static void PlayCompletionSound(const DashboardState& st) {
     }
 }
 
+// Played when a process ends without completing successfully (Failed / TimedOut / IdleTimedOut / Killed).
+static void PlayFailureSound(const DashboardState& st) {
+    if (!st.completionSoundEnabled) return;
+    if (!PlaySoundW(L"SystemHand", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT)) {
+        MessageBeep(MB_ICONHAND);
+    }
+}
+
+static void PlayProcessEndSound(const DashboardState& st, bool anyFailed) {
+    if (anyFailed) {
+        PlayFailureSound(st);
+    } else {
+        PlayCompletionSound(st);
+    }
+}
+
+
+// ---- Row blink when a process or task ends --------------------------------
+static int ClampEndBlinkSeconds(int sec) {
+    if (sec < 1) return 1;
+    if (sec > 60) return 60;
+    return sec;
+}
+
+static bool EndBlinkHighlightOn(ULONGLONG until, ULONGLONG now) {
+    if (now >= until) return false;
+    return ((until - now) / kEndBlinkHalfPeriodMs) % 2 == 0;  // starts "on", then toggles
+}
+
+template <typename Key>
+static bool IsEndBlinkOn(const DashboardState* st, const std::unordered_map<Key, ULONGLONG>& blinks, const Key& key) {
+    if (!st || !st->endBlinkEnabled || blinks.empty()) return false;
+    auto it = blinks.find(key);
+    return it != blinks.end() && EndBlinkHighlightOn(it->second, GetTickCount64());
+}
+
+static void StartEndBlinkTimer(DashboardState* st) {
+    if (st && st->hwndMain) SetTimer(st->hwndMain, TIMER_END_BLINK_ID, kEndBlinkTimerMs, nullptr);
+}
+
+static void StartProcEndBlink(DashboardState* st, int procId) {
+    if (!st || !st->endBlinkEnabled) return;
+    st->procEndBlinkUntil[procId] = GetTickCount64() + static_cast<ULONGLONG>(st->endBlinkSeconds) * 1000;
+    StartEndBlinkTimer(st);
+}
+
+static void StartTaskEndBlink(DashboardState* st, const std::string& jobId) {
+    if (!st || !st->endBlinkEnabled) return;
+    st->taskEndBlinkUntil[jobId] = GetTickCount64() + static_cast<ULONGLONG>(st->endBlinkSeconds) * 1000;
+    StartEndBlinkTimer(st);
+}
+
+// Drops finished blinks and repaints both lists. Returns false when no blink is left.
+static bool TickEndBlink(DashboardState* st) {
+    const ULONGLONG now = GetTickCount64();
+    bool any = false;
+    for (auto it = st->procEndBlinkUntil.begin(); it != st->procEndBlinkUntil.end();) {
+        if (now >= it->second) {
+            it = st->procEndBlinkUntil.erase(it);
+        } else {
+            any = true;
+            ++it;
+        }
+    }
+    for (auto it = st->taskEndBlinkUntil.begin(); it != st->taskEndBlinkUntil.end();) {
+        if (now >= it->second) {
+            it = st->taskEndBlinkUntil.erase(it);
+        } else {
+            any = true;
+            ++it;
+        }
+    }
+    if (st->hwndList) InvalidateRect(st->hwndList, nullptr, FALSE);
+    if (st->hwndTaskList) InvalidateRect(st->hwndTaskList, nullptr, FALSE);
+    return any;
+}
 
 static void RefreshDashboardData(DashboardState* st);
 static void SyncStreamPane(DashboardState* st);
@@ -2425,6 +2515,7 @@ static void RefreshTaskQueueData(DashboardState* st) {
     std::vector<std::string> newJobStates;
     std::vector<int> newJobProcIds;
     std::vector<std::wstring> newRows;  // 9 cells per row, flattened
+    std::unordered_set<std::string> nowRunning;  // jobs running now, to spot the ones that just ended
     newRows.reserve(jobs.size() * 9);
     for (const auto& j : jobs) {
         std::string jobId = JsonGetString(j, "id", "");
@@ -2437,6 +2528,7 @@ static void RefreshTaskQueueData(DashboardState* st) {
             kind = (lastReason == "timed_out" || lastReason == "idle_timed_out") ? "timeout" : "failed";
         }
         newJobIds.push_back(jobId);
+        if (state == "running") nowRunning.insert(jobId);
         newJobStates.push_back(kind);
         // The process of the latest attempt, so selecting this row can show it in the monitor pane.
         int64_t latestPid = 0;
@@ -2541,6 +2633,10 @@ static void RefreshTaskQueueData(DashboardState* st) {
         newRows.push_back(std::move(resourcesStr));
     }
 
+    for (const auto& id : st->runningTaskJobs) {
+        if (!nowRunning.count(id)) StartTaskEndBlink(st, id);
+    }
+    st->runningTaskJobs = std::move(nowRunning);
     st->taskJobStates = std::move(newJobStates);
     st->taskJobProcIds = std::move(newJobProcIds);
     if (newRows == st->lastTaskRows && newJobIds == st->taskJobIds &&
@@ -2725,14 +2821,19 @@ static void RefreshDashboardData(DashboardState* st) {
     if (!IsWindowVisible(st->hwndMain) || IsIconic(st->hwndMain)) {
         st->allSnapshots = st->pm->GetAllSnapshots();
         bool finished = false;
+        bool failed = false;
+        std::vector<int> endedProcIds;
         for (const auto& s : st->allSnapshots) {
             auto it = st->lastProcStates.find(s.id);
             if (it != st->lastProcStates.end() && it->second == ProcState::Running && s.state != ProcState::Running) {
                 finished = true;
+                endedProcIds.push_back(s.id);
+                if (s.state != ProcState::Completed) failed = true;
             }
             st->lastProcStates[s.id] = s.state;
         }
-        if (finished) PlayCompletionSound(*st);
+        if (finished) PlayProcessEndSound(*st, failed);
+        for (int id : endedProcIds) StartProcEndBlink(st, id);
         return;
     }
     // Hold every update while a list scrollbar is dragged; the next tick after release catches up.
@@ -2740,6 +2841,8 @@ static void RefreshDashboardData(DashboardState* st) {
     st->allSnapshots = st->pm->GetAllSnapshots();
 
     bool processFinished = false;
+    bool processFailed = false;
+    std::vector<int> endedProcIds;
     std::unordered_map<int, ProcState> nextStates;
     nextStates.reserve(st->allSnapshots.size());
     for (const auto& s : st->allSnapshots) {
@@ -2747,13 +2850,16 @@ static void RefreshDashboardData(DashboardState* st) {
         if (it != st->lastProcStates.end() && it->second == ProcState::Running &&
             s.state != ProcState::Running) {
             processFinished = true;
+            endedProcIds.push_back(s.id);
+            if (s.state != ProcState::Completed) processFailed = true;
         }
         nextStates.emplace(s.id, s.state);
     }
     st->lastProcStates.swap(nextStates);
     if (processFinished) {
-        PlayCompletionSound(*st);
+        PlayProcessEndSound(*st, processFailed);
     }
+    for (int id : endedProcIds) StartProcEndBlink(st, id);
 
     st->cachedSnapshots.clear();
     for (const auto& s : st->allSnapshots) {
@@ -5486,6 +5592,9 @@ static void LoadShellConfig(DashboardState* st) {
     st->hideTerminalGrid = JsonGetBool(content, "hide_terminal_grid", true);
     st->completionSoundEnabled = JsonGetBool(content, "completion_sound_enabled", true);
     st->completionSoundPath = JsonGetString(content, "completion_sound_path", "");
+    st->endBlinkEnabled = JsonGetBool(content, "end_blink_enabled", true);
+    st->endBlinkSeconds = ClampEndBlinkSeconds(
+        static_cast<int>(JsonGetInt(content, "end_blink_seconds", kDefaultEndBlinkSec)));
     int listH = static_cast<int>(JsonGetInt(content, "process_list_height", st->processListHeight));
     if (listH >= kMinListH && listH <= 4000) st->processListHeight = listH;
     int modeVal = static_cast<int>(JsonGetInt(content, "list_display_mode", static_cast<int64_t>(ListDisplayMode::TwoRows)));
@@ -5555,6 +5664,8 @@ static void SaveShellConfig(const DashboardState* st) {
        << "  \"hide_terminal_grid\": " << (st->hideTerminalGrid ? "true" : "false") << ",\n"
        << "  \"completion_sound_enabled\": " << (st->completionSoundEnabled ? "true" : "false") << ",\n"
        << "  \"completion_sound_path\": \"" << JsonEscape(st->completionSoundPath) << "\",\n"
+       << "  \"end_blink_enabled\": " << (st->endBlinkEnabled ? "true" : "false") << ",\n"
+       << "  \"end_blink_seconds\": " << st->endBlinkSeconds << ",\n"
        << "  \"process_list_height\": " << st->processListHeight << ",\n"
        << "  \"list_display_mode\": " << static_cast<int>(st->listDisplayMode) << ",\n"
        << "  \"proc_row_ratio\": " << static_cast<int>(st->procRowRatio * 100.0f + 0.5f) << ",\n"
@@ -5981,6 +6092,11 @@ static void RemoveTrayIcon(DashboardState* st) {
 static void HideToTray(DashboardState* st) {
     if (!st || !st->hwndMain) return;
     InitTrayIcon(st);
+    // Without a tray icon, hiding the window would leave no way back to it: fall back to a normal minimize.
+    if (!st->trayAdded) {
+        ShowWindow(st->hwndMain, SW_MINIMIZE);
+        return;
+    }
     if (st->gridView && st->gridView->IsVisible()) {
         st->gridView->Hide();
     }
@@ -6171,6 +6287,11 @@ struct SettingsDlgState {
       HWND lblListBg = nullptr;
       HWND btnListBg[kListRowKeyCount] = {};
       HWND btnListBgReset = nullptr;
+      HWND chkEndBlink = nullptr;
+      HWND lblEndBlinkSec = nullptr;
+      HWND editEndBlinkSec = nullptr;
+      HWND tabCtrl = nullptr;
+      std::vector<HWND> tabPages[3];  // controls shown under each tab: 0 appearance, 1 behavior, 2 maintenance
 };
 
 static void UpdateSettingsDialogTexts(HWND hwnd);
@@ -6220,6 +6341,26 @@ static void CommitSoundSettings(SettingsDlgState* ds) {
     SaveShellConfig(ds->dash);
 }
 
+// Reads the end-blink controls, clamps the seconds, and saves them.
+static void CommitEndBlinkSettings(SettingsDlgState* ds) {
+    if (!ds || !ds->dash || !ds->editEndBlinkSec) return;
+    ds->dash->endBlinkEnabled = (SendMessageW(ds->chkEndBlink, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    wchar_t text[64] = {};
+    GetWindowTextW(ds->editEndBlinkSec, text, 64);
+    const int applied = ClampEndBlinkSeconds(_wtoi(text));
+    ds->dash->endBlinkSeconds = applied;
+    SetWindowTextW(ds->editEndBlinkSec, std::to_wstring(applied).c_str());
+    SaveShellConfig(ds->dash);
+}
+
+// Shows the controls of one tab page and hides the rest.
+static void SelectSettingsTab(SettingsDlgState* ds, int tab) {
+    if (!ds) return;
+    for (int p = 0; p < 3; ++p) {
+        for (HWND h : ds->tabPages[p]) ShowWindow(h, p == tab ? SW_SHOW : SW_HIDE);
+    }
+}
+
 static void UpdateSettingsDialogTexts(HWND hwnd) {
     auto* ds = reinterpret_cast<SettingsDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (!ds) return;
@@ -6256,6 +6397,22 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->chkResourceLocks, Tr(L"タスクキュー: リソースが競合するジョブを同時に実行しない", L"Task queue: never run jobs with conflicting resources together", L"Cola de tareas: no ejecutar a la vez trabajos con recursos en conflicto"));
     SetWindowTextW(ds->chkActivityStyle, Tr(L"実行状態監視ペイン: 行を色分けし、アイコンを表示", L"Execution monitor pane: colour rows and show icons", L"Panel de ejecución: colorear filas y mostrar iconos"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
+    {
+        const wchar_t* const tabNames[3] = {
+            Tr(L"表示", L"Appearance", L"Apariencia"),
+            Tr(L"動作・通知", L"Behavior & alerts", L"Comportamiento y avisos"),
+            Tr(L"管理", L"Maintenance", L"Mantenimiento"),
+        };
+        for (int t = 0; t < 3; ++t) {
+            std::wstring name = tabNames[t];
+            TCITEMW ti = {};
+            ti.mask = TCIF_TEXT;
+            ti.pszText = name.data();
+            TabCtrl_SetItem(ds->tabCtrl, t, &ti);
+        }
+    }
+    SetWindowTextW(ds->chkEndBlink, Tr(L"プロセス・タスク終了時に一覧の行を点滅させる", L"Blink list rows when a process or task ends", L"Hacer parpadear las filas al terminar un proceso o tarea"));
+    SetWindowTextW(ds->lblEndBlinkSec, Tr(L"点滅秒数 (1〜60, 既定 5):", L"Blink duration (seconds, 1-60, default 5):", L"Duración del parpadeo (segundos, 1-60, predeterminado 5):"));
     SetWindowTextW(ds->lblEventRetention, Tr(
         L"イベント保持件数 (100〜100000, -1 = 無制限: メモリを使い切る恐れあり):",
         L"Events kept per process (100-100000, -1 = unlimited: may use up memory):",
@@ -6323,9 +6480,21 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
             HINSTANCE hInst = GetModuleHandleW(nullptr);
 
-            ds->hwndTitle = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+            // The title is no longer shown: the tab names say what each page is.
+            ds->hwndTitle = CreateWindowExW(0, L"STATIC", L"", WS_CHILD,
                 18, 14, 440, 22, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndTitle, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
+
+            ds->tabCtrl = CreateWindowExW(0, WC_TABCONTROLW, L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS | TCS_SINGLELINE,
+                8, 8, 684, 760, hwnd, (HMENU)IDC_SET_TAB, hInst, nullptr);
+            SendMessageW(ds->tabCtrl, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
+            for (int t = 0; t < 3; ++t) {
+                TCITEMW ti = {};
+                ti.mask = TCIF_TEXT;
+                ti.pszText = const_cast<LPWSTR>(L"");
+                TabCtrl_InsertItem(ds->tabCtrl, t, &ti);
+            }
 
             ds->hwndLangLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
                 18, 48, 200, 20, hwnd, nullptr, hInst, nullptr);
@@ -6398,29 +6567,29 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SendMessageW(ds->hwndSatCombo, CB_ADDSTRING, 0, (LPARAM)L"100%");
 
             ds->btnShell = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                18, 348, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
+                18, 48, 180, 32, hwnd, (HMENU)IDC_SET_SHELL_CONFIG, hInst, nullptr);
             ds->btnReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                210, 348, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
+                210, 48, 180, 32, hwnd, (HMENU)IDC_SET_RESET_IDS, hInst, nullptr);
             ds->btnClear = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                402, 348, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
+                402, 48, 180, 32, hwnd, (HMENU)IDC_SET_CLEAR_ENDED, hInst, nullptr);
             ds->btnClose = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                560, 508, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
+                560, 784, 110, 32, hwnd, (HMENU)IDCANCEL, hInst, nullptr);
 
             ds->hwndSoundLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 396, 300, 20, hwnd, nullptr, hInst, nullptr);
+                18, 48, 300, 20, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSoundLabel, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
 
             ds->chkSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 420, 340, 24, hwnd, (HMENU)IDC_SET_SOUND_ENABLED, hInst, nullptr);
+                18, 72, 340, 24, hwnd, (HMENU)IDC_SET_SOUND_ENABLED, hInst, nullptr);
             ds->editSound = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                18, 450, 470, 26, hwnd, (HMENU)IDC_SET_SOUND_PATH, hInst, nullptr);
+                18, 102, 470, 26, hwnd, (HMENU)IDC_SET_SOUND_PATH, hInst, nullptr);
             ds->btnBrowseSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                496, 450, 90, 26, hwnd, (HMENU)IDC_SET_SOUND_BROWSE, hInst, nullptr);
+                496, 102, 90, 26, hwnd, (HMENU)IDC_SET_SOUND_BROWSE, hInst, nullptr);
             ds->btnTestSound = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                594, 450, 80, 26, hwnd, (HMENU)IDC_SET_SOUND_TEST, hInst, nullptr);
+                594, 102, 80, 26, hwnd, (HMENU)IDC_SET_SOUND_TEST, hInst, nullptr);
             ds->hwndSoundHint = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 480, 470, 18, hwnd, nullptr, hInst, nullptr);
+                18, 132, 470, 18, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->hwndSoundHint, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
 
             SendMessageW(ds->chkSound, BM_SETCHECK,
@@ -6428,54 +6597,65 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             SetWindowTextW(ds->editSound, Utf8ToWide(ds->dash->completionSoundPath).c_str());
 
             ds->chkHideEnded = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 512, 380, 24, hwnd, (HMENU)IDC_SET_HIDE_ENDED, hInst, nullptr);
+                18, 170, 380, 24, hwnd, (HMENU)IDC_SET_HIDE_ENDED, hInst, nullptr);
             SendMessageW(ds->chkHideEnded, BM_SETCHECK,
                 ds->dash->hideEndedProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 536, 380, 24, hwnd, (HMENU)IDC_SET_USAGE_GRAPH_MODE, hInst, nullptr);
+                18, 194, 380, 24, hwnd, (HMENU)IDC_SET_USAGE_GRAPH_MODE, hInst, nullptr);
             SendMessageW(ds->chkUsageGraph, BM_SETCHECK,
                 ds->dash->usageGraphMode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkRestoreUsageGraph = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 560, 380, 24, hwnd, (HMENU)IDC_SET_RESTORE_USAGE_GRAPH, hInst, nullptr);
+                18, 218, 380, 24, hwnd, (HMENU)IDC_SET_RESTORE_USAGE_GRAPH, hInst, nullptr);
             SendMessageW(ds->chkRestoreUsageGraph, BM_SETCHECK,
                 ds->dash->restoreUsageGraph ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkResourceLocks = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 584, 520, 24, hwnd, (HMENU)IDC_SET_RESOURCE_LOCKS, hInst, nullptr);
+                18, 242, 520, 24, hwnd, (HMENU)IDC_SET_RESOURCE_LOCKS, hInst, nullptr);
             SendMessageW(ds->chkResourceLocks, BM_SETCHECK,
                 ds->dash->resourceLocks ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->chkActivityStyle = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                18, 608, 520, 24, hwnd, (HMENU)IDC_SET_ACTIVITY_STYLE, hInst, nullptr);
+                18, 266, 520, 24, hwnd, (HMENU)IDC_SET_ACTIVITY_STYLE, hInst, nullptr);
             SendMessageW(ds->chkActivityStyle, BM_SETCHECK,
                 g_activityStyle ? BST_CHECKED : BST_UNCHECKED, 0);
 
             ds->lblEventRetention = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 635, 530, 20, hwnd, nullptr, hInst, nullptr);
+                18, 296, 530, 20, hwnd, nullptr, hInst, nullptr);
             ds->editEventRetention = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                560, 632, 110, 24, hwnd, (HMENU)IDC_SET_LLM_MAX_EVENTS, hInst, nullptr);
+                560, 293, 110, 24, hwnd, (HMENU)IDC_SET_LLM_MAX_EVENTS, hInst, nullptr);
             SetWindowTextW(ds->editEventRetention, std::to_wstring(ds->dash->llmMaxEvents).c_str());
 
             ds->lblRefreshInterval = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 671, 530, 20, hwnd, nullptr, hInst, nullptr);
+                18, 332, 530, 20, hwnd, nullptr, hInst, nullptr);
             ds->editRefreshInterval = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
-                560, 668, 110, 24, hwnd, (HMENU)IDC_SET_REFRESH_INTERVAL, hInst, nullptr);
+                560, 329, 110, 24, hwnd, (HMENU)IDC_SET_REFRESH_INTERVAL, hInst, nullptr);
             SetWindowTextW(ds->editRefreshInterval, std::to_wstring(ds->dash->refreshIntervalMs).c_str());
 
             ds->lblListBg = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 706, 640, 20, hwnd, nullptr, hInst, nullptr);
+                18, 352, 640, 20, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->lblListBg, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
             for (int k = 0; k < kListRowKeyCount; ++k) {
                 ds->btnListBg[k] = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                    18 + k * 126, 730, 120, 30, hwnd,
+                    18 + k * 126, 376, 120, 30, hwnd,
                     (HMENU)(INT_PTR)(IDC_SET_LIST_BG_RUNNING + k), hInst, nullptr);
             }
             ds->btnListBgReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                18, 768, 220, 30, hwnd, (HMENU)IDC_SET_LIST_BG_RESET, hInst, nullptr);
+                18, 416, 220, 30, hwnd, (HMENU)IDC_SET_LIST_BG_RESET, hInst, nullptr);
+
+            ds->chkEndBlink = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                18, 368, 520, 24, hwnd, (HMENU)IDC_SET_END_BLINK_ENABLED, hInst, nullptr);
+            SendMessageW(ds->chkEndBlink, BM_SETCHECK,
+                ds->dash->endBlinkEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+            ds->lblEndBlinkSec = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 402, 530, 20, hwnd, nullptr, hInst, nullptr);
+            ds->editEndBlinkSec = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
+                560, 399, 110, 24, hwnd, (HMENU)IDC_SET_END_BLINK_SECONDS, hInst, nullptr);
+            SetWindowTextW(ds->editEndBlinkSec, std::to_wstring(ds->dash->endBlinkSeconds).c_str());
 
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
@@ -6484,14 +6664,47 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
                              ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
                              ds->chkResourceLocks, ds->chkActivityStyle, ds->lblEventRetention, ds->editEventRetention,
-                             ds->lblRefreshInterval, ds->editRefreshInterval, ds->btnListBgReset };
+                             ds->lblRefreshInterval, ds->editRefreshInterval, ds->btnListBgReset,
+                             ds->chkEndBlink, ds->lblEndBlinkSec, ds->editEndBlinkSec };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
             for (HWND h : ds->btnListBg) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
             SendMessageW(ds->lblListBg, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
 
+            // Sort the controls into their tab pages.
+            {
+                auto& appearance = ds->tabPages[0];
+                auto& behavior = ds->tabPages[1];
+                auto& maintenance = ds->tabPages[2];
+                appearance.insert(appearance.end(), {
+                    ds->hwndLangLabel, ds->btnJa, ds->btnEn, ds->btnEs,
+                    ds->hwndThemeLabel, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
+                    ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
+                    ds->btnPastelBlue, ds->btnPastelOrange, ds->btnPastelPink, ds->btnPastelRed, ds->btnPastelGreen,
+                    ds->btnDeepPurple, ds->btnPastelPurple, ds->btnDeepYellow, ds->btnPastelYellow,
+                    ds->hwndSatLabel, ds->hwndSatCombo,
+                    ds->lblListBg, ds->btnListBgReset });
+                appearance.insert(appearance.end(), ds->btnListBg, ds->btnListBg + kListRowKeyCount);
+                behavior.insert(behavior.end(), {
+                    ds->hwndSoundLabel, ds->chkSound, ds->editSound, ds->btnBrowseSound, ds->btnTestSound,
+                    ds->hwndSoundHint, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
+                    ds->chkResourceLocks, ds->chkActivityStyle,
+                    ds->lblEventRetention, ds->editEventRetention,
+                    ds->lblRefreshInterval, ds->editRefreshInterval,
+                    ds->chkEndBlink, ds->lblEndBlinkSec, ds->editEndBlinkSec });
+                maintenance.insert(maintenance.end(), { ds->btnShell, ds->btnReset, ds->btnClear });
+            }
+            SelectSettingsTab(ds, 0);
             UpdateSettingsDialogTexts(hwnd);
             ApplyNativeThemeToWindow(hwnd);
             return 0;
+        }
+        case WM_NOTIFY: {
+            auto* nm = reinterpret_cast<NMHDR*>(lParam);
+            if (ds && nm->idFrom == IDC_SET_TAB && nm->code == TCN_SELCHANGE) {
+                SelectSettingsTab(ds, TabCtrl_GetCurSel(ds->tabCtrl));
+                return 0;
+            }
+            break;
         }
         case WM_COMMAND: {
             int id = LOWORD(wParam);
@@ -6499,10 +6712,19 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 if (ds) CommitSoundSettings(ds);
                 if (ds) CommitEventRetention(ds);
                 if (ds) CommitRefreshInterval(ds);
+                if (ds) CommitEndBlinkSettings(ds);
                 DestroyWindow(hwnd);
                 return 0;
             }
             if (!ds) return 0;
+            if (id == IDC_SET_END_BLINK_ENABLED) {
+                CommitEndBlinkSettings(ds);
+                return 0;
+            }
+            if (id == IDC_SET_END_BLINK_SECONDS) {
+                if (HIWORD(wParam) == EN_KILLFOCUS) CommitEndBlinkSettings(ds);
+                return 0;
+            }
             if (id == IDC_SET_REFRESH_INTERVAL) {
                 if (HIWORD(wParam) == EN_KILLFOCUS) CommitRefreshInterval(ds);
                 return 0;
@@ -6780,7 +7002,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 840;
+    int dlgH = 870;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 
@@ -7371,6 +7593,17 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         return 0;
     }
 
+    // Explorer restarted (or was not ready when we added the icon): the notification area has dropped our
+    // icon, so register it again. Only needed when the icon is or should be in the tray.
+    static const UINT taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    if (msg == taskbarCreatedMsg && st) {
+        if (st->trayAdded || !IsWindowVisible(hwnd)) {
+            st->trayAdded = false;
+            InitTrayIcon(st);
+        }
+        return 0;
+    }
+
     switch (msg) {
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
@@ -7639,6 +7872,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 UpdateClock(st);
                 RefreshDashboardData(st);
                 ApplyDashboardRefreshTimer(st);
+            } else if (wParam == TIMER_END_BLINK_ID && st) {
+                if (!TickEndBlink(st)) KillTimer(hwnd, TIMER_END_BLINK_ID);
             } else if (wParam == TIMER_KPI_ANIM_ID && st) {
                 if (st->activeRunningCount > 0) {
                     g_kpiBarPhase += 0.05f;
@@ -8118,6 +8353,12 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         } else {
                             lvcd->clrTextBk = g_theme.panel;
                         }
+                        if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size()) &&
+                            IsEndBlinkOn(st, st->taskEndBlinkUntil, st->taskJobIds[idx])) {
+                            const COLORREF blink = BlendColor(lvcd->clrTextBk, g_theme.accent, 0.6f);
+                            lvcd->clrTextBk = blink;
+                            lvcd->clrText = ListRowTextFor(blink);
+                        }
                         return CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
                     }
                 }
@@ -8189,6 +8430,11 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             const bool hasCustom = !selected && ProcessRowCustomBg(snap, custom);
                             lvcd->clrTextBk = selected ? g_theme.rowSelected : GetStateRowBgColor(snap);
                             lvcd->clrText = hasCustom ? ListRowTextFor(custom) : g_theme.listText;
+                            if (!selected && IsEndBlinkOn(st, st->procEndBlinkUntil, snap.id)) {
+                                const COLORREF blink = BlendColor(GetStateRowBgColor(snap), g_theme.accent, 0.6f);
+                                lvcd->clrTextBk = blink;
+                                lvcd->clrText = ListRowTextFor(blink);
+                            }
                         }
                         return CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
                     }
@@ -8203,6 +8449,9 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             } else {
                                 lvcd->clrText = (lvcd->iSubItem == 5 && snap.state == ProcState::Running)
                                                     ? g_theme.muted : g_theme.listText;
+                            }
+                            if (!selected && IsEndBlinkOn(st, st->procEndBlinkUntil, snap.id)) {
+                                lvcd->clrText = ListRowTextFor(BlendColor(GetStateRowBgColor(snap), g_theme.accent, 0.6f));
                             }
                         }
                         return CDRF_NEWFONT;
@@ -8384,7 +8633,14 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc, TaskQueueManager& tqm) {
             continue;
         }
         TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        // An exception escaping a window procedure would end the process without a trace: log it and keep running.
+        try {
+            DispatchMessageW(&msg);
+        } catch (const std::exception& e) {
+            WriteAuditLog("CRASH_GUARD", std::string("GUI message dispatch exception: ") + e.what());
+        } catch (...) {
+            WriteAuditLog("CRASH_GUARD", "GUI message dispatch exception: unknown");
+        }
     }
     if (hAccel) DestroyAcceleratorTable(hAccel);
 

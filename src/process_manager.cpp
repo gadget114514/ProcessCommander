@@ -146,7 +146,20 @@ ProcessManager::ManagedProcess::~ManagedProcess() {
 
 ProcessManager::ProcessManager() {
     LoadState();
-    monitorThread_ = std::thread(&ProcessManager::MonitorThreadFunc, this);
+    // If the monitor loop throws, log it and restart it: exit detection and timeouts must keep working.
+    monitorThread_ = std::thread([this] {
+        while (!stopMonitor_) {
+            try {
+                MonitorThreadFunc();
+                return;
+            } catch (const std::exception& e) {
+                WriteAuditLog("CRASH_GUARD", std::string("Monitor thread exception: ") + e.what());
+            } catch (...) {
+                WriteAuditLog("CRASH_GUARD", "Monitor thread exception: unknown");
+            }
+            Sleep(200);
+        }
+    });
 }
 
 ProcessManager::~ProcessManager() {
@@ -497,7 +510,15 @@ int ProcessManager::StartProcess(const StartProcessRequest& req, std::string& ou
             proc->outputVersion++;
             AppendToLogFileWide(proc->logFilePathWide, msg);
         } else if (proc->mode == ExecMode::Pipe && proc->hStdoutRead) {
-            proc->readerThread = std::thread(&ProcessManager::ReaderThreadFunc, this, proc);
+            proc->readerThread = std::thread([this, proc] {
+                try {
+                    ReaderThreadFunc(proc);
+                } catch (const std::exception& e) {
+                    WriteAuditLog("CRASH_GUARD", "Reader thread exception (#" + std::to_string(proc->id) + "): " + e.what());
+                } catch (...) {
+                    WriteAuditLog("CRASH_GUARD", "Reader thread exception (#" + std::to_string(proc->id) + "): unknown");
+                }
+            });
         }
 
         processes_.push_back(proc);

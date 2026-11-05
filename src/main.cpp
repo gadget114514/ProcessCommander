@@ -6,6 +6,8 @@
 #include "gui_dashboard.h"
 #include "cli.h"
 #include <shellapi.h>
+#include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <vector>
 
@@ -249,6 +251,12 @@ int main() {
             hConsole = GetConsoleWindow();
             if (hConsole) ShowWindow(hConsole, SW_HIDE);
         }
+
+        // Record unhandled C++ exceptions (e.g. from a worker thread) before the process aborts.
+        std::set_terminate([] {
+            WriteAuditLog("CRASH", "std::terminate called: unhandled exception");
+            std::abort();
+        });
 
         ProcessManager pm;
         TaskQueueManager tqm;
