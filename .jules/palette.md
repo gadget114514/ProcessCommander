@@ -4,3 +4,6 @@
 ## 2024-10-23 - Focus Visible Styles for Owner-Drawn Buttons
 **Learning:** In Win32, owner-drawn buttons (`BS_OWNERDRAW`) lose their default keyboard focus indicator (`ODS_FOCUS`), making keyboard navigation difficult and hindering accessibility.
 **Action:** Always verify if owner-drawn controls handle the `ODS_FOCUS` state and use `DrawFocusRect` to render a visible focus ring.
+## 2025-02-12 - Reusing Existing Translations for Accessibility Labels
+**Learning:** When adding accessibility tooltips for newly identifiable but context-less buttons (like "Usage Graph"), existing UI text strings (such as from tray menus) can often be reused. In the codebase, it's vital to search for exact strings in existing `Tr()` calls rather than attempting to forge localized strings or falling back to English arbitrarily.
+**Action:** Use `grep -rn "Tr("` and look for the specific term before assigning a localized or unlocalized string to ensure maximum localization fidelity.
