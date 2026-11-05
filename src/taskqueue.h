@@ -175,6 +175,9 @@ public:
     std::string TaskQueuePause(const std::string& taskqueue, bool paused, std::string& outError);
     std::string TaskQueueWait(const std::string& taskqueue, int sinceVersion, int timeoutMs, std::string& outError);
     std::string TaskQueuePurge(const std::string& taskqueue, const std::string& statesJson, std::string& outError);
+    // Removes finished jobs (succeeded/failed/cancelled) whose updatedAt is older than maxAgeSec.
+    // Empty taskqueue applies to all queues.
+    std::string TaskQueuePurgeOlderThan(const std::string& taskqueue, int64_t maxAgeSec, std::string& outError);
     std::string TaskQueueLink(const std::string& job, const std::string& dependsOn, const std::string& on, std::string& outError);
     std::string TaskQueueUnlink(const std::string& job, const std::string& dependsOn, std::string& outError);
     std::string TaskQueueGraph(const std::string& taskqueue, const std::string& root, std::string& outError);

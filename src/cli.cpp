@@ -404,6 +404,8 @@ TASK QUEUE:
   taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, retry_in_sec, blocked)
   taskqueue wait <name> [--since <version>] [--timeout-ms <ms>]
   taskqueue purge <name> [--states succeeded,failed,cancelled]
+  taskqueue purge [<name>] --older-than-days <N>   (finished jobs not updated for N days; all queues if <name> omitted)
+  reset [--yes]                                    (delete ALL project data in the data directory; lists targets without --yes; refused while running)
 
   start/run ... --allow-chain
       Allow a chained command (&&, ||, &, ';') as a single process. Task-queue
@@ -1317,6 +1319,48 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
 
 } // namespace
 
+// pcder reset [--yes]: deletes every entry under the project data directory.
+// Without --yes it only lists the targets. Refused while ProcessCommander is running for that directory.
+static int RunProjectReset(const std::vector<std::string>& args, bool jsonOutput) {
+    auto fail = [&](const std::string& msg) {
+        if (jsonOutput) std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(msg) << "\"}\n";
+        else std::cerr << "Error: " << msg << "\n";
+        return 1;
+    };
+    bool yes = false;
+    for (size_t i = 2; i < args.size(); ++i) {
+        if (args[i] == "--yes") yes = true;
+        else return fail("unknown option for reset: " + args[i] + " (use: pcder reset [--yes])");
+    }
+    if (IsProcessCommanderRunningForDataDirWide()) {
+        return fail("ProcessCommander is running for this data directory. Quit it (pcder quit) and retry.");
+    }
+    auto entries = ListProjectDataEntriesWide();
+    std::string dirUtf8 = WideToUtf8(GetEffectiveDataDirectoryWide());
+    if (!yes) {
+        if (jsonOutput) {
+            std::cout << "{\"ok\":true,\"executed\":false,\"data_dir\":\"" << JsonEscape(dirUtf8) << "\",\"targets\":[";
+            for (size_t i = 0; i < entries.size(); ++i) {
+                if (i > 0) std::cout << ",";
+                std::cout << "\"" << JsonEscape(WideToUtf8(entries[i])) << "\"";
+            }
+            std::cout << "]}\n";
+        } else {
+            std::cout << "Data directory: " << dirUtf8 << "\n";
+            std::cout << "The following " << entries.size() << " entries will be DELETED:\n";
+            for (const auto& e : entries) std::cout << "  " << WideToUtf8(e) << "\n";
+            std::cout << "Nothing was deleted. Re-run with --yes to reset.\n";
+        }
+        return 0;
+    }
+    std::string err;
+    size_t removed = ResetProjectDataWide(err);
+    if (!err.empty()) return fail("reset stopped after " + std::to_string(removed) + " entries: " + err);
+    if (jsonOutput) std::cout << "{\"ok\":true,\"executed\":true,\"removed\":" << removed << "}\n";
+    else std::cout << "Reset complete: removed " << removed << " entries from " << dirUtf8 << "\n";
+    return 0;
+}
+
 int RunCli(const std::vector<std::string>& rawArgs) {
     std::vector<std::string> args;
     args.push_back(rawArgs.empty() ? "pcder" : rawArgs[0]);
@@ -1359,7 +1403,9 @@ int RunCli(const std::vector<std::string>& rawArgs) {
     std::ostringstream reqJson;
     int requestedId = 0;
 
-    if (subcmd == "start" || subcmd == "run") {
+    if (subcmd == "reset") return RunProjectReset(args, jsonOutput);
+
+if (subcmd == "start" || subcmd == "run") {
         std::string name;
         std::string cmd;
         std::string cwd;
@@ -1715,6 +1761,21 @@ int RunCli(const std::vector<std::string>& rawArgs) {
             reqJson << "{\"action\":\"taskqueue_wait\",\"taskqueue\":\"" << JsonEscape(tqName)
                     << "\",\"since_version\":" << since << ",\"timeout_ms\":" << timeoutMs << "}";
             subcmd = "taskqueue_wait";
+        } else if (op == "purge" && !argVal("--older-than-days", "").empty()) {
+            // Age-based purge: finished jobs not updated for N days (all queues unless a name is given).
+            std::string daysStr = argVal("--older-than-days", "");
+            long long days = 0;
+            try { days = std::stoll(daysStr); } catch (...) { days = -1; }
+            if (days < 0) return failWith("--older-than-days requires a non-negative integer");
+            // Positional name, skipping the value that follows --older-than-days.
+            std::string tqName;
+            for (size_t i = 3; i < args.size(); ++i) {
+                if (args[i] == "--older-than-days") { ++i; continue; }
+                if (!args[i].empty() && args[i][0] != '-') { tqName = args[i]; break; }
+            }
+            reqJson << "{\"action\":\"taskqueue_purge\",\"taskqueue\":\"" << JsonEscape(tqName)
+                    << "\",\"older_than_sec\":" << (days * 24 * 60 * 60) << "}";
+            subcmd = "taskqueue_purge";
         } else if (op == "purge") {
             std::string tqName = firstPositional(3);
             std::string statesStr = argVal("--states", "succeeded,failed,cancelled");

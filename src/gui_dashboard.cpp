@@ -773,6 +773,12 @@ enum ControlId {
     IDC_SET_ACTIVITY_STYLE = 6042,
     IDC_SET_LLM_MAX_EVENTS = 6043,
     IDC_SET_REFRESH_INTERVAL = 6044,
+    IDC_SET_LIST_BG_RUNNING = 6045,   // 6045..6049: running, idle, completed, timeout, failed
+    IDC_SET_LIST_BG_IDLE = 6046,
+    IDC_SET_LIST_BG_COMPLETED = 6047,
+    IDC_SET_LIST_BG_TIMEOUT = 6048,
+    IDC_SET_LIST_BG_FAILED = 6049,
+    IDC_SET_LIST_BG_RESET = 6050,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -1034,7 +1040,69 @@ static COLORREF GetStateBadgeColor(const ProcessSnapshot& s) {
     return RGB(100, 116, 139);
 }
 
+// User-chosen text background colors for the process and task lists, keyed by state.
+// An unset key keeps the built-in theme color. Stored in the config as "row_bg_<key>": "#RRGGBB".
+enum class ListRowKey : int { Running = 0, Idle, Completed, Timeout, Failed, Count };
+static const int kListRowKeyCount = static_cast<int>(ListRowKey::Count);
+static const char* const kListRowKeyJson[kListRowKeyCount] = {
+    "row_bg_running", "row_bg_idle", "row_bg_completed", "row_bg_timeout", "row_bg_failed"
+};
+static COLORREF g_listRowBg[kListRowKeyCount] = {};
+static bool g_listRowBgSet[kListRowKeyCount] = {};
+
+static bool ParseHexColor(const std::string& text, COLORREF& out) {
+    if (text.size() != 7 || text[0] != '#') return false;
+    unsigned int v = 0;
+    for (size_t i = 1; i < 7; ++i) {
+        char c = text[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= static_cast<unsigned int>(c - '0');
+        else if (c >= 'a' && c <= 'f') v |= static_cast<unsigned int>(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v |= static_cast<unsigned int>(c - 'A' + 10);
+        else return false;
+    }
+    out = RGB((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+    return true;
+}
+
+static std::string FormatHexColor(COLORREF c) {
+    char buf[8] = {};
+    snprintf(buf, sizeof(buf), "#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
+    return buf;
+}
+
+// Returns the user's color for this key, or the fallback when none is set.
+static COLORREF ListRowBgOrDefault(ListRowKey key, COLORREF fallback) {
+    const int k = static_cast<int>(key);
+    return g_listRowBgSet[k] ? g_listRowBg[k] : fallback;
+}
+
+// Maps a process to its row-color key. Returns false for states with no key.
+static bool ProcessRowKey(const ProcessSnapshot& s, ListRowKey& key) {
+    switch (s.state) {
+        case ProcState::Running:
+            key = (s.idleMs >= 10000) ? ListRowKey::Idle : ListRowKey::Running;
+            return true;
+        case ProcState::Completed:
+            key = ListRowKey::Completed;
+            return true;
+        case ProcState::TimedOut:
+        case ProcState::IdleTimedOut:
+            key = ListRowKey::Timeout;
+            return true;
+        case ProcState::Failed:
+        case ProcState::Killed:
+            key = ListRowKey::Failed;
+            return true;
+    }
+    return false;
+}
+
 static COLORREF GetStateRowBgColor(const ProcessSnapshot& s) {
+    ListRowKey key;
+    if (ProcessRowKey(s, key) && g_listRowBgSet[static_cast<int>(key)]) {
+        return g_listRowBg[static_cast<int>(key)];
+    }
     switch (s.state) {
         case ProcState::Running:
             return (s.idleMs >= 10000) ? g_theme.rowIdle : g_theme.rowRunning;
@@ -5426,6 +5494,11 @@ static void LoadShellConfig(DashboardState* st) {
     st->refreshIntervalMs = ClampRefreshIntervalMs(
         static_cast<int>(JsonGetInt(content, "refresh_interval_ms", kDefaultRefreshIntervalMs)));
     SettingsManager::Instance().SetTabGridRefreshIntervalMs(st->refreshIntervalMs);
+    for (int k = 0; k < kListRowKeyCount; ++k) {
+        COLORREF c = 0;
+        g_listRowBgSet[k] = ParseHexColor(JsonGetString(content, kListRowKeyJson[k], ""), c);
+        if (g_listRowBgSet[k]) g_listRowBg[k] = c;
+    }
     ApplyTheme();
 }
 
@@ -5434,6 +5507,12 @@ static void SaveShellConfig(const DashboardState* st) {
     std::string defShell = "powershell";
     if (st->defaultShell == ShellType::Cmd) defShell = "cmd";
     else if (st->defaultShell == ShellType::Bash) defShell = "bash";
+
+    std::ostringstream listBg;
+    for (int k = 0; k < kListRowKeyCount; ++k) {
+        listBg << "  \"" << kListRowKeyJson[k] << "\": \""
+               << (g_listRowBgSet[k] ? FormatHexColor(g_listRowBg[k]) : std::string()) << "\",\n";
+    }
 
     std::ostringstream ss;
     ss << "{\n"
@@ -5459,6 +5538,7 @@ static void SaveShellConfig(const DashboardState* st) {
         << "  \"restore_usage_graph\": " << (st->restoreUsageGraph ? "true" : "false") << ",\n"
         << "  \"llm_max_events\": " << st->llmMaxEvents << ",\n"
         << "  \"resource_locks\": " << (st->resourceLocks ? "true" : "false") << ",\n"
+        << listBg.str()
         << "  \"refresh_interval_ms\": " << st->refreshIntervalMs << "\n"
         << "}\n";
 
@@ -6058,7 +6138,19 @@ struct SettingsDlgState {
       HWND editEventRetention = nullptr;
       HWND lblRefreshInterval = nullptr;
       HWND editRefreshInterval = nullptr;
+      HWND lblListBg = nullptr;
+      HWND btnListBg[kListRowKeyCount] = {};
+      HWND btnListBgReset = nullptr;
 };
+
+static void UpdateSettingsDialogTexts(HWND hwnd);
+
+static void ApplyListRowBgChange(SettingsDlgState* ds, HWND hwnd) {
+    SaveShellConfig(ds->dash);
+    ApplyListTheme(ds->dash);
+    UpdateSettingsDialogTexts(hwnd);
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
 
 // Reads the event retention box, applies it to every stream tracker and saves it. Out-of-range
 // values are clamped (see ClampLlmMaxEvents), and the box shows the value that was applied.
@@ -6142,6 +6234,25 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
         L"更新間隔 (ms, 100〜60000, 既定 2000):",
         L"Update interval (ms, 100-60000, default 2000):",
         L"Intervalo de actualización (ms, 100-60000, predeterminado 2000):"));
+    SetWindowTextW(ds->lblListBg, Tr(
+        L"プロセス/タスクリストの行の背景色 (状態別, クリックで変更)",
+        L"Process/task list row background (by state, click to change)",
+        L"Fondo de fila de procesos/tareas (por estado, clic para cambiar)"));
+    static const wchar_t* const kListBgNames[kListRowKeyCount][3] = {
+        { L"実行中", L"Running", L"En ejecución" },
+        { L"アイドル", L"Idle", L"Inactivo" },
+        { L"完了", L"Completed", L"Completado" },
+        { L"タイムアウト", L"Timeout", L"Tiempo agotado" },
+        { L"失敗", L"Failed", L"Fallido" },
+    };
+    for (int k = 0; k < kListRowKeyCount; ++k) {
+        std::wstring label = Tr(kListBgNames[k][0], kListBgNames[k][1], kListBgNames[k][2]);
+        label += L": ";
+        label += g_listRowBgSet[k] ? Utf8ToWide(FormatHexColor(g_listRowBg[k]))
+                                   : std::wstring(Tr(L"既定", L"default", L"predet."));
+        SetWindowTextW(ds->btnListBg[k], label.c_str());
+    }
+    SetWindowTextW(ds->btnListBgReset, Tr(L"背景色を既定に戻す", L"Reset row colors", L"Restablecer colores"));
     SetWindowTextW(ds->hwndSoundLabel, Tr(L"終了時の通知音", L"Completion sound", L"Sonido al finalizar"));
     SetWindowTextW(ds->chkSound, Tr(L"プロセス終了時に音を鳴らす", L"Play a sound when a process finishes", L"Reproducir un sonido al finalizar un proceso"));
     SetWindowTextW(ds->btnBrowseSound, Tr(L"参照...", L"Browse...", L"Examinar..."));
@@ -6317,6 +6428,17 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 560, 668, 110, 24, hwnd, (HMENU)IDC_SET_REFRESH_INTERVAL, hInst, nullptr);
             SetWindowTextW(ds->editRefreshInterval, std::to_wstring(ds->dash->refreshIntervalMs).c_str());
 
+            ds->lblListBg = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 706, 640, 20, hwnd, nullptr, hInst, nullptr);
+            SendMessageW(ds->lblListBg, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
+            for (int k = 0; k < kListRowKeyCount; ++k) {
+                ds->btnListBg[k] = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                    18 + k * 126, 730, 120, 30, hwnd,
+                    (HMENU)(INT_PTR)(IDC_SET_LIST_BG_RUNNING + k), hInst, nullptr);
+            }
+            ds->btnListBgReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                18, 768, 220, 30, hwnd, (HMENU)IDC_SET_LIST_BG_RESET, hInst, nullptr);
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
                              ds->btnPastelBlue, ds->btnPastelOrange, ds->btnPastelPink, ds->btnPastelRed, ds->btnPastelGreen,
@@ -6324,8 +6446,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                              ds->btnShell, ds->btnReset, ds->btnClear, ds->btnClose, ds->chkSound, ds->editSound,
                              ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
                              ds->chkResourceLocks, ds->chkActivityStyle, ds->lblEventRetention, ds->editEventRetention,
-                             ds->lblRefreshInterval, ds->editRefreshInterval };
+                             ds->lblRefreshInterval, ds->editRefreshInterval, ds->btnListBgReset };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
+            for (HWND h : ds->btnListBg) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
+            SendMessageW(ds->lblListBg, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
 
             UpdateSettingsDialogTexts(hwnd);
             ApplyNativeThemeToWindow(hwnd);
@@ -6442,6 +6566,28 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
             }
+            if (id >= IDC_SET_LIST_BG_RUNNING && id < IDC_SET_LIST_BG_RUNNING + kListRowKeyCount) {
+                if (HIWORD(wParam) != BN_CLICKED) return 0;
+                const int k = id - IDC_SET_LIST_BG_RUNNING;
+                static COLORREF customColors[16] = {};
+                CHOOSECOLORW cc = {};
+                cc.lStructSize = sizeof(cc);
+                cc.hwndOwner = hwnd;
+                cc.rgbResult = ListRowBgOrDefault(static_cast<ListRowKey>(k), g_theme.panel);
+                cc.lpCustColors = customColors;
+                cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+                if (ChooseColorW(&cc)) {
+                    g_listRowBg[k] = cc.rgbResult;
+                    g_listRowBgSet[k] = true;
+                    ApplyListRowBgChange(ds, hwnd);
+                }
+                return 0;
+            }
+            if (id == IDC_SET_LIST_BG_RESET) {
+                for (int k = 0; k < kListRowKeyCount; ++k) g_listRowBgSet[k] = false;
+                ApplyListRowBgChange(ds, hwnd);
+                return 0;
+            }
             if (id == IDC_SET_SHELL_CONFIG) {
                 ShowShellConfigDialog(ds->dash);
                 return 0;
@@ -6485,7 +6631,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             else if (radio) checked = (ThemeButtonId(g_uiTheme) == id);
 
             bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            // List row color buttons show their own color as a swatch.
+            const bool listBgBtn = id >= IDC_SET_LIST_BG_RUNNING && id < IDC_SET_LIST_BG_RUNNING + kListRowKeyCount;
+            const int listBgIdx = listBgBtn ? id - IDC_SET_LIST_BG_RUNNING : 0;
+            const bool listBgSwatch = listBgBtn && g_listRowBgSet[listBgIdx] && !pressed;
             COLORREF bg = pressed ? g_theme.border : g_theme.panel;
+            if (listBgSwatch) bg = g_listRowBg[listBgIdx];
             HBRUSH bgBrush = CreateSolidBrush(bg);
             FillRect(dis->hDC, &dis->rcItem, bgBrush);
             DeleteObject(bgBrush);
@@ -6527,7 +6678,13 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             wchar_t text[256] = {};
             GetWindowTextW(dis->hwndItem, text, 256);
             SetBkMode(dis->hDC, TRANSPARENT);
-            SetTextColor(dis->hDC, g_theme.text);
+            COLORREF textCol = g_theme.text;
+            if (listBgSwatch) {
+                // Black or white text, whichever reads better on the chosen color.
+                int luma = (GetRValue(bg) * 299 + GetGValue(bg) * 587 + GetBValue(bg)) / 1000;
+                textCol = luma < 140 ? RGB(255, 255, 255) : RGB(0, 0, 0);
+            }
+            SetTextColor(dis->hDC, textCol);
             HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, ds->dash->hFontUi));
             UINT fmt = (radio ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
             DrawTextW(dis->hDC, text, -1, &textRc, fmt);
@@ -6589,7 +6746,7 @@ static void ShowSettingsDialog(DashboardState* st) {
     RECT rcParent = {};
     GetWindowRect(st->hwndMain, &rcParent);
     int dlgW = 700;
-    int dlgH = 765;
+    int dlgH = 840;
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
 
@@ -7908,7 +8065,13 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             kind = st->taskJobStates[idx];
                         }
                         lvcd->clrText = g_theme.listText;
-                        if (kind == "running") {
+                        if (kind == "running" && g_listRowBgSet[static_cast<int>(ListRowKey::Running)]) {
+                            lvcd->clrTextBk = g_listRowBg[static_cast<int>(ListRowKey::Running)];
+                        } else if (kind == "timeout" && g_listRowBgSet[static_cast<int>(ListRowKey::Timeout)]) {
+                            lvcd->clrTextBk = g_listRowBg[static_cast<int>(ListRowKey::Timeout)];
+                        } else if (kind == "failed" && g_listRowBgSet[static_cast<int>(ListRowKey::Failed)]) {
+                            lvcd->clrTextBk = g_listRowBg[static_cast<int>(ListRowKey::Failed)];
+                        } else if (kind == "running") {
                             lvcd->clrTextBk = MutedRowColor(g_theme.rowSelected);
                         } else if (kind == "timeout") {
                             lvcd->clrTextBk = MutedRowColor(g_theme.rowIdle);

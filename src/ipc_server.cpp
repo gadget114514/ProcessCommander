@@ -578,8 +578,13 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
                                       static_cast<int>(JsonGetInt(reqJson, "since_version", 0)),
                                       static_cast<int>(JsonGetInt(reqJson, "timeout_ms", 30000)), err);
         } else if (action == "taskqueue_purge") {
-            resp = tqm_.TaskQueuePurge(JsonGetString(reqJson, "taskqueue", ""),
-                                       ExtractRawJsonValue(reqJson, "states"), err);
+            if (reqJson.find("\"older_than_sec\"") != std::string::npos) {
+                resp = tqm_.TaskQueuePurgeOlderThan(JsonGetString(reqJson, "taskqueue", ""),
+                                                    JsonGetInt(reqJson, "older_than_sec", 0), err);
+            } else {
+                resp = tqm_.TaskQueuePurge(JsonGetString(reqJson, "taskqueue", ""),
+                                           ExtractRawJsonValue(reqJson, "states"), err);
+            }
         } else if (action == "taskqueue_link") {
             resp = tqm_.TaskQueueLink(JsonGetString(reqJson, "job", ""),
                                       JsonGetString(reqJson, "depends_on", ""),

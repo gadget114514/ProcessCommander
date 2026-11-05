@@ -630,4 +630,81 @@ std::string FormatBytes(uint64_t bytes) {
     return oss.str();
 }
 
+// ---------------------------------------------------------------------------
+// Project data reset
+// ---------------------------------------------------------------------------
+
+static bool RemoveTreeWide(const std::wstring& path, std::string& outError) {
+    DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES) return true;
+    if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+        WIN32_FIND_DATAW fd = {};
+        HANDLE hFind = FindFirstFileW((path + L"\\*").c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                std::wstring name = fd.cFileName;
+                if (name == L"." || name == L"..") continue;
+                if (!RemoveTreeWide(path + L"\\" + name, outError)) {
+                    FindClose(hFind);
+                    return false;
+                }
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
+        }
+        if (attr & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_DIRECTORY);
+        if (!RemoveDirectoryW(path.c_str())) {
+            outError = "failed to remove directory: " + WideToUtf8(path) + " (error " + std::to_string(GetLastError()) + ")";
+            return false;
+        }
+        return true;
+    }
+    if (attr & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (!DeleteFileW(path.c_str())) {
+        outError = "failed to delete file: " + WideToUtf8(path) + " (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    return true;
+}
+
+std::vector<std::wstring> ListProjectDataEntriesWide() {
+    std::vector<std::wstring> out;
+    std::wstring dir = GetEffectiveDataDirectoryWide();
+    WIN32_FIND_DATAW fd = {};
+    HANDLE hFind = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return out;
+    do {
+        std::wstring name = fd.cFileName;
+        if (name == L"." || name == L"..") continue;
+        out.push_back(dir + L"\\" + name);
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool IsProcessCommanderRunningForDataDirWide() {
+    HANDLE h = OpenMutexW(SYNCHRONIZE, FALSE, GetGuiMutexNameWide().c_str());
+    if (h) {
+        CloseHandle(h);
+        return true;
+    }
+    return false;
+}
+
+size_t ResetProjectDataWide(std::string& outError) {
+    outError.clear();
+    std::wstring dir = GetEffectiveDataDirectoryWide();
+    // Refuse to wipe a drive root or an empty path.
+    if (dir.size() < 4 || dir.find(L':') == std::wstring::npos) {
+        outError = "refusing to reset a suspicious data directory: " + WideToUtf8(dir);
+        return 0;
+    }
+    size_t removed = 0;
+    for (const auto& entry : ListProjectDataEntriesWide()) {
+        if (!RemoveTreeWide(entry, outError)) return removed;
+        ++removed;
+    }
+    return removed;
+}
+
 } // namespace pc

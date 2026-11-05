@@ -92,4 +92,13 @@ void WriteFileAtomicWide(const std::wstring& filePath, const std::string& data);
 std::string ReadFileUtf8Wide(const std::wstring& filePath);
 void WriteAuditLog(const std::string& category, const std::string& message);
 
+// Project data reset (pcder reset). The targets are every entry directly under the
+// effective data directory (taskqueues/, logs, proc_* files, config.json, ...).
+std::vector<std::wstring> ListProjectDataEntriesWide();
+// True while a ProcessCommander GUI/IPC instance holds this data directory's mutex.
+bool IsProcessCommanderRunningForDataDirWide();
+// Removes all entries under the data directory; the directory itself is kept.
+// Returns the number of top-level entries removed; outError is set if any removal failed.
+size_t ResetProjectDataWide(std::string& outError);
+
 } // namespace pc

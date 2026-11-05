@@ -1903,6 +1903,38 @@ std::string TaskQueueManager::TaskQueuePurge(const std::string& taskqueue, const
     return "{\"ok\":true,\"taskqueue\":\"" + JsonEscape(taskqueue) + "\",\"purged\":" + std::to_string(purged) + "}";
 }
 
+std::string TaskQueueManager::TaskQueuePurgeOlderThan(const std::string& taskqueue, int64_t maxAgeSec, std::string& outError) {
+    outError.clear();
+    if (maxAgeSec < 0) {
+        outError = "older_than_sec must be >= 0";
+        return BuildError(outError);
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!taskqueue.empty() && queues_.find(taskqueue) == queues_.end()) {
+        outError = "task queue not found: " + taskqueue;
+        return BuildError(outError);
+    }
+    const int64_t cutoff = static_cast<int64_t>(time(nullptr)) - maxAgeSec;
+    const std::vector<std::string> finished = {"succeeded", "failed", "cancelled"};
+    size_t purged = 0;
+    for (auto& [name, tq] : queues_) {
+        if (!taskqueue.empty() && name != taskqueue) continue;
+        size_t before = tq.jobs.size();
+        tq.jobs.erase(std::remove_if(tq.jobs.begin(), tq.jobs.end(), [&](const TaskQueueJob& j) {
+            if (std::find(finished.begin(), finished.end(), j.state) == finished.end()) return false;
+            int64_t ts = ParseTimestampStrToEpoch(j.updatedAt);
+            return ts > 0 && ts < cutoff;
+        }), tq.jobs.end());
+        size_t removed = before - tq.jobs.size();
+        if (removed > 0) {
+            purged += removed;
+            tq.version++;
+            SaveQueue(tq);
+        }
+    }
+    return "{\"ok\":true,\"taskqueue\":\"" + JsonEscape(taskqueue) + "\",\"purged\":" + std::to_string(purged) + "}";
+}
+
 } // namespace pc
 
 namespace pc {
