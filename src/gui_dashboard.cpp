@@ -1041,14 +1041,37 @@ static COLORREF GetStateBadgeColor(const ProcessSnapshot& s) {
 }
 
 // User-chosen text background colors for the process and task lists, keyed by state.
-// An unset key keeps the built-in theme color. Stored in the config as "row_bg_<key>": "#RRGGBB".
+// Kept separately for dark and light themes (index 0 = dark, 1 = light). An unset key keeps the
+// built-in theme color. Stored in the config as "row_bg_<dark|light>_<key>": "#RRGGBB".
 enum class ListRowKey : int { Running = 0, Idle, Completed, Timeout, Failed, Count };
 static const int kListRowKeyCount = static_cast<int>(ListRowKey::Count);
-static const char* const kListRowKeyJson[kListRowKeyCount] = {
-    "row_bg_running", "row_bg_idle", "row_bg_completed", "row_bg_timeout", "row_bg_failed"
+static const int kListRowModeCount = 2;
+static const char* const kListRowKeyNames[kListRowKeyCount] = {
+    "running", "idle", "completed", "timeout", "failed"
 };
-static COLORREF g_listRowBg[kListRowKeyCount] = {};
-static bool g_listRowBgSet[kListRowKeyCount] = {};
+static COLORREF g_listRowBg[kListRowModeCount][kListRowKeyCount] = {};
+static bool g_listRowBgSet[kListRowModeCount][kListRowKeyCount] = {};
+
+static int ListRowMode() { return g_darkThemeActive ? 0 : 1; }
+
+static std::string ListRowConfigKey(int mode, int key) {
+    return std::string("row_bg_") + (mode == 0 ? "dark_" : "light_") + kListRowKeyNames[key];
+}
+
+// The user's color for this state in the active theme, if one is set.
+static bool GetListRowBgOverride(ListRowKey key, COLORREF& out) {
+    const int m = ListRowMode();
+    const int k = static_cast<int>(key);
+    if (!g_listRowBgSet[m][k]) return false;
+    out = g_listRowBg[m][k];
+    return true;
+}
+
+// Black or white, whichever reads better on the given background.
+static COLORREF ListRowTextFor(COLORREF bg) {
+    int luma = (GetRValue(bg) * 299 + GetGValue(bg) * 587 + GetBValue(bg)) / 1000;
+    return luma < 140 ? RGB(255, 255, 255) : RGB(0, 0, 0);
+}
 
 static bool ParseHexColor(const std::string& text, COLORREF& out) {
     if (text.size() != 7 || text[0] != '#') return false;
@@ -1071,10 +1094,10 @@ static std::string FormatHexColor(COLORREF c) {
     return buf;
 }
 
-// Returns the user's color for this key, or the fallback when none is set.
+// Returns the user's color for this key in the active theme, or the fallback when none is set.
 static COLORREF ListRowBgOrDefault(ListRowKey key, COLORREF fallback) {
-    const int k = static_cast<int>(key);
-    return g_listRowBgSet[k] ? g_listRowBg[k] : fallback;
+    COLORREF c = fallback;
+    return GetListRowBgOverride(key, c) ? c : fallback;
 }
 
 // Maps a process to its row-color key. Returns false for states with no key.
@@ -1098,11 +1121,14 @@ static bool ProcessRowKey(const ProcessSnapshot& s, ListRowKey& key) {
     return false;
 }
 
-static COLORREF GetStateRowBgColor(const ProcessSnapshot& s) {
+static bool ProcessRowCustomBg(const ProcessSnapshot& s, COLORREF& out) {
     ListRowKey key;
-    if (ProcessRowKey(s, key) && g_listRowBgSet[static_cast<int>(key)]) {
-        return g_listRowBg[static_cast<int>(key)];
-    }
+    return ProcessRowKey(s, key) && GetListRowBgOverride(key, out);
+}
+
+static COLORREF GetStateRowBgColor(const ProcessSnapshot& s) {
+    COLORREF custom = 0;
+    if (ProcessRowCustomBg(s, custom)) return custom;
     switch (s.state) {
         case ProcState::Running:
             return (s.idleMs >= 10000) ? g_theme.rowIdle : g_theme.rowRunning;
@@ -5494,10 +5520,12 @@ static void LoadShellConfig(DashboardState* st) {
     st->refreshIntervalMs = ClampRefreshIntervalMs(
         static_cast<int>(JsonGetInt(content, "refresh_interval_ms", kDefaultRefreshIntervalMs)));
     SettingsManager::Instance().SetTabGridRefreshIntervalMs(st->refreshIntervalMs);
-    for (int k = 0; k < kListRowKeyCount; ++k) {
-        COLORREF c = 0;
-        g_listRowBgSet[k] = ParseHexColor(JsonGetString(content, kListRowKeyJson[k], ""), c);
-        if (g_listRowBgSet[k]) g_listRowBg[k] = c;
+    for (int m = 0; m < kListRowModeCount; ++m) {
+        for (int k = 0; k < kListRowKeyCount; ++k) {
+            COLORREF c = 0;
+            g_listRowBgSet[m][k] = ParseHexColor(JsonGetString(content, ListRowConfigKey(m, k), ""), c);
+            if (g_listRowBgSet[m][k]) g_listRowBg[m][k] = c;
+        }
     }
     ApplyTheme();
 }
@@ -5509,9 +5537,11 @@ static void SaveShellConfig(const DashboardState* st) {
     else if (st->defaultShell == ShellType::Bash) defShell = "bash";
 
     std::ostringstream listBg;
-    for (int k = 0; k < kListRowKeyCount; ++k) {
-        listBg << "  \"" << kListRowKeyJson[k] << "\": \""
-               << (g_listRowBgSet[k] ? FormatHexColor(g_listRowBg[k]) : std::string()) << "\",\n";
+    for (int m = 0; m < kListRowModeCount; ++m) {
+        for (int k = 0; k < kListRowKeyCount; ++k) {
+            listBg << "  \"" << ListRowConfigKey(m, k) << "\": \""
+                   << (g_listRowBgSet[m][k] ? FormatHexColor(g_listRowBg[m][k]) : std::string()) << "\",\n";
+        }
     }
 
     std::ostringstream ss;
@@ -6234,10 +6264,17 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
         L"更新間隔 (ms, 100〜60000, 既定 2000):",
         L"Update interval (ms, 100-60000, default 2000):",
         L"Intervalo de actualización (ms, 100-60000, predeterminado 2000):"));
-    SetWindowTextW(ds->lblListBg, Tr(
-        L"プロセス/タスクリストの行の背景色 (状態別, クリックで変更)",
-        L"Process/task list row background (by state, click to change)",
-        L"Fondo de fila de procesos/tareas (por estado, clic para cambiar)"));
+    {
+        const bool darkMode = ListRowMode() == 0;
+        std::wstring listBgLabel = Tr(
+            L"リスト行の背景色 (状態別): ",
+            L"List row background (by state): ",
+            L"Fondo de fila (por estado): ");
+        listBgLabel += darkMode
+            ? Tr(L"ダークテーマ用を編集中", L"editing dark theme colors", L"editando colores del tema oscuro")
+            : Tr(L"ライトテーマ用を編集中", L"editing light theme colors", L"editando colores del tema claro");
+        SetWindowTextW(ds->lblListBg, listBgLabel.c_str());
+    }
     static const wchar_t* const kListBgNames[kListRowKeyCount][3] = {
         { L"実行中", L"Running", L"En ejecución" },
         { L"アイドル", L"Idle", L"Inactivo" },
@@ -6248,7 +6285,8 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     for (int k = 0; k < kListRowKeyCount; ++k) {
         std::wstring label = Tr(kListBgNames[k][0], kListBgNames[k][1], kListBgNames[k][2]);
         label += L": ";
-        label += g_listRowBgSet[k] ? Utf8ToWide(FormatHexColor(g_listRowBg[k]))
+        const int m = ListRowMode();
+        label += g_listRowBgSet[m][k] ? Utf8ToWide(FormatHexColor(g_listRowBg[m][k]))
                                    : std::wstring(Tr(L"既定", L"default", L"predet."));
         SetWindowTextW(ds->btnListBg[k], label.c_str());
     }
@@ -6577,14 +6615,14 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 cc.lpCustColors = customColors;
                 cc.Flags = CC_RGBINIT | CC_FULLOPEN;
                 if (ChooseColorW(&cc)) {
-                    g_listRowBg[k] = cc.rgbResult;
-                    g_listRowBgSet[k] = true;
+                    g_listRowBg[ListRowMode()][k] = cc.rgbResult;
+                    g_listRowBgSet[ListRowMode()][k] = true;
                     ApplyListRowBgChange(ds, hwnd);
                 }
                 return 0;
             }
             if (id == IDC_SET_LIST_BG_RESET) {
-                for (int k = 0; k < kListRowKeyCount; ++k) g_listRowBgSet[k] = false;
+                for (int k = 0; k < kListRowKeyCount; ++k) g_listRowBgSet[ListRowMode()][k] = false;
                 ApplyListRowBgChange(ds, hwnd);
                 return 0;
             }
@@ -6634,9 +6672,9 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // List row color buttons show their own color as a swatch.
             const bool listBgBtn = id >= IDC_SET_LIST_BG_RUNNING && id < IDC_SET_LIST_BG_RUNNING + kListRowKeyCount;
             const int listBgIdx = listBgBtn ? id - IDC_SET_LIST_BG_RUNNING : 0;
-            const bool listBgSwatch = listBgBtn && g_listRowBgSet[listBgIdx] && !pressed;
+            const bool listBgSwatch = listBgBtn && g_listRowBgSet[ListRowMode()][listBgIdx] && !pressed;
             COLORREF bg = pressed ? g_theme.border : g_theme.panel;
-            if (listBgSwatch) bg = g_listRowBg[listBgIdx];
+            if (listBgSwatch) bg = g_listRowBg[ListRowMode()][listBgIdx];
             HBRUSH bgBrush = CreateSolidBrush(bg);
             FillRect(dis->hDC, &dis->rcItem, bgBrush);
             DeleteObject(bgBrush);
@@ -6679,11 +6717,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             GetWindowTextW(dis->hwndItem, text, 256);
             SetBkMode(dis->hDC, TRANSPARENT);
             COLORREF textCol = g_theme.text;
-            if (listBgSwatch) {
-                // Black or white text, whichever reads better on the chosen color.
-                int luma = (GetRValue(bg) * 299 + GetGValue(bg) * 587 + GetBValue(bg)) / 1000;
-                textCol = luma < 140 ? RGB(255, 255, 255) : RGB(0, 0, 0);
-            }
+            if (listBgSwatch) textCol = ListRowTextFor(bg);
             SetTextColor(dis->hDC, textCol);
             HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, ds->dash->hFontUi));
             UINT fmt = (radio ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
@@ -8065,12 +8099,16 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             kind = st->taskJobStates[idx];
                         }
                         lvcd->clrText = g_theme.listText;
-                        if (kind == "running" && g_listRowBgSet[static_cast<int>(ListRowKey::Running)]) {
-                            lvcd->clrTextBk = g_listRowBg[static_cast<int>(ListRowKey::Running)];
-                        } else if (kind == "timeout" && g_listRowBgSet[static_cast<int>(ListRowKey::Timeout)]) {
-                            lvcd->clrTextBk = g_listRowBg[static_cast<int>(ListRowKey::Timeout)];
-                        } else if (kind == "failed" && g_listRowBgSet[static_cast<int>(ListRowKey::Failed)]) {
-                            lvcd->clrTextBk = g_listRowBg[static_cast<int>(ListRowKey::Failed)];
+                        ListRowKey taskKey = ListRowKey::Running;
+                        COLORREF custom = 0;
+                        bool hasKey = true;
+                        if (kind == "running") taskKey = ListRowKey::Running;
+                        else if (kind == "timeout") taskKey = ListRowKey::Timeout;
+                        else if (kind == "failed") taskKey = ListRowKey::Failed;
+                        else hasKey = false;
+                        if (hasKey && GetListRowBgOverride(taskKey, custom)) {
+                            lvcd->clrTextBk = custom;
+                            lvcd->clrText = ListRowTextFor(custom);
                         } else if (kind == "running") {
                             lvcd->clrTextBk = MutedRowColor(g_theme.rowSelected);
                         } else if (kind == "timeout") {
@@ -8147,8 +8185,10 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         if (itemIdx >= 0 && itemIdx < static_cast<int>(st->cachedSnapshots.size())) {
                             const auto& snap = st->cachedSnapshots[itemIdx];
                             bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
+                            COLORREF custom = 0;
+                            const bool hasCustom = !selected && ProcessRowCustomBg(snap, custom);
                             lvcd->clrTextBk = selected ? g_theme.rowSelected : GetStateRowBgColor(snap);
-                            lvcd->clrText = g_theme.listText;
+                            lvcd->clrText = hasCustom ? ListRowTextFor(custom) : g_theme.listText;
                         }
                         return CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
                     }
@@ -8156,8 +8196,14 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         int itemIdx = static_cast<int>(lvcd->nmcd.dwItemSpec);
                         if (itemIdx >= 0 && itemIdx < static_cast<int>(st->cachedSnapshots.size())) {
                             const auto& snap = st->cachedSnapshots[itemIdx];
-                            lvcd->clrText = (lvcd->iSubItem == 5 && snap.state == ProcState::Running)
-                                                ? g_theme.muted : g_theme.listText;
+                            COLORREF custom = 0;
+                            const bool selected = (lvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
+                            if (!selected && ProcessRowCustomBg(snap, custom)) {
+                                lvcd->clrText = ListRowTextFor(custom);
+                            } else {
+                                lvcd->clrText = (lvcd->iSubItem == 5 && snap.state == ProcState::Running)
+                                                    ? g_theme.muted : g_theme.listText;
+                            }
                         }
                         return CDRF_NEWFONT;
                     }
