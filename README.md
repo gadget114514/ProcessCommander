@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.5.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64-setup.exe)
-  (portable: [ProcessCommander-v2.5.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.5.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64-setup.exe)
+  (portable: [ProcessCommander-v2.5.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,11 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.5.1
+- **Row colors**: the process and task lists can color rows by state (running, idle, completed, timeout, failed) in the Settings dialog. Dark and light themes have separate colors, and the text switches between black and white to stay readable.
+- **`pcder reset [--yes]`**: deletes all project data in the data directory. Without `--yes` it only lists what would be deleted, and it is refused while ProcessCommander is running.
+- **`pcder taskqueue purge --older-than-days N`**: removes finished jobs (succeeded, failed, cancelled) that have not been updated for N days.
 
 ### v2.5.0
 - **Dashboard refresh**: the update interval now defaults to 2000 ms and can be set in ms in the Settings dialog (100-60000 ms). It doubles while no process or queue job is running.

@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.5.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.5.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.0/ProcessCommander-v2.5.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.5.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.5.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,11 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.5.1
+- **行の背景色**: プロセス・タスク一覧の行を、設定画面で状態ごと（実行中・アイドル・完了・タイムアウト・失敗）に色分けできるようにしました。ダークテーマとライトテーマで別々に設定でき、文字色は背景に合わせて白か黒に自動で切り替わります。
+- **`pcder reset [--yes]`**: データディレクトリ内のプロジェクトデータをすべて削除します。`--yes` を付けないと削除対象を一覧表示するだけです。ProcessCommander の実行中は実行できません。
+- **`pcder taskqueue purge --older-than-days N`**: N 日以上更新されていない終了済みジョブ（succeeded・failed・cancelled）を削除します。
 
 ### v2.5.0
 - **ダッシュボードの更新間隔**: 既定を 2000 ms にし、設定画面で ms 単位に変更できるようにしました（100〜60000 ms）。実行中のプロセスやキューのジョブがないときは間隔を 2 倍にします。
