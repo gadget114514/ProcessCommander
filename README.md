@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.5.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64-setup.exe)
-  (portable: [ProcessCommander-v2.5.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.5.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64-setup.exe)
+  (portable: [ProcessCommander-v2.5.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,12 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.5.2
+- **Tray recovery**: the tray icon is registered again after Explorer restarts. If the tray icon cannot be added, minimizing keeps the window on the taskbar instead of hiding it.
+- **Crash logging**: an exception in the dashboard, IPC, process monitor or output reader is written to the audit log (`CRASH_GUARD`) instead of silently ending the program. Unhandled exceptions are logged as `CRASH`.
+- **End blink**: process and task rows blink for a few seconds when they end. Turn it off or change the duration (1-60 s) in the Settings dialog.
+- **Failure sound**: a failed, timed-out or killed process plays a different system sound from a completed one. It follows the completion sound setting.
 
 ### v2.5.1
 - **Row colors**: the process and task lists can color rows by state (running, idle, completed, timeout, failed) in the Settings dialog. Dark and light themes have separate colors, and the text switches between black and white to stay readable.

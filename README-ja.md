@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.5.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.5.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.1/ProcessCommander-v2.5.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.5.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.5.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,12 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.5.2
+- **トレイからの復帰**: Explorer を再起動した後もトレイアイコンを登録し直します。トレイアイコンを追加できない環境では、格納せず最小化します（ウィンドウに戻れなくなるのを防ぎます）。
+- **クラッシュ記録**: ダッシュボード・IPC・プロセス監視・出力読み取りで発生した例外を、黙ってプログラムを終了させず監査ログ（`CRASH_GUARD`）に記録します。捕捉されなかった例外は `CRASH` として記録します。
+- **終了時の点滅**: プロセス・タスクの行が終了すると数秒間点滅します。設定画面で無効にしたり、点滅時間（1〜60 秒）を変えたりできます。
+- **失敗時の音**: 失敗・タイムアウト・強制終了したプロセスは、完了時とは別のシステム音を鳴らします。完了音の設定に従います。
 
 ### v2.5.1
 - **行の背景色**: プロセス・タスク一覧の行を、設定画面で状態ごと（実行中・アイドル・完了・タイムアウト・失敗）に色分けできるようにしました。ダークテーマとライトテーマで別々に設定でき、文字色は背景に合わせて白か黒に自動で切り替わります。
