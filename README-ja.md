@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.7.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.7.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.7.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.7.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,11 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.7.1
+- **リストの文字サイズ**: プロセス一覧とタスクキューの一覧で、それぞれ文字サイズ（10〜24 px）を変えられます。設定の「表示」タブで指定します。
+- **行の色は「色」タブへ**: 状態別の行背景色を、設定の「表示」タブから新しい「色」タブに移しました。
+- **ウィンドウタイトル**: `--data-dir` 付きで起動すると、タイトルにデータディレクトリを表示します。複数のダッシュボードを見分けられます。
 
 ### v2.7.0
 - **タスクキューの時間絞り込み**: `pcder taskqueue list --since 6h` で、指定期間内に更新されたジョブだけを表示します（MCP の `taskqueue_list` にも `since` を追加）。単位は m・h・d です。

@@ -715,6 +715,26 @@ constexpr int kListCaptionH        = 20;
 constexpr int kTabH                = 26;
 constexpr int kStatusBarH          = 26;
 constexpr int kMinListH            = 60;
+
+// Font height (px) of the process list and the task queue list.
+constexpr int kDefaultListFontPx = 13;
+constexpr int kMinListFontPx = 9;
+constexpr int kMaxListFontPx = 24;
+constexpr int kListFontSizes[] = {10, 11, 12, 13, 14, 16, 18, 20, 22, 24};
+constexpr int kListFontSizeCount = static_cast<int>(sizeof(kListFontSizes) / sizeof(kListFontSizes[0]));
+
+static int ClampListFontPx(int px) {
+    return (std::max)(kMinListFontPx, (std::min)(kMaxListFontPx, px));
+}
+
+// Index of the largest preset that does not exceed px (or the first one).
+static int ListFontSizeIndex(int px) {
+    int idx = 0;
+    for (int i = 0; i < kListFontSizeCount; ++i) {
+        if (kListFontSizes[i] <= px) idx = i;
+    }
+    return idx;
+}
 constexpr int kMinTerminalH        = 200;
 constexpr int kNumKpiCards         = 14;
 constexpr int kUsagePanelH         = 110;
@@ -787,6 +807,8 @@ enum ControlId {
     IDC_SET_END_BLINK_ENABLED = 6051,
     IDC_SET_END_BLINK_SECONDS = 6052,
     IDC_SET_TAB = 6053,
+    IDC_SET_PROC_FONT = 6054,
+    IDC_SET_TASK_FONT = 6055,
     IDM_TRAY_RESTORE = 4001,
     IDM_TRAY_GRID_VIEW = 4002,
     IDM_TRAY_HIDE = 4003,
@@ -920,6 +942,10 @@ struct DashboardState {
     HFONT hFontUi = nullptr;
     HFONT hFontUiBold = nullptr;
     HFONT hFontKpiVal = nullptr;
+    int processListFontPx = kDefaultListFontPx;
+    int taskListFontPx = kDefaultListFontPx;
+    HFONT hFontProcList = nullptr;
+    HFONT hFontTaskList = nullptr;
 
     int selectedProcId = -1;
     bool allowExit = false;
@@ -5569,6 +5595,30 @@ static void ApplyDashboardRefreshTimer(DashboardState* st) {
     SetTimer(st->hwndMain, TIMER_REFRESH_ID, static_cast<UINT>(ms), nullptr);
 }
 
+// Recreates the process / task list fonts at the configured sizes and applies them to the lists.
+static void ApplyListFonts(DashboardState* st) {
+    if (!st) return;
+    auto makeFont = [](int px) {
+        return CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    };
+    HFONT oldProc = st->hFontProcList;
+    HFONT oldTask = st->hFontTaskList;
+    st->hFontProcList = makeFont(st->processListFontPx);
+    st->hFontTaskList = makeFont(st->taskListFontPx);
+    if (st->hwndList) {
+        SendMessageW(st->hwndList, WM_SETFONT, reinterpret_cast<WPARAM>(st->hFontProcList), TRUE);
+        InvalidateRect(st->hwndList, nullptr, TRUE);
+    }
+    if (st->hwndTaskList) {
+        SendMessageW(st->hwndTaskList, WM_SETFONT, reinterpret_cast<WPARAM>(st->hFontTaskList), TRUE);
+        InvalidateRect(st->hwndTaskList, nullptr, TRUE);
+    }
+    // The lists no longer reference the old fonts, so they can be released.
+    if (oldProc) DeleteObject(oldProc);
+    if (oldTask) DeleteObject(oldTask);
+}
+
 static void LoadShellConfig(DashboardState* st) {
     if (!st) return;
     st->defaultShell = ShellType::PowerShell;
@@ -5626,6 +5676,10 @@ static void LoadShellConfig(DashboardState* st) {
     SetLlmMaxEvents(st->llmMaxEvents);
     st->resourceLocks = JsonGetBool(content, "resource_locks", true);
     if (st->tqm) st->tqm->SetResourceLocksEnabled(st->resourceLocks);
+    st->processListFontPx = ClampListFontPx(static_cast<int>(
+        JsonGetInt(content, "process_list_font_px", kDefaultListFontPx)));
+    st->taskListFontPx = ClampListFontPx(static_cast<int>(
+        JsonGetInt(content, "task_list_font_px", kDefaultListFontPx)));
     st->refreshIntervalMs = ClampRefreshIntervalMs(
         static_cast<int>(JsonGetInt(content, "refresh_interval_ms", kDefaultRefreshIntervalMs)));
     SettingsManager::Instance().SetTabGridRefreshIntervalMs(st->refreshIntervalMs);
@@ -5679,6 +5733,8 @@ static void SaveShellConfig(const DashboardState* st) {
         << "  \"restore_usage_graph\": " << (st->restoreUsageGraph ? "true" : "false") << ",\n"
         << "  \"llm_max_events\": " << st->llmMaxEvents << ",\n"
         << "  \"resource_locks\": " << (st->resourceLocks ? "true" : "false") << ",\n"
+        << "  \"process_list_font_px\": " << st->processListFontPx << ",\n"
+        << "  \"task_list_font_px\": " << st->taskListFontPx << ",\n"
         << listBg.str()
         << "  \"refresh_interval_ms\": " << st->refreshIntervalMs << "\n"
         << "}\n";
@@ -5770,9 +5826,20 @@ static void UpdateToolbarLabels(DashboardState* st) {
 // PCR is the short name of ProcessCommander.
 static const wchar_t* const kMainWindowTitle = L"ProcessCommander (PCR)";
 
+// Adds the --data-dir override to the title so that several dashboards can be told apart.
+static std::wstring MainWindowTitle() {
+    std::wstring title = kMainWindowTitle;
+    const std::wstring dataDir = GetDataDirectoryOverride();
+    if (!dataDir.empty()) {
+        title += L" - ";
+        title += dataDir;
+    }
+    return title;
+}
+
 static void ApplyLanguageToUi(DashboardState* st) {
     if (!st) return;
-    SetWindowTextW(st->hwndMain, kMainWindowTitle);
+    SetWindowTextW(st->hwndMain, MainWindowTitle().c_str());
     UpdateToolbarLabels(st);
     UpdateListHeaderSortIndicator(st);
     UpdateTaskListHeaders(st);
@@ -6290,8 +6357,12 @@ struct SettingsDlgState {
       HWND chkEndBlink = nullptr;
       HWND lblEndBlinkSec = nullptr;
       HWND editEndBlinkSec = nullptr;
+      HWND lblProcFont = nullptr;
+      HWND cmbProcFont = nullptr;
+      HWND lblTaskFont = nullptr;
+      HWND cmbTaskFont = nullptr;
       HWND tabCtrl = nullptr;
-      std::vector<HWND> tabPages[3];  // controls shown under each tab: 0 appearance, 1 behavior, 2 maintenance
+      std::vector<HWND> tabPages[4];  // controls shown under each tab: 0 appearance, 1 behavior, 2 maintenance, 3 colors
 };
 
 static void UpdateSettingsDialogTexts(HWND hwnd);
@@ -6356,7 +6427,7 @@ static void CommitEndBlinkSettings(SettingsDlgState* ds) {
 // Shows the controls of one tab page and hides the rest.
 static void SelectSettingsTab(SettingsDlgState* ds, int tab) {
     if (!ds) return;
-    for (int p = 0; p < 3; ++p) {
+    for (int p = 0; p < 4; ++p) {
         for (HWND h : ds->tabPages[p]) ShowWindow(h, p == tab ? SW_SHOW : SW_HIDE);
     }
 }
@@ -6398,12 +6469,13 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
     SetWindowTextW(ds->chkActivityStyle, Tr(L"実行状態監視ペイン: 行を色分けし、アイコンを表示", L"Execution monitor pane: colour rows and show icons", L"Panel de ejecución: colorear filas y mostrar iconos"));
     SetWindowTextW(ds->btnClose, Tr(L"閉じる", L"Close", L"Cerrar"));
     {
-        const wchar_t* const tabNames[3] = {
+        const wchar_t* const tabNames[4] = {
             Tr(L"表示", L"Appearance", L"Apariencia"),
             Tr(L"動作・通知", L"Behavior & alerts", L"Comportamiento y avisos"),
             Tr(L"管理", L"Maintenance", L"Mantenimiento"),
+            Tr(L"色", L"Colors", L"Colores"),
         };
-        for (int t = 0; t < 3; ++t) {
+        for (int t = 0; t < 4; ++t) {
             std::wstring name = tabNames[t];
             TCITEMW ti = {};
             ti.mask = TCIF_TEXT;
@@ -6465,6 +6537,18 @@ static void UpdateSettingsDialogTexts(HWND hwnd) {
         else sel = 3;
         SendMessageW(ds->hwndSatCombo, CB_SETCURSEL, sel, 0);
     }
+    if (ds->lblProcFont) {
+        SetWindowTextW(ds->lblProcFont, Tr(L"プロセス一覧の文字サイズ (px):", L"Process list font size (px):", L"Tamaño de letra de la lista de procesos (px):"));
+    }
+    if (ds->lblTaskFont) {
+        SetWindowTextW(ds->lblTaskFont, Tr(L"タスクキューの文字サイズ (px):", L"Task queue font size (px):", L"Tamaño de letra de la cola de tareas (px):"));
+    }
+    if (ds->cmbProcFont) {
+        SendMessageW(ds->cmbProcFont, CB_SETCURSEL, ListFontSizeIndex(ds->dash->processListFontPx), 0);
+    }
+    if (ds->cmbTaskFont) {
+        SendMessageW(ds->cmbTaskFont, CB_SETCURSEL, ListFontSizeIndex(ds->dash->taskListFontPx), 0);
+    }
     CheckRadioButton(hwnd, IDC_SET_LANG_JA, IDC_SET_LANG_ES,
         g_uiLanguage == UiLanguage::Japanese ? IDC_SET_LANG_JA :
         g_uiLanguage == UiLanguage::Spanish ? IDC_SET_LANG_ES : IDC_SET_LANG_EN);
@@ -6489,7 +6573,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS | TCS_SINGLELINE,
                 8, 8, 684, 760, hwnd, (HMENU)IDC_SET_TAB, hInst, nullptr);
             SendMessageW(ds->tabCtrl, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
-            for (int t = 0; t < 3; ++t) {
+            for (int t = 0; t < 4; ++t) {
                 TCITEMW ti = {};
                 ti.mask = TCIF_TEXT;
                 ti.pszText = const_cast<LPWSTR>(L"");
@@ -6635,16 +6719,17 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 560, 329, 110, 24, hwnd, (HMENU)IDC_SET_REFRESH_INTERVAL, hInst, nullptr);
             SetWindowTextW(ds->editRefreshInterval, std::to_wstring(ds->dash->refreshIntervalMs).c_str());
 
-            ds->lblListBg = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                18, 352, 640, 20, hwnd, nullptr, hInst, nullptr);
+            // Row colors live on their own 色 tab, so these start at the top of the page.
+            ds->lblListBg = CreateWindowExW(0, L"STATIC", L"", WS_CHILD,
+                18, 48, 640, 20, hwnd, nullptr, hInst, nullptr);
             SendMessageW(ds->lblListBg, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
             for (int k = 0; k < kListRowKeyCount; ++k) {
                 ds->btnListBg[k] = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                    18 + k * 126, 376, 120, 30, hwnd,
+                    18 + k * 126, 72, 120, 30, hwnd,
                     (HMENU)(INT_PTR)(IDC_SET_LIST_BG_RUNNING + k), hInst, nullptr);
             }
             ds->btnListBgReset = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                18, 416, 220, 30, hwnd, (HMENU)IDC_SET_LIST_BG_RESET, hInst, nullptr);
+                18, 112, 220, 30, hwnd, (HMENU)IDC_SET_LIST_BG_RESET, hInst, nullptr);
 
             ds->chkEndBlink = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
                 18, 368, 520, 24, hwnd, (HMENU)IDC_SET_END_BLINK_ENABLED, hInst, nullptr);
@@ -6657,6 +6742,22 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 560, 399, 110, 24, hwnd, (HMENU)IDC_SET_END_BLINK_SECONDS, hInst, nullptr);
             SetWindowTextW(ds->editEndBlinkSec, std::to_wstring(ds->dash->endBlinkSeconds).c_str());
 
+            ds->lblProcFont = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 458, 530, 20, hwnd, nullptr, hInst, nullptr);
+            ds->cmbProcFont = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+                18, 480, 220, 300, hwnd, (HMENU)IDC_SET_PROC_FONT, hInst, nullptr);
+            ds->lblTaskFont = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                18, 514, 530, 20, hwnd, nullptr, hInst, nullptr);
+            ds->cmbTaskFont = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+                18, 536, 220, 300, hwnd, (HMENU)IDC_SET_TASK_FONT, hInst, nullptr);
+            for (int i = 0; i < kListFontSizeCount; ++i) {
+                std::wstring item = std::to_wstring(kListFontSizes[i]) + L" px";
+                SendMessageW(ds->cmbProcFont, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
+                SendMessageW(ds->cmbTaskFont, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
+            }
+
             HWND ctrls[] = { ds->btnJa, ds->btnEn, ds->btnEs, ds->btnSystem, ds->btnDark, ds->btnLight, ds->btnPastel, ds->btnHc,
                              ds->btnMidnight, ds->btnEmber, ds->btnBerry, ds->btnCrimson, ds->btnForest, ds->btnMist,
                              ds->btnPastelBlue, ds->btnPastelOrange, ds->btnPastelPink, ds->btnPastelRed, ds->btnPastelGreen,
@@ -6665,7 +6766,8 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                              ds->btnBrowseSound, ds->btnTestSound, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
                              ds->chkResourceLocks, ds->chkActivityStyle, ds->lblEventRetention, ds->editEventRetention,
                              ds->lblRefreshInterval, ds->editRefreshInterval, ds->btnListBgReset,
-                             ds->chkEndBlink, ds->lblEndBlinkSec, ds->editEndBlinkSec };
+                             ds->chkEndBlink, ds->lblEndBlinkSec, ds->editEndBlinkSec,
+                             ds->lblProcFont, ds->cmbProcFont, ds->lblTaskFont, ds->cmbTaskFont };
             for (HWND h : ctrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
             for (HWND h : ds->btnListBg) SendMessageW(h, WM_SETFONT, (WPARAM)ds->dash->hFontUi, TRUE);
             SendMessageW(ds->lblListBg, WM_SETFONT, (WPARAM)ds->dash->hFontUiBold, TRUE);
@@ -6682,8 +6784,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     ds->btnPastelBlue, ds->btnPastelOrange, ds->btnPastelPink, ds->btnPastelRed, ds->btnPastelGreen,
                     ds->btnDeepPurple, ds->btnPastelPurple, ds->btnDeepYellow, ds->btnPastelYellow,
                     ds->hwndSatLabel, ds->hwndSatCombo,
-                    ds->lblListBg, ds->btnListBgReset });
-                appearance.insert(appearance.end(), ds->btnListBg, ds->btnListBg + kListRowKeyCount);
+                    ds->lblProcFont, ds->cmbProcFont, ds->lblTaskFont, ds->cmbTaskFont });
+                auto& colors = ds->tabPages[3];
+                colors.insert(colors.end(), { ds->lblListBg, ds->btnListBgReset });
+                colors.insert(colors.end(), ds->btnListBg, ds->btnListBg + kListRowKeyCount);
                 behavior.insert(behavior.end(), {
                     ds->hwndSoundLabel, ds->chkSound, ds->editSound, ds->btnBrowseSound, ds->btnTestSound,
                     ds->hwndSoundHint, ds->chkHideEnded, ds->chkUsageGraph, ds->chkRestoreUsageGraph,
@@ -6846,6 +6950,17 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             if (id == IDC_SET_LIST_BG_RESET) {
                 for (int k = 0; k < kListRowKeyCount; ++k) g_listRowBgSet[ListRowMode()][k] = false;
                 ApplyListRowBgChange(ds, hwnd);
+                return 0;
+            }
+            if ((id == IDC_SET_PROC_FONT || id == IDC_SET_TASK_FONT) && HIWORD(wParam) == CBN_SELCHANGE) {
+                HWND combo = (id == IDC_SET_PROC_FONT) ? ds->cmbProcFont : ds->cmbTaskFont;
+                const int sel = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+                if (sel >= 0 && sel < kListFontSizeCount) {
+                    if (id == IDC_SET_PROC_FONT) ds->dash->processListFontPx = kListFontSizes[sel];
+                    else ds->dash->taskListFontPx = kListFontSizes[sel];
+                    ApplyListFonts(ds->dash);
+                    SaveShellConfig(ds->dash);
+                }
                 return 0;
             }
             if (id == IDC_SET_SHELL_CONFIG) {
@@ -7687,7 +7802,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             LoadShellConfig(st);
             UpdateToolbarLabels(st);
-            SetWindowTextW(hwnd, kMainWindowTitle);
+            SetWindowTextW(hwnd, MainWindowTitle().c_str());
 
             st->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -7767,6 +7882,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             for (HWND h : uiCtrls) {
                 if (h) SendMessageW(h, WM_SETFONT, (WPARAM)st->hFontUi, TRUE);
             }
+            ApplyListFonts(st);
 
             st->gridView = std::make_unique<TerminalGridView>();
             st->gridView->Create(hwnd);
@@ -8543,6 +8659,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 if (st->hFontUi) DeleteObject(st->hFontUi);
                 if (st->hFontUiBold) DeleteObject(st->hFontUiBold);
                 if (st->hFontKpiVal) DeleteObject(st->hFontKpiVal);
+                if (st->hFontProcList) DeleteObject(st->hFontProcList);
+                if (st->hFontTaskList) DeleteObject(st->hFontTaskList);
             }
             PostQuitMessage(0);
             return 0;
@@ -8589,7 +8707,7 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc, TaskQueueManager& tqm) {
     HWND hwnd = CreateWindowExW(
         0,
         wc.lpszClassName,
-        kMainWindowTitle,
+        MainWindowTitle().c_str(),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 1460, 940,
         nullptr, nullptr, hInst, &state

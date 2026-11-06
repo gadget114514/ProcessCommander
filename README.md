@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.7.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64-setup.exe)
-  (portable: [ProcessCommander-v2.7.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.7.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64-setup.exe)
+  (portable: [ProcessCommander-v2.7.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,11 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.7.1
+- **Font size for lists**: the process list and the task queue list each have their own font size (10-24 px), set on the 表示 (Appearance) tab of Settings.
+- **Row colors on a 色 tab**: the per-state row background colors moved from the Appearance tab to a new 色 (Colors) tab in Settings.
+- **Window title**: when started with `--data-dir`, the dashboard title shows the data directory, so several dashboards can be told apart.
 
 ### v2.7.0
 - **Task queue time filter**: `pcder taskqueue list --since 6h` (and the MCP `taskqueue_list` `since` field) shows only jobs updated within the period. Units are m, h and d.
