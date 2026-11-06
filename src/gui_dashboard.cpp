@@ -5754,6 +5754,12 @@ static void UpdateToolbarLabels(DashboardState* st) {
         if (st->hwndBtnHideTray)
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnHideTray,
                 Tr(L"トレイに格納", L"Tray", L"Bandeja"));
+        if (st->hwndBtnUsage)
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                Tr(L"トークン使用量グラフ", L"Token Usage Graph", L"Gráfico de uso de tokens"));
+        if (st->hwndClock)
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndClock,
+                Tr(L"時刻", L"Time", L"Hora"));
     }
     UpdatePanelToggleLabels(st);
     if (st->hwndBtnViewTasks) {
@@ -7683,6 +7689,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnStreamPane);
                 addTool(st->hwndBtnHideTray);
                 addTool(st->hwndBtnRefresh);
+                addTool(st->hwndBtnUsage);
+                addTool(st->hwndClock);
             }
 
             LoadShellConfig(st);
