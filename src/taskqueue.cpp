@@ -846,39 +846,41 @@ void TaskQueueManager::SaveQueue(const TaskQueue& tq) {
 }
 
 std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeInstructions) const {
-    std::ostringstream oss;
-    oss << "{\"id\":\"" << JsonEscape(job.id) << "\""
-        << ",\"taskqueue\":\"" << JsonEscape(job.taskqueue) << "\""
-        << ",\"name\":\"" << JsonEscape(job.name) << "\""
-        << ",\"summary\":\"" << JsonEscape(job.summary) << "\"";
+    std::string out;
+    out.reserve(1024); // Pre-allocate to reduce allocations
+    out.append("{\"id\":\""); out.append(JsonEscape(job.id)); out.append("\"");
+    out.append(",\"taskqueue\":\""); out.append(JsonEscape(job.taskqueue)); out.append("\"");
+    out.append(",\"name\":\""); out.append(JsonEscape(job.name)); out.append("\"");
+    out.append(",\"summary\":\""); out.append(JsonEscape(job.summary)); out.append("\"");
     if (includeInstructions) {
-        oss << ",\"instructions\":" << InstructionsToJson(job.instructions);
+        out.append(",\"instructions\":"); out.append(InstructionsToJson(job.instructions));
     } else {
-        oss << ",\"instructions\":{\"source\":\"" << JsonEscape(job.instructions.source)
-            << "\",\"rev\":" << job.instructions.rev << "}";
+        out.append(",\"instructions\":{\"source\":\""); out.append(JsonEscape(job.instructions.source));
+        out.append("\",\"rev\":"); out.append(std::to_string(job.instructions.rev)); out.append("}");
     }
-    oss << ",\"command\":\"" << JsonEscape(job.command) << "\""
-        << ",\"cwd\":\"" << JsonEscape(job.cwd) << "\""
-        << ",\"env\":" << EnvToJson(job.env)
-        << ",\"depends_on\":" << DepsToJson(job.dependsOn)
-        << ",\"timeout_sec\":" << job.timeoutSec
-        << ",\"idle\":{\"output_sec\":" << job.idle.outputSec << ",\"cpu_sec\":" << job.idle.cpuSec << "}"
-        << ",\"max_attempts\":" << job.maxAttempts
-        << ",\"retry_delay_sec\":" << job.retryDelaySec
-        << ",\"defer\":" << DeferToJson(job.defer)
-        << ",\"success\":" << SuccessToJson(job.success)
-        << ",\"kill_exclude\":" << StrArrayToJson(job.killExclude)
-        << ",\"resources\":" << ResourcesToJson(job.resources)
-        << ",\"priority\":" << job.priority
-        << ",\"state\":\"" << JsonEscape(job.state) << "\""
-        << ",\"attempts\":" << AttemptsToJson(job.attempts)
-        << ",\"blocked_by\":";
-    if (job.blockedBy.empty()) oss << "null";
-    else oss << "\"" << JsonEscape(job.blockedBy) << "\"";
-    oss << ",\"created_at\":\"" << JsonEscape(job.createdAt) << "\""
-        << ",\"updated_at\":\"" << JsonEscape(job.updatedAt) << "\""
-        << ",\"notes\":\"" << JsonEscape(job.notes) << "\"}";
-    return oss.str();
+    out.append(",\"command\":\""); out.append(JsonEscape(job.command)); out.append("\"");
+    out.append(",\"cwd\":\""); out.append(JsonEscape(job.cwd)); out.append("\"");
+    out.append(",\"env\":"); out.append(EnvToJson(job.env));
+    out.append(",\"depends_on\":"); out.append(DepsToJson(job.dependsOn));
+    out.append(",\"timeout_sec\":"); out.append(std::to_string(job.timeoutSec));
+    out.append(",\"idle\":{\"output_sec\":"); out.append(std::to_string(job.idle.outputSec));
+    out.append(",\"cpu_sec\":"); out.append(std::to_string(job.idle.cpuSec)); out.append("}");
+    out.append(",\"max_attempts\":"); out.append(std::to_string(job.maxAttempts));
+    out.append(",\"retry_delay_sec\":"); out.append(std::to_string(job.retryDelaySec));
+    out.append(",\"defer\":"); out.append(DeferToJson(job.defer));
+    out.append(",\"success\":"); out.append(SuccessToJson(job.success));
+    out.append(",\"kill_exclude\":"); out.append(StrArrayToJson(job.killExclude));
+    out.append(",\"resources\":"); out.append(ResourcesToJson(job.resources));
+    out.append(",\"priority\":"); out.append(std::to_string(job.priority));
+    out.append(",\"state\":\""); out.append(JsonEscape(job.state)); out.append("\"");
+    out.append(",\"attempts\":"); out.append(AttemptsToJson(job.attempts));
+    out.append(",\"blocked_by\":");
+    if (job.blockedBy.empty()) out.append("null");
+    else { out.append("\""); out.append(JsonEscape(job.blockedBy)); out.append("\""); }
+    out.append(",\"created_at\":\""); out.append(JsonEscape(job.createdAt)); out.append("\"");
+    out.append(",\"updated_at\":\""); out.append(JsonEscape(job.updatedAt)); out.append("\"");
+    out.append(",\"notes\":\""); out.append(JsonEscape(job.notes)); out.append("\"}");
+    return out;
 }
 
 TaskQueueJob* TaskQueueManager::FindJob(const std::string& id, TaskQueue** outQueue) {
