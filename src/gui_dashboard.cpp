@@ -2444,7 +2444,7 @@ static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobI
         std::string tqName = JsonGetString(resp, "taskqueue", "");
         if (!tqName.empty()) st->tqm->TaskQueuePause(tqName, cmd == 3103, err);
     } else if (cmd == 3105) {
-        resp = st->tqm->TaskQueueList("", "", err);
+        resp = st->tqm->TaskQueueList("", "", 0, err);
         auto jobs = SplitJsonObjectArray(resp, "jobs");
         std::vector<std::string> queuesDone;
         for (const auto& j : jobs) {
@@ -2464,7 +2464,7 @@ static void RefreshTaskQueueData(DashboardState* st) {
     if (!st || !st->tqm || !st->hwndTaskList) return;
     if (st->listDisplayMode == ListDisplayMode::ProcessOnly) return;
     std::string err;
-    std::string resp = st->tqm->TaskQueueList("", "", err);
+    std::string resp = st->tqm->TaskQueueList("", "", 0, err);
     // Nothing to do when the queue is unchanged and no job is running (only running rows show a countdown).
     int lang = static_cast<int>(g_uiLanguage);
     if (resp == st->lastTaskListJson && lang == st->lastTaskListLang &&

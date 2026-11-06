@@ -44,7 +44,7 @@ pcder.exe mcp install --dry-run --json             # 書き込まずに確認
 | `taskqueue_add` | ジョブ登録（`taskqueue`, `jobs[]`, `concurrency?`, `notifyFile?`）。各ジョブに `id`, `command`, `summary`, `timeoutSec` が必要。 |
 | `taskqueue_list` | ジョブ一覧（`taskqueue?`, `state?`）。 |
 | `taskqueue_get` | ジョブ詳細・試行履歴・指示書（`id`, `includeInstructions?`, `rev?`）。 |
-| `taskqueue_retry` | failed/blocked/cancelled を再実行（`id`, `resetAttempts?`, `refreshInstructions?`）。blocked の後続も再キュー。 |
+| `taskqueue_retry` | failed/blocked/cancelled を再実行（`id`, `resetAttempts?`, `refreshInstructions?`）。blocked の後続も再キュー。一括: `id` を省いて `failed: true` にすると失敗ジョブをすべて再実行（`taskqueue`, `since`（例: `6h`）で絞り込み可）。 |
 | `taskqueue_update` | pending/failed/blocked のジョブを更新。 |
 | `taskqueue_cancel` | ジョブをキャンセル（実行中は kill、再実行しない）。 |
 | `taskqueue_pause` / `taskqueue_resume` | キューの新規開始を停止 / 再開。 |

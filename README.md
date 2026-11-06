@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.5.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64-setup.exe)
-  (portable: [ProcessCommander-v2.5.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.7.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64-setup.exe)
+  (portable: [ProcessCommander-v2.7.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,12 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.7.0
+- **Task queue time filter**: `pcder taskqueue list --since 6h` (and the MCP `taskqueue_list` `since` field) shows only jobs updated within the period. Units are m, h and d.
+- **Retry all failures**: `pcder taskqueue retry --failed [<queue>] [--since 6h]` requeues every failed job at once, optionally in one queue or only those that failed recently. The MCP `taskqueue_retry` tool accepts `failed: true` without an id for the same bulk retry.
+- **Process cleanup**: when a process exits, its leftover child processes (python, cmd, ...) are terminated too, so nothing is left running in the job.
+- **Monitor pane**: the activity tree shows only sub-agents; the root agent's own steps are no longer listed.
 
 ### v2.5.2
 - **Tray recovery**: the tray icon is registered again after Explorer restarts. If the tray icon cannot be added, minimizing keeps the window on the taskbar instead of hiding it.

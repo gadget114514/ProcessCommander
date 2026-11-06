@@ -131,6 +131,8 @@ private:
         if (it == children_.end()) return;
         for (const auto& item : it->second) {
             if (item.branchIndex < 0) {
+                // The tree shows sub-agents only: the root agent's own steps are left out.
+                if (owner.empty()) continue;
                 ActivityTreeRow row = item.row;
                 row.depth = depth;
                 out_.push_back(row);

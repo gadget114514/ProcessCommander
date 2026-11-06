@@ -727,6 +727,11 @@ void ProcessManager::MonitorThreadFunc() {
                 if (waitRes == WAIT_OBJECT_0) {
                     DWORD code = 0;
                     GetExitCodeProcess(proc->hProcess, &code);
+                    // The root exited, but it may have left descendants (python, cmd, ...) running.
+                    // Kill whatever is still in the job so nothing is orphaned.
+                    if (proc->hJob) {
+                        TerminateJobObject(proc->hJob, 0);
+                    }
                     proc->exitCode = code;
                     proc->endTickMs = now;
                     ProcState finalSt = (code == 0) ? ProcState::Completed : ProcState::Failed;

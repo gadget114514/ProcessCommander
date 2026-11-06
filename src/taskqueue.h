@@ -167,9 +167,13 @@ public:
     // Task queue operations. Each returns a complete JSON response string
     // ({"ok":true,...} or {"ok":false,"error":"..."}).
     std::string TaskQueueAdd(const std::string& taskqueue, const std::string& jobsJson, int64_t concurrency, const std::string& notifyFile, std::string& outError);
-    std::string TaskQueueList(const std::string& taskqueue, const std::string& state, std::string& outError);
+    // sinceSec > 0 keeps only jobs whose updatedAt is within the last sinceSec seconds.
+    std::string TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError);
     std::string TaskQueueGet(const std::string& id, bool includeInstructions, int rev, std::string& outError);
     std::string TaskQueueRetry(const std::string& id, bool resetAttempts, bool refreshInstructions, std::string& outError);
+    // Retries every failed job (optionally limited to one queue and to jobs whose updatedAt is
+    // within the last sinceSec seconds; sinceSec <= 0 means no time limit). Returns the retried ids.
+    std::string TaskQueueRetryFailed(const std::string& taskqueue, int64_t sinceSec, bool resetAttempts, bool refreshInstructions, std::string& outError);
     std::string TaskQueueUpdate(const std::string& id, const std::string& patchJson, std::string& outError);
     std::string TaskQueueCancel(const std::string& id, std::string& outError);
     std::string TaskQueuePause(const std::string& taskqueue, bool paused, std::string& outError);
@@ -225,6 +229,8 @@ private:
 
     TaskQueueJob* FindJob(const std::string& id, TaskQueue** outQueue);
     const TaskQueueJob* FindJobConst(const std::string& id) const;
+    // Requeues one job (caller holds mutex_, has validated the state, and saves the queue).
+    void RequeueJobLocked(TaskQueue& tq, TaskQueueJob& job, bool resetAttempts, bool refreshInstructions);
 
     void ApplyAttemptOutcome(TaskQueue& tq, TaskQueueJob& job, bool success,
                              const std::string& reason, int exitCode, const std::string& checkDetail);

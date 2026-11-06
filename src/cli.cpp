@@ -394,11 +394,16 @@ TASK QUEUE:
       overlapping card) goes back to pending after delaySec without using up
       maxAttempts; after limit deferrals (0 = no limit) it is an ordinary failure.
 
-  taskqueue list [<name>] [--state <state>]
-      List jobs with state, queue, summary and blockedBy.
+  taskqueue list [<name>] [--state <state>] [--since <period>]
+      List jobs with state, queue, summary and blockedBy. --since keeps only
+      jobs updated within the period (30m, 6h, 2d), e.g. --since 6h.
 
   taskqueue get <id> [--rev <n>] [--no-instructions]
   taskqueue retry <id>
+  taskqueue retry --failed [<name>] [--since <period>]
+      Retry every failed job at once, optionally only one queue and only jobs
+      that failed within the period, e.g. `taskqueue retry --failed --since 6h`
+      retries the failures of the last 6 hours. Blocked dependents resume.
   taskqueue cancel <id>
   taskqueue pause|resume <name>
   taskqueue graph [<name>] [--root <id>]     (ready, waiting_for, resource_wait, retry_in_sec, blocked)
@@ -664,9 +669,9 @@ void PrintCliUsageJson() {
       "usage": "pcder taskqueue <add|list|get|retry|cancel|pause|resume|graph|wait|purge> ...",
       "subcommands": [
         {"name": "add", "usage": "pcder taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]", "description": "Register jobs. Each job needs id, command, summary and timeoutSec; dependsOn replaces shell chaining."},
-        {"name": "list", "usage": "pcder taskqueue list [<name>] [--state <state>]", "description": "List jobs with state, queue, summary and blockedBy."},
+        {"name": "list", "usage": "pcder taskqueue list [<name>] [--state <state>] [--since <period>]", "description": "List jobs with state, queue, summary and blockedBy. --since keeps only jobs updated within the period (e.g. 30m, 6h, 2d)."},
         {"name": "get", "usage": "pcder taskqueue get <id> [--rev <n>] [--no-instructions]", "description": "Show one job with attempts and instructions."},
-        {"name": "retry", "usage": "pcder taskqueue retry <id>", "description": "Requeue a failed/blocked/cancelled job; blocked dependents resume automatically."},
+        {"name": "retry", "usage": "pcder taskqueue retry <id> | pcder taskqueue retry --failed [<name>] [--since <period>]", "description": "Requeue a failed/blocked/cancelled job; blocked dependents resume automatically. --failed retries every failed job instead, optionally limited to one queue and to jobs that failed within --since (e.g. --since 6h = last 6 hours)."},
         {"name": "cancel", "usage": "pcder taskqueue cancel <id>", "description": "Cancel a job; a running attempt is killed and is not retried."},
         {"name": "pause", "usage": "pcder taskqueue pause <name>", "description": "Stop starting new jobs in the queue; running jobs continue."},
         {"name": "resume", "usage": "pcder taskqueue resume <name>", "description": "Resume starting jobs in the queue."},
@@ -1671,6 +1676,19 @@ if (subcmd == "start" || subcmd == "run") {
             else std::cerr << "Error: " << msg << "\n";
             return 1;
         };
+        // First non-flag argument, skipping the values of flags that take one (e.g. "--since 6h").
+        auto positionalSkippingValues = [&args](size_t startIdx) -> std::string {
+            static const char* const valueFlags[] = {"--state", "--since", "--rev", "--root", "--states", "--older-than-days"};
+            for (size_t i = startIdx; i < args.size(); ++i) {
+                bool isValueFlag = false;
+                for (const char* f : valueFlags) {
+                    if (args[i] == f) { isValueFlag = true; break; }
+                }
+                if (isValueFlag) { ++i; continue; }
+                if (!args[i].empty() && args[i][0] != '-') return args[i];
+            }
+            return "";
+        };
 
         if (op == "add") {
             std::string file = argVal("--file", "");
@@ -1713,10 +1731,12 @@ if (subcmd == "start" || subcmd == "run") {
                     << ",\"notify_file\":\"" << JsonEscape(notifyFile) << "\"}";
             subcmd = "taskqueue_add";
         } else if (op == "list") {
-            std::string tqName = firstPositional(3);
+            std::string tqName = positionalSkippingValues(3);
             std::string state = argVal("--state", "");
+            std::string since = argVal("--since", "");
             reqJson << "{\"action\":\"taskqueue_list\",\"taskqueue\":\"" << JsonEscape(tqName)
-                    << "\",\"state\":\"" << JsonEscape(state) << "\"}";
+                    << "\",\"state\":\"" << JsonEscape(state) << "\""
+                    << ",\"since\":\"" << JsonEscape(since) << "\"}";
             subcmd = "taskqueue_list";
         } else if (op == "get") {
             std::string id = firstPositional(3);
@@ -1732,9 +1752,23 @@ if (subcmd == "start" || subcmd == "run") {
                     << ",\"rev\":" << rev << "}";
             subcmd = "taskqueue_get";
         } else if (op == "retry") {
-            std::string id = firstPositional(3);
-            reqJson << "{\"action\":\"taskqueue_retry\",\"id\":\"" << JsonEscape(id)
-                    << "\",\"reset_attempts\":true,\"refresh_instructions\":true}";
+            bool failedMode = false;
+            for (size_t i = 3; i < args.size(); ++i) {
+                if (args[i] == "--failed") failedMode = true;
+            }
+            if (failedMode) {
+                // Bulk: every failed job, optionally limited to one queue and to the last --since period.
+                std::string tqName = positionalSkippingValues(3);
+                std::string since = argVal("--since", "");
+                reqJson << "{\"action\":\"taskqueue_retry\",\"id\":\"\",\"failed\":true"
+                        << ",\"taskqueue\":\"" << JsonEscape(tqName) << "\""
+                        << ",\"since\":\"" << JsonEscape(since) << "\""
+                        << ",\"reset_attempts\":true,\"refresh_instructions\":true}";
+            } else {
+                std::string id = firstPositional(3);
+                reqJson << "{\"action\":\"taskqueue_retry\",\"id\":\"" << JsonEscape(id)
+                        << "\",\"reset_attempts\":true,\"refresh_instructions\":true}";
+            }
             subcmd = "taskqueue_retry";
         } else if (op == "cancel") {
             std::string id = firstPositional(3);

@@ -566,16 +566,35 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
                                      JsonGetInt(reqJson, "concurrency", 0),
                                      JsonGetString(reqJson, "notify_file", ""), err);
         } else if (action == "taskqueue_list") {
-            resp = tqm_.TaskQueueList(JsonGetString(reqJson, "taskqueue", ""),
-                                      JsonGetString(reqJson, "state", ""), err);
+            int64_t sinceSec = 0;
+            const std::string sinceStr = JsonGetString(reqJson, "since", "");
+            if (!sinceStr.empty() && !ParseDurationToSec(sinceStr, sinceSec)) {
+                err = "invalid since '" + sinceStr + "' (use a number followed by m, h or d, e.g. 6h)";
+            } else {
+                resp = tqm_.TaskQueueList(JsonGetString(reqJson, "taskqueue", ""),
+                                          JsonGetString(reqJson, "state", ""), sinceSec, err);
+            }
         } else if (action == "taskqueue_get") {
             resp = tqm_.TaskQueueGet(JsonGetString(reqJson, "id", ""),
                                      JsonGetBool(reqJson, "include_instructions", true),
                                      static_cast<int>(JsonGetInt(reqJson, "rev", 0)), err);
         } else if (action == "taskqueue_retry") {
-            resp = tqm_.TaskQueueRetry(JsonGetString(reqJson, "id", ""),
-                                       JsonGetBool(reqJson, "reset_attempts", true),
-                                       JsonGetBool(reqJson, "refresh_instructions", true), err);
+            const std::string retryId = JsonGetString(reqJson, "id", "");
+            const bool resetAttempts = JsonGetBool(reqJson, "reset_attempts", true);
+            const bool refreshInstr = JsonGetBool(reqJson, "refresh_instructions", true);
+            int64_t sinceSec = 0;
+            const std::string sinceStr = JsonGetString(reqJson, "since", "");
+            if (!sinceStr.empty() && !ParseDurationToSec(sinceStr, sinceSec)) {
+                err = "invalid since '" + sinceStr + "' (use a number followed by m, h or d, e.g. 6h)";
+            } else if (!retryId.empty()) {
+                resp = tqm_.TaskQueueRetry(retryId, resetAttempts, refreshInstr, err);
+            } else if (JsonGetBool(reqJson, "failed", false)) {
+                // Bulk retry: every failed job, optionally limited to one queue and a time window.
+                resp = tqm_.TaskQueueRetryFailed(JsonGetString(reqJson, "taskqueue", ""),
+                                                 sinceSec, resetAttempts, refreshInstr, err);
+            } else {
+                err = "taskqueue_retry requires an id, or failed=true for bulk retry";
+            }
         } else if (action == "taskqueue_update") {
             resp = tqm_.TaskQueueUpdate(JsonGetString(reqJson, "id", ""),
                                         ExtractRawJsonValue(reqJson, "patch"), err);

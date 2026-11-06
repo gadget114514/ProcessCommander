@@ -45,7 +45,7 @@ You can also run the server directly with `ProcessCommander.exe mcp`. It connect
 | `taskqueue_add` | Register jobs (`taskqueue`, `jobs[]`, `concurrency?`, `notifyFile?`). Each job needs `id`, `command`, `summary`, `timeoutSec`. |
 | `taskqueue_list` | List jobs (`taskqueue?`, `state?`). |
 | `taskqueue_get` | Full job, attempts and instructions (`id`, `includeInstructions?`, `rev?`). |
-| `taskqueue_retry` | Retry failed/blocked/cancelled (`id`, `resetAttempts?`, `refreshInstructions?`); blocked dependents are requeued. |
+| `taskqueue_retry` | Retry failed/blocked/cancelled (`id`, `resetAttempts?`, `refreshInstructions?`); blocked dependents are requeued. Bulk: `failed: true` with no `id` retries all failed jobs, optionally limited by `taskqueue` and `since` (e.g. `6h`). |
 | `taskqueue_update` | Update a pending/failed/blocked job. |
 | `taskqueue_cancel` | Cancel a job (kills a running attempt, no retry). |
 | `taskqueue_pause` / `taskqueue_resume` | Stop/restart starting new jobs in a queue. |

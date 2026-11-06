@@ -1530,16 +1530,20 @@ std::string TaskQueueManager::TaskQueueAdd(const std::string& taskqueue, const s
     return oss.str();
 }
 
-std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const std::string& state, std::string& outError) {
+std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError) {
     outError.clear();
     std::lock_guard<std::mutex> lock(mutex_);
     struct ListedJob { std::string queue; TaskQueueJob job; };
     std::vector<ListedJob> listed;
+    const int64_t cutoff = static_cast<int64_t>(time(nullptr)) - sinceSec;
     for (const auto& [name, tq] : queues_) {
-        (void)name;
         if (!taskqueue.empty() && name != taskqueue) continue;
         for (const auto& job : tq.jobs) {
             if (!state.empty() && job.state != state) continue;
+            if (sinceSec > 0) {
+                const int64_t ts = ParseTimestampStrToEpoch(job.updatedAt);
+                if (ts <= 0 || ts < cutoff) continue;
+            }
             listed.push_back({name, job});
         }
     }
@@ -1600,6 +1604,29 @@ std::string TaskQueueManager::TaskQueueGet(const std::string& id, bool includeIn
     return oss.str();
 }
 
+void TaskQueueManager::RequeueJobLocked(TaskQueue& tq, TaskQueueJob& job, bool resetAttempts, bool refreshInstructions) {
+    if (refreshInstructions && !job.instructions.source.empty()) {
+        std::wstring pathW = ResolveJobPathWide(job, job.instructions.source);
+        if (GetFileAttributesW(pathW.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            std::string text = ReadFileUtf8Wide(pathW);
+            std::string sha = Sha256Hex(text);
+            if (sha != job.instructions.sha256) {
+                job.instructions.text = text;
+                job.instructions.sha256 = sha;
+                job.instructions.rev++;
+                job.instructions.capturedAt = GetCurrentTimestampStr();
+                EmitEventLocked(tq, "instructionsUpdated", job.id, 0);
+            }
+        }
+    }
+
+    if (resetAttempts) job.attempts.clear();
+    job.state = "pending";
+    job.blockedBy.clear();
+    job.retryAtMs = 0;
+    job.updatedAt = GetCurrentTimestampStr();
+}
+
 std::string TaskQueueManager::TaskQueueRetry(const std::string& id, bool resetAttempts, bool refreshInstructions, std::string& outError) {
     outError.clear();
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1618,30 +1645,49 @@ std::string TaskQueueManager::TaskQueueRetry(const std::string& id, bool resetAt
         return BuildError(outError);
     }
 
-    if (refreshInstructions && !job->instructions.source.empty()) {
-        std::wstring pathW = ResolveJobPathWide(*job, job->instructions.source);
-        if (GetFileAttributesW(pathW.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            std::string text = ReadFileUtf8Wide(pathW);
-            std::string sha = Sha256Hex(text);
-            if (sha != job->instructions.sha256) {
-                job->instructions.text = text;
-                job->instructions.sha256 = sha;
-                job->instructions.rev++;
-                job->instructions.capturedAt = GetCurrentTimestampStr();
-                EmitEventLocked(*tq, "instructionsUpdated", job->id, 0);
-            }
-        }
-    }
-
-    if (resetAttempts) job->attempts.clear();
-    job->state = "pending";
-    job->blockedBy.clear();
-    job->retryAtMs = 0;
-    job->updatedAt = GetCurrentTimestampStr();
+    RequeueJobLocked(*tq, *job, resetAttempts, refreshInstructions);
     ReevaluateAll();
     SaveQueue(*tq);
     cv_.notify_all();
     return "{\"ok\":true,\"source_changed\":false,\"job\":" + JobToJson(*job, true) + "}";
+}
+
+std::string TaskQueueManager::TaskQueueRetryFailed(const std::string& taskqueue, int64_t sinceSec, bool resetAttempts, bool refreshInstructions, std::string& outError) {
+    outError.clear();
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!taskqueue.empty() && queues_.find(taskqueue) == queues_.end()) {
+        outError = "task queue not found: " + taskqueue;
+        return BuildError(outError);
+    }
+    const int64_t cutoff = static_cast<int64_t>(time(nullptr)) - sinceSec;
+    std::vector<std::string> retried;
+    for (auto& [name, tq] : queues_) {
+        if (!taskqueue.empty() && name != taskqueue) continue;
+        bool changed = false;
+        for (auto& job : tq.jobs) {
+            if (job.state != "failed") continue;
+            if (sinceSec > 0) {
+                const int64_t ts = ParseTimestampStrToEpoch(job.updatedAt);
+                if (ts <= 0 || ts < cutoff) continue;
+            }
+            RequeueJobLocked(tq, job, resetAttempts, refreshInstructions);
+            retried.push_back(job.id);
+            changed = true;
+        }
+        if (changed) {
+            ReevaluateAll();
+            SaveQueue(tq);
+        }
+    }
+    if (!retried.empty()) cv_.notify_all();
+    std::ostringstream oss;
+    oss << "{\"ok\":true,\"retried_count\":" << retried.size() << ",\"retried\":[";
+    for (size_t i = 0; i < retried.size(); ++i) {
+        if (i) oss << ",";
+        oss << "\"" << JsonEscape(retried[i]) << "\"";
+    }
+    oss << "]}";
+    return oss.str();
 }
 
 } // namespace pc

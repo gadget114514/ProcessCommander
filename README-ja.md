@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.5.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.5.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.5.2/ProcessCommander-v2.5.2-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.7.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.7.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.0/ProcessCommander-v2.7.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,12 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.7.0
+- **タスクキューの時間絞り込み**: `pcder taskqueue list --since 6h` で、指定期間内に更新されたジョブだけを表示します（MCP の `taskqueue_list` にも `since` を追加）。単位は m・h・d です。
+- **失敗ジョブの一括再実行**: `pcder taskqueue retry --failed [<キュー名>] [--since 6h]` で、失敗したジョブをまとめて再実行します。キュー名と期間で絞り込めます。MCP の `taskqueue_retry` も `id` を省いて `failed: true` を渡すと同じ一括再実行になります。
+- **プロセスの後始末**: プロセスが終了したとき、残っていた子プロセス（python、cmd など）も終了させます。ジョブに子プロセスが取り残されなくなります。
+- **監視ペイン**: アクティビティツリーには、サブエージェントだけを表示するようにしました。ルートエージェント自身の手順は表示しません。
 
 ### v2.5.2
 - **トレイからの復帰**: Explorer を再起動した後もトレイアイコンを登録し直します。トレイアイコンを追加できない環境では、格納せず最小化します（ウィンドウに戻れなくなるのを防ぎます）。

@@ -113,6 +113,13 @@ pcder.exe taskqueue get A
 pcder.exe taskqueue graph main
 pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
 pcder.exe taskqueue retry A
+
+# Only jobs updated within the last 6 hours (--since takes 30m, 6h, 2d)
+pcder.exe taskqueue list main --state failed --since 6h
+
+# Retry every failed job at once (optionally one queue, and only recent failures)
+pcder.exe taskqueue retry --failed
+pcder.exe taskqueue retry --failed main --since 6h
 ```
 
 **Register as an MCP server automatically (recommended for LLM agents):**

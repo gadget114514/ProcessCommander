@@ -67,6 +67,9 @@ bool JsonGetBool(const std::string& json, const std::string& key, bool defaultVa
 uint64_t GetNowTickMs();
 std::string GetCurrentTimestampStr();
 int64_t ParseTimestampStrToEpoch(const std::string& s);
+// Parses a relative duration such as "30m", "6h" or "2d" into seconds.
+// Returns false for empty, malformed, or negative input.
+bool ParseDurationToSec(const std::string& s, int64_t& outSec);
 std::string GetFileTimestampStr();
 std::string FormatDurationSec(uint64_t ms);
 std::string FormatUptimeHMS(uint64_t ms);

@@ -371,6 +371,28 @@ int64_t ParseTimestampStrToEpoch(const std::string& s) {
     return static_cast<int64_t>(t);
 }
 
+bool ParseDurationToSec(const std::string& s, int64_t& outSec) {
+    outSec = 0;
+    if (s.size() < 2) return false;
+    const char unit = static_cast<char>(std::tolower(static_cast<unsigned char>(s.back())));
+    int64_t multiplier = 0;
+    if (unit == 'm') multiplier = 60;
+    else if (unit == 'h') multiplier = 3600;
+    else if (unit == 'd') multiplier = 86400;
+    else return false;
+    const std::string digits = s.substr(0, s.size() - 1);
+    for (char c : digits) {
+        if (c < '0' || c > '9') return false;
+    }
+    try {
+        outSec = std::stoll(digits) * multiplier;
+    } catch (...) {
+        outSec = 0;
+        return false;
+    }
+    return true;
+}
+
 std::string GetFileTimestampStr() {
     SYSTEMTIME st = {};
     GetLocalTime(&st);

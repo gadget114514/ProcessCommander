@@ -269,7 +269,8 @@ int RunMcpServer() {
                 << "\"description\":\"List task queue jobs with state, attempts, last reason and blockedBy.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Optional task queue name (all queues when omitted)\"},"
-                << "\"state\":{\"type\":\"string\",\"description\":\"Optional state filter: pending, running, succeeded, failed, blocked, cancelled\"}"
+                << "\"state\":{\"type\":\"string\",\"description\":\"Optional state filter: pending, running, succeeded, failed, blocked, cancelled\"},"
+                << "\"since\":{\"type\":\"string\",\"description\":\"Optional time window: only jobs updated within this period, e.g. 30m, 6h, 2d\"}"
                 << "}}"
                 << "},"
                 << "{"
@@ -283,12 +284,15 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"taskqueue_retry\","
-                << "\"description\":\"Move a failed/blocked/cancelled job back to pending, optionally refreshing its instructions from the source file. Blocked dependents become pending automatically.\","
+                << "\"description\":\"Move a failed/blocked/cancelled job back to pending, optionally refreshing its instructions from the source file. Blocked dependents become pending automatically. With failed=true and no id, retries every failed job (optionally limited by taskqueue and since).\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
-                << "\"id\":{\"type\":\"string\",\"description\":\"Job id\"},"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Job id (omit for bulk retry with failed=true)\"},"
+                << "\"failed\":{\"type\":\"boolean\",\"description\":\"Bulk mode: retry failed jobs instead of a single id\"},"
+                << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Bulk mode: limit to this task queue\"},"
+                << "\"since\":{\"type\":\"string\",\"description\":\"Bulk mode: only jobs that failed within this period, e.g. 30m, 6h, 2d\"},"
                 << "\"resetAttempts\":{\"type\":\"boolean\",\"description\":\"Reset the attempt counter (default true)\"},"
                 << "\"refreshInstructions\":{\"type\":\"boolean\",\"description\":\"Reload instructions from the source file (default true)\"}"
-                << "},\"required\":[\"id\"]}"
+                << "}}"
                 << "},"
                 << "{"
                 << "\"name\":\"taskqueue_update\","
@@ -519,7 +523,8 @@ int RunMcpServer() {
             else if (toolName == "taskqueue_list") {
                 ipcReq << "{\"action\":\"taskqueue_list\""
                        << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
-                       << ",\"state\":\"" << JsonEscape(JsonGetString(argsJson, "state", "")) << "\"}";
+                       << ",\"state\":\"" << JsonEscape(JsonGetString(argsJson, "state", "")) << "\""
+                       << ",\"since\":\"" << JsonEscape(JsonGetString(argsJson, "since", "")) << "\"}";
             }
             else if (toolName == "taskqueue_get") {
                 bool includeInstr = JsonGetBool(argsJson, "includeInstructions",
@@ -536,6 +541,9 @@ int RunMcpServer() {
                                                 JsonGetBool(argsJson, "refresh_instructions", true));
                 ipcReq << "{\"action\":\"taskqueue_retry\""
                        << ",\"id\":\"" << JsonEscape(JsonGetString(argsJson, "id", "")) << "\""
+                       << ",\"failed\":" << (JsonGetBool(argsJson, "failed", false) ? "true" : "false")
+                       << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
+                       << ",\"since\":\"" << JsonEscape(JsonGetString(argsJson, "since", "")) << "\""
                        << ",\"reset_attempts\":" << (resetAttempts ? "true" : "false")
                        << ",\"refresh_instructions\":" << (refreshInstr ? "true" : "false") << "}";
             }
