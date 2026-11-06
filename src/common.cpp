@@ -233,8 +233,9 @@ std::string GetTailLines(const std::string& text, int maxLines) {
 }
 
 std::string JsonEscape(const std::string& s) {
+    // ⚡ Bolt: Increase pre-allocation capacity heuristic slightly to strictly prevent reallocation
     std::string out;
-    out.reserve(s.size() + s.size() / 8); // Heuristic to reduce allocations
+    out.reserve(s.size() + s.size() / 4 + 8);
     for (unsigned char c : s) {
         switch (c) {
             case '"':  out += "\\\""; break;
