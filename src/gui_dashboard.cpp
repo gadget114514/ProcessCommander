@@ -1389,9 +1389,9 @@ static void UpdateKpiTooltips(DashboardState* st, uint32_t totalTreeProcs,
         L"Tareas en espera de dependencias o bloqueadas por fallo aguas arriba.");
 
     st->kpiTipText[13] = Tr(
-        L"未完了タスク（実行中・待機・ブロック）の残り時間の合計。実行中は残りタイムアウト、未起動はタイムアウト値で見積もります。",
-        L"Total remaining time across unfinished tasks (running, waiting, blocked). Running tasks use the remaining timeout; not-yet-started tasks use their timeout.",
-        L"Tiempo restante total de las tareas sin terminar (en ejecución, en espera, bloqueadas). Las tareas activas usan el tiempo límite restante; las no iniciadas usan su tiempo límite.");
+        L"未完了タスク（実行中・待機・保留のうち実行されうるもの）の残り時間の合計。実行中は残りタイムアウト、未起動はタイムアウト値で見積もります。ブロックされて実行されないタスクは含みません。",
+        L"Total remaining time across unfinished tasks that can still run (running, waiting, pending). Running tasks use the remaining timeout; not-yet-started tasks use their timeout. Blocked tasks that will never run are not included.",
+        L"Tiempo restante total de las tareas sin terminar que aún pueden ejecutarse (en ejecución, en espera, pendientes). Las tareas activas usan el tiempo límite restante; las no iniciadas usan su tiempo límite. Las tareas bloqueadas que nunca se ejecutarán no se incluyen.");
     if (tqCounts.sumRemainingSec >= 0) {
         st->kpiTipText[13] += std::wstring(L"\n") + Tr(L"合計残り時間: ", L"Total remaining: ", L"Restante total: ") + FormatRemainingTime(tqCounts.sumRemainingSec);
     }

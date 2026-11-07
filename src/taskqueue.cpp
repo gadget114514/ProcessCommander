@@ -3,6 +3,7 @@
 #include "chain_guard.h"
 #include <sstream>
 #include <algorithm>
+#include <functional>
 #include <cctype>
 #include <cstring>
 #include <cstdio>
@@ -679,6 +680,26 @@ TaskQueueCounts TaskQueueManager::GetJobCounts() const {
     counts.minRemainingSec = -1;
     counts.sumRemainingSec = 0;
     bool anyRemain = false;
+
+    // True when a job can never run: it is blocked, or a dependency has finished in a way that
+    // will never satisfy it (e.g. the upstream job failed). Pending upstream jobs are checked recursively.
+    std::function<bool(const TaskQueueJob&, int)> isNeverRunnable =
+        [this, &isNeverRunnable](const TaskQueueJob& j, int depth) -> bool {
+        if (j.state == "blocked") return true;
+        if (j.state != "pending" || depth > 64) return false;
+        for (const auto& d : j.dependsOn) {
+            const TaskQueueJob* dep = FindJobConst(d.id);
+            if (!dep) return true;
+            if (IsDepSatisfied(*dep, d.on)) continue;
+            if (dep->state == "running" || dep->state == "pending") {
+                if (isNeverRunnable(*dep, depth + 1)) return true;
+                continue;
+            }
+            return true;  // finished or blocked upstream that does not satisfy this dependency
+        }
+        return false;
+    };
+
     for (const auto& [name, tq] : queues_) {
         (void)name;
         for (const auto& job : tq.jobs) {
@@ -739,16 +760,14 @@ TaskQueueCounts TaskQueueManager::GetJobCounts() const {
                 } else {
                     counts.pending++;
                 }
-                if (job.timeoutSec > 0) {
+                // Only jobs that can still run count toward the remaining time.
+                if (job.timeoutSec > 0 && !isNeverRunnable(job, 0)) {
                     counts.sumRemainingSec += static_cast<int64_t>(job.timeoutSec);
                     anyRemain = true;
                 }
             } else if (job.state == "blocked") {
+                // Blocked by a failed upstream job: it will not run, so it adds no remaining time.
                 counts.blocked++;
-                if (job.timeoutSec > 0) {
-                    counts.sumRemainingSec += static_cast<int64_t>(job.timeoutSec);
-                    anyRemain = true;
-                }
             } else if (job.state == "succeeded") {
                 counts.succeeded++;
             } else if (job.state == "failed") {
