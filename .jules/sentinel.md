@@ -16,3 +16,8 @@
 **Vulnerability:** Command injection vulnerability in IPC client auto-start logic via direct string interpolation of file paths in PowerShell commands.
 **Learning:** `Invoke-CimMethod -Arguments @{CommandLine='...'}` uses single quotes, which can be escaped, but if an attacker controls `guiExePath` or the data directory, they could potentially break out of the string context if other injections are found. Passing user-controlled data via environment variables introduces race conditions in multi-threaded C++ code. The most secure approach is to Base64 encode the arguments, inject the Base64 string into the script template to be decoded at runtime by `[System.Convert]::FromBase64String`, and then Base64 encode the entire script itself for execution via `-EncodedCommand`.
 **Prevention:** When invoking PowerShell from C++ where inputs might contain arbitrary characters, perform a two-stage Base64 encoding. Encode the dynamic payload, embed it into the script to be decoded at runtime, and then encode the final script. Execute using `powershell.exe -EncodedCommand`.
+
+## 2024-11-07 - [Command Injection via Double Quotes in Untrusted URIs]
+**Vulnerability:** The application executed custom commands containing OSC 8 hyperlink URIs without filtering double quotes, allowing potential command injection.
+**Learning:** Even if a URI scheme is validated, the URI might contain quotes that can break out of string boundaries when passed to custom command substitutions or external shells.
+**Prevention:** Explicitly reject URIs containing double quotes (") when passing untrusted inputs into custom commands or ShellExecuteW.
