@@ -1244,7 +1244,7 @@ void LlmStreamTracker::ApplyEvent(LlmStreamEvent& ev, const std::string& line) {
         pt.cacheWriteTokens = ev.cacheWriteTokens;
         pt.totalTokens = eventTokens;
         pt.costUsd = ev.costUsd;
-        pt.agentType = "agy";
+        pt.agentType = ev.agentType.empty() ? agentType_ : ev.agentType;
         pt.model = ev.model.empty() ? state_.model : ev.model;
         pendingUsage_.push_back(std::move(pt));
     }

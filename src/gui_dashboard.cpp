@@ -1666,7 +1666,7 @@ static void DrawDashboardCanvas(DashboardState* st, HDC hdcWindow) {
                     std::wstring sub = (tqCounts.blocked > 0) ? (L"(" + std::to_wstring(tqCounts.blocked) + L")") : L"";
                     DrawKpiCard(hdc, rcCard, Tr(L"保留 / ブロック", L"PENDING / BLOCKED", L"PENDIENTES / BLOQ"),
                                 std::to_wstring(tqCounts.pending + tqCounts.blocked), KpiAccent(5), st->hFontUiBold, st->hFontKpiVal,
-                                -1.0f, sub);
+                                ((tqCounts.pending + tqCounts.blocked) > 0 ? g_kpiBarPhase : -1.0f), sub);
                 } else if (col == 6) {
                     std::wstring val = (tqCounts.sumRemainingSec >= 0) ? FormatRemainingTimeShort(tqCounts.sumRemainingSec) : Tr(L"なし", L"None", L"Ninguno");
                     DrawKpiCard(hdc, rcCard, Tr(L"残り時間", L"TASK REMAINING", L"RESTANTE TOTAL"),

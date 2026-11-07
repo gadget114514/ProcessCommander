@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.7.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.7.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.7.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.7.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -85,6 +85,11 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.7.2
+- **実行されないジョブを残り時間から除外**: 合計残り時間（タスク残り時間の KPI とツールチップ）に、ブロックされたジョブや、上流が満たされない形で終わった保留ジョブを含めなくなりました。件数の表示は変わりません。
+- **保留 / ブロック KPI のアニメーション**: 件数が 1 以上のとき、「保留 / ブロック」カードがアニメーションします。
+- **OpenCode の使用量の分類**: モデル別の使用量表示で、OpenCode のトークン使用量が agy として数えられていた問題を直しました。OpenCode として記録されます。
 
 ### v2.7.1
 - **リストの文字サイズ**: プロセス一覧とタスクキューの一覧で、それぞれ文字サイズ（10〜24 px）を変えられます。設定の「表示」タブで指定します。

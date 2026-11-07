@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.7.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64-setup.exe)
-  (portable: [ProcessCommander-v2.7.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.1/ProcessCommander-v2.7.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.7.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64-setup.exe)
+  (portable: [ProcessCommander-v2.7.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -83,6 +83,11 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 ---
 
 ## Release Notes
+
+### v2.7.2
+- **Remaining time ignores jobs that cannot run**: the total remaining time (task remaining KPI and tooltip) no longer counts blocked jobs, or pending jobs whose upstream finished without satisfying them. Their counts are unchanged.
+- **Pending / blocked KPI animation**: the PENDING / BLOCKED card animates while its count is 1 or more.
+- **OpenCode usage attribution**: OpenCode token usage was recorded under agy in the per-model usage view. It is now recorded under OpenCode.
 
 ### v2.7.1
 - **Font size for lists**: the process list and the task queue list each have their own font size (10-24 px), set on the 表示 (Appearance) tab of Settings.
