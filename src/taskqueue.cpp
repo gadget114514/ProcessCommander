@@ -301,84 +301,120 @@ namespace pc {
 // ---------------------------------------------------------------------------
 
 static std::string AttemptToJson(const TaskQueueAttempt& a) {
-    std::ostringstream oss;
-    oss << "{\"n\":" << a.n
-        << ",\"process_id\":" << a.processId
-        << ",\"start\":\"" << JsonEscape(a.start) << "\""
-        << ",\"end\":\"" << JsonEscape(a.end) << "\""
-        << ",\"reason\":\"" << JsonEscape(a.reason) << "\""
-        << ",\"exit_code\":" << a.exitCode
-        << ",\"instructions_rev\":" << a.instructionsRev
-        << ",\"last_lines_file\":\"" << JsonEscape(a.lastLinesFile) << "\""
-        << ",\"check_detail\":\"" << JsonEscape(a.checkDetail) << "\"}";
-    return oss.str();
+    // [⚡ Bolt] Replacing std::ostringstream with std::string::reserve and append to eliminate stream overhead in hot path.
+    std::string out;
+    out.reserve(256);
+    out += "{\"n\":";
+    out += std::to_string(a.n);
+    out += ",\"process_id\":";
+    out += std::to_string(a.processId);
+    out += ",\"start\":\"";
+    out += JsonEscape(a.start);
+    out += "\",\"end\":\"";
+    out += JsonEscape(a.end);
+    out += "\",\"reason\":\"";
+    out += JsonEscape(a.reason);
+    out += "\",\"exit_code\":";
+    out += std::to_string(a.exitCode);
+    out += ",\"instructions_rev\":";
+    out += std::to_string(a.instructionsRev);
+    out += ",\"last_lines_file\":\"";
+    out += JsonEscape(a.lastLinesFile);
+    out += "\",\"check_detail\":\"";
+    out += JsonEscape(a.checkDetail);
+    out += "\"}";
+    return out;
 }
 
 static std::string EnvToJson(const std::map<std::string, std::string>& env) {
-    std::ostringstream oss;
-    oss << "{";
+    // [⚡ Bolt] Optimized string construction to eliminate std::ostringstream overhead
+    std::string out = "{";
     bool first = true;
     for (const auto& kv : env) {
-        if (!first) oss << ",";
+        if (!first) out += ",";
         first = false;
-        oss << "\"" << JsonEscape(kv.first) << "\":\"" << JsonEscape(kv.second) << "\"";
+        out += "\"";
+        out += JsonEscape(kv.first);
+        out += "\":\"";
+        out += JsonEscape(kv.second);
+        out += "\"";
     }
-    oss << "}";
-    return oss.str();
+    out += "}";
+    return out;
 }
 
 static std::string DepsToJson(const std::vector<TaskQueueDependency>& deps) {
-    std::ostringstream oss;
-    oss << "[";
+    // [⚡ Bolt] Optimized string construction to eliminate std::ostringstream overhead
+    std::string out = "[";
     for (size_t i = 0; i < deps.size(); ++i) {
-        if (i > 0) oss << ",";
-        oss << "{\"id\":\"" << JsonEscape(deps[i].id) << "\",\"on\":\"" << JsonEscape(deps[i].on) << "\"}";
+        if (i > 0) out += ",";
+        out += "{\"id\":\"";
+        out += JsonEscape(deps[i].id);
+        out += "\",\"on\":\"";
+        out += JsonEscape(deps[i].on);
+        out += "\"}";
     }
-    oss << "]";
-    return oss.str();
+    out += "]";
+    return out;
 }
 
 static std::string StrArrayToJson(const std::vector<std::string>& v) {
-    std::ostringstream oss;
-    oss << "[";
+    // [⚡ Bolt] Optimized string construction to eliminate std::ostringstream overhead
+    std::string out = "[";
     for (size_t i = 0; i < v.size(); ++i) {
-        if (i > 0) oss << ",";
-        oss << "\"" << JsonEscape(v[i]) << "\"";
+        if (i > 0) out += ",";
+        out += "\"";
+        out += JsonEscape(v[i]);
+        out += "\"";
     }
-    oss << "]";
-    return oss.str();
+    out += "]";
+    return out;
 }
 
 static std::string AttemptsToJson(const std::vector<TaskQueueAttempt>& attempts) {
-    std::ostringstream oss;
-    oss << "[";
+    // [⚡ Bolt] Optimized string construction to eliminate std::ostringstream overhead
+    std::string out = "[";
     for (size_t i = 0; i < attempts.size(); ++i) {
-        if (i > 0) oss << ",";
-        oss << AttemptToJson(attempts[i]);
+        if (i > 0) out += ",";
+        out += AttemptToJson(attempts[i]);
     }
-    oss << "]";
-    return oss.str();
+    out += "]";
+    return out;
 }
 
 static std::string InstructionsToJson(const TaskQueueInstructions& in) {
-    std::ostringstream oss;
-    oss << "{\"source\":\"" << JsonEscape(in.source) << "\""
-        << ",\"rev\":" << in.rev
-        << ",\"sha256\":\"" << JsonEscape(in.sha256) << "\""
-        << ",\"text\":\"" << JsonEscape(in.text) << "\""
-        << ",\"captured_at\":\"" << JsonEscape(in.capturedAt) << "\"}";
-    return oss.str();
+    // [⚡ Bolt] Replacing std::ostringstream with std::string::reserve and append to eliminate stream overhead in hot path.
+    std::string out;
+    out.reserve(256);
+    out += "{\"source\":\"";
+    out += JsonEscape(in.source);
+    out += "\",\"rev\":";
+    out += std::to_string(in.rev);
+    out += ",\"sha256\":\"";
+    out += JsonEscape(in.sha256);
+    out += "\",\"text\":\"";
+    out += JsonEscape(in.text);
+    out += "\",\"captured_at\":\"";
+    out += JsonEscape(in.capturedAt);
+    out += "\"}";
+    return out;
 }
 
 static std::string SuccessToJson(const TaskQueueSuccess& s) {
-    std::ostringstream oss;
-    oss << "{\"exit_code\":" << s.exitCode
-        << ",\"files_newer\":" << StrArrayToJson(s.filesNewer)
-        << ",\"output_regex\":";
-    if (s.outputRegex.empty()) oss << "null";
-    else oss << "\"" << JsonEscape(s.outputRegex) << "\"";
-    oss << "}";
-    return oss.str();
+    // [⚡ Bolt] Optimized string construction to eliminate std::ostringstream overhead
+    std::string out = "{\"exit_code\":";
+    out += std::to_string(s.exitCode);
+    out += ",\"files_newer\":";
+    out += StrArrayToJson(s.filesNewer);
+    out += ",\"output_regex\":";
+    if (s.outputRegex.empty()) out += "null";
+    else {
+        out += "\"";
+        out += JsonEscape(s.outputRegex);
+        out += "\"";
+    }
+    out += "}";
+    return out;
 }
 
 static std::string ResourcesToJson(const TaskQueueResources& r) {
@@ -386,14 +422,18 @@ static std::string ResourcesToJson(const TaskQueueResources& r) {
 }
 
 static std::string DeferToJson(const TaskQueueDefer& d) {
-    std::ostringstream oss;
-    oss << "{\"exit_codes\":[";
+    // [⚡ Bolt] Optimized string construction to eliminate std::ostringstream overhead
+    std::string out = "{\"exit_codes\":[";
     for (size_t i = 0; i < d.exitCodes.size(); ++i) {
-        if (i > 0) oss << ",";
-        oss << d.exitCodes[i];
+        if (i > 0) out += ",";
+        out += std::to_string(d.exitCodes[i]);
     }
-    oss << "],\"delay_sec\":" << d.delaySec << ",\"limit\":" << d.limit << "}";
-    return oss.str();
+    out += "],\"delay_sec\":";
+    out += std::to_string(d.delaySec);
+    out += ",\"limit\":";
+    out += std::to_string(d.limit);
+    out += "}";
+    return out;
 }
 
 // "defer" as given by a caller (add/update) or as persisted; missing fields keep the defaults.
@@ -865,39 +905,76 @@ void TaskQueueManager::SaveQueue(const TaskQueue& tq) {
 }
 
 std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeInstructions) const {
-    std::ostringstream oss;
-    oss << "{\"id\":\"" << JsonEscape(job.id) << "\""
-        << ",\"taskqueue\":\"" << JsonEscape(job.taskqueue) << "\""
-        << ",\"name\":\"" << JsonEscape(job.name) << "\""
-        << ",\"summary\":\"" << JsonEscape(job.summary) << "\"";
+    // [⚡ Bolt] Replacing std::ostringstream with std::string::reserve and append to eliminate stream overhead in hot path.
+    std::string out;
+    out.reserve(1024);
+    out += "{\"id\":\"";
+    out += JsonEscape(job.id);
+    out += "\",\"taskqueue\":\"";
+    out += JsonEscape(job.taskqueue);
+    out += "\",\"name\":\"";
+    out += JsonEscape(job.name);
+    out += "\",\"summary\":\"";
+    out += JsonEscape(job.summary);
+    out += "\"";
     if (includeInstructions) {
-        oss << ",\"instructions\":" << InstructionsToJson(job.instructions);
+        out += ",\"instructions\":";
+        out += InstructionsToJson(job.instructions);
     } else {
-        oss << ",\"instructions\":{\"source\":\"" << JsonEscape(job.instructions.source)
-            << "\",\"rev\":" << job.instructions.rev << "}";
+        out += ",\"instructions\":{\"source\":\"";
+        out += JsonEscape(job.instructions.source);
+        out += "\",\"rev\":";
+        out += std::to_string(job.instructions.rev);
+        out += "}";
     }
-    oss << ",\"command\":\"" << JsonEscape(job.command) << "\""
-        << ",\"cwd\":\"" << JsonEscape(job.cwd) << "\""
-        << ",\"env\":" << EnvToJson(job.env)
-        << ",\"depends_on\":" << DepsToJson(job.dependsOn)
-        << ",\"timeout_sec\":" << job.timeoutSec
-        << ",\"idle\":{\"output_sec\":" << job.idle.outputSec << ",\"cpu_sec\":" << job.idle.cpuSec << "}"
-        << ",\"max_attempts\":" << job.maxAttempts
-        << ",\"retry_delay_sec\":" << job.retryDelaySec
-        << ",\"defer\":" << DeferToJson(job.defer)
-        << ",\"success\":" << SuccessToJson(job.success)
-        << ",\"kill_exclude\":" << StrArrayToJson(job.killExclude)
-        << ",\"resources\":" << ResourcesToJson(job.resources)
-        << ",\"priority\":" << job.priority
-        << ",\"state\":\"" << JsonEscape(job.state) << "\""
-        << ",\"attempts\":" << AttemptsToJson(job.attempts)
-        << ",\"blocked_by\":";
-    if (job.blockedBy.empty()) oss << "null";
-    else oss << "\"" << JsonEscape(job.blockedBy) << "\"";
-    oss << ",\"created_at\":\"" << JsonEscape(job.createdAt) << "\""
-        << ",\"updated_at\":\"" << JsonEscape(job.updatedAt) << "\""
-        << ",\"notes\":\"" << JsonEscape(job.notes) << "\"}";
-    return oss.str();
+    out += ",\"command\":\"";
+    out += JsonEscape(job.command);
+    out += "\",\"cwd\":\"";
+    out += JsonEscape(job.cwd);
+    out += "\",\"env\":";
+    out += EnvToJson(job.env);
+    out += ",\"depends_on\":";
+    out += DepsToJson(job.dependsOn);
+    out += ",\"timeout_sec\":";
+    out += std::to_string(job.timeoutSec);
+    out += ",\"idle\":{\"output_sec\":";
+    out += std::to_string(job.idle.outputSec);
+    out += ",\"cpu_sec\":";
+    out += std::to_string(job.idle.cpuSec);
+    out += "}";
+    out += ",\"max_attempts\":";
+    out += std::to_string(job.maxAttempts);
+    out += ",\"retry_delay_sec\":";
+    out += std::to_string(job.retryDelaySec);
+    out += ",\"defer\":";
+    out += DeferToJson(job.defer);
+    out += ",\"success\":";
+    out += SuccessToJson(job.success);
+    out += ",\"kill_exclude\":";
+    out += StrArrayToJson(job.killExclude);
+    out += ",\"resources\":";
+    out += ResourcesToJson(job.resources);
+    out += ",\"priority\":";
+    out += std::to_string(job.priority);
+    out += ",\"state\":\"";
+    out += JsonEscape(job.state);
+    out += "\",\"attempts\":";
+    out += AttemptsToJson(job.attempts);
+    out += ",\"blocked_by\":";
+    if (job.blockedBy.empty()) out += "null";
+    else {
+        out += "\"";
+        out += JsonEscape(job.blockedBy);
+        out += "\"";
+    }
+    out += ",\"created_at\":\"";
+    out += JsonEscape(job.createdAt);
+    out += "\",\"updated_at\":\"";
+    out += JsonEscape(job.updatedAt);
+    out += "\",\"notes\":\"";
+    out += JsonEscape(job.notes);
+    out += "\"}";
+    return out;
 }
 
 TaskQueueJob* TaskQueueManager::FindJob(const std::string& id, TaskQueue** outQueue) {
