@@ -580,6 +580,14 @@ static TaskQueueJob ParseJob(const std::string& j) {
     job.updatedAt = JsonFieldStr(j, "updated_at", "");
     job.notes = JsonFieldStr(j, "notes", "");
     job.retryAtMs = JsonFieldInt(j, "retry_at_ms", 0);
+    if (HasJsonKey(j, "bt")) {
+        std::string btObj = JsonFieldObj(j, "bt", "");
+        if (!btObj.empty()) {
+            job.bt.id = JsonFieldStr(btObj, "id", "");
+            job.bt.node = JsonFieldStr(btObj, "node", "");
+            job.bt.run = static_cast<int>(JsonFieldInt(btObj, "run", 0));
+        }
+    }
     return job;
 }
 
@@ -662,6 +670,33 @@ void TaskQueueManager::SetProcessManager(ProcessManager* pm) {
 void TaskQueueManager::SetProcessFinishedCallback(ProcessFinishedCallback cb) {
     std::lock_guard<std::mutex> lock(mutex_);
     finishedCb_ = std::move(cb);
+}
+
+void TaskQueueManager::SetJobFinishedCallback(JobFinishedCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    jobFinishedCb_ = std::move(cb);
+}
+
+void TaskQueueManager::SetBtRetryCallback(BtRetryCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    btRetryCb_ = std::move(cb);
+}
+
+void TaskQueueManager::FlushFinishedCallbacks() {
+    std::vector<std::pair<TaskQueueJob, std::string>> items;
+    JobFinishedCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pendingFinished_.empty() || !jobFinishedCb_) {
+            pendingFinished_.clear();
+            return;
+        }
+        items.swap(pendingFinished_);
+        cb = jobFinishedCb_;
+    }
+    for (const auto& [snap, state] : items) {
+        cb(snap, state);
+    }
 }
 
 void TaskQueueManager::RequestSchedulerTick() {
@@ -896,7 +931,13 @@ std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeIns
     else oss << "\"" << JsonEscape(job.blockedBy) << "\"";
     oss << ",\"created_at\":\"" << JsonEscape(job.createdAt) << "\""
         << ",\"updated_at\":\"" << JsonEscape(job.updatedAt) << "\""
-        << ",\"notes\":\"" << JsonEscape(job.notes) << "\"}";
+        << ",\"notes\":\"" << JsonEscape(job.notes) << "\"";
+    if (!job.bt.id.empty()) {
+        oss << ",\"bt\":{\"id\":\"" << JsonEscape(job.bt.id)
+            << "\",\"node\":\"" << JsonEscape(job.bt.node)
+            << "\",\"run\":" << job.bt.run << "}";
+    }
+    oss << "}";
     return oss.str();
 }
 
@@ -1549,6 +1590,60 @@ std::string TaskQueueManager::TaskQueueAdd(const std::string& taskqueue, const s
     return oss.str();
 }
 
+std::string TaskQueueManager::AddBtJob(const std::string& taskqueue, const std::string& jobJson,
+                                       const TaskQueueBtRef& ref, std::string& outError) {
+    outError.clear();
+    if (taskqueue.empty()) {
+        outError = "taskqueue is required";
+        return BuildError(outError);
+    }
+    if (ref.id.empty()) {
+        outError = "bt.id is required for AddBtJob";
+        return BuildError(outError);
+    }
+
+    std::string jo = TrimJsonStr(jobJson);
+    if (!jo.empty() && jo.front() == '[') {
+        auto arr = ParseObjectArrayDirect(jo);
+        if (arr.empty()) {
+            outError = "invalid BT job JSON";
+            return BuildError(outError);
+        }
+        jo = arr.front();
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    TaskQueue tq;
+    auto existing = queues_.find(taskqueue);
+    if (existing != queues_.end()) tq = existing->second;
+    if (tq.name.empty()) tq.name = taskqueue;
+    if (tq.concurrency <= 0) tq.concurrency = 1;
+    if (tq.maxTimeoutSec <= 0) tq.maxTimeoutSec = 7200;
+    if (tq.defaultMaxAttempts <= 0) tq.defaultMaxAttempts = 1;
+
+    TaskQueueJob job;
+    std::string err;
+    if (!ParseNewJob(jo, taskqueue, /*defaultMaxAttempts=*/1, /*maxTimeoutSec=*/0, job, err)) {
+        outError = err;
+        return BuildError(outError);
+    }
+    job.bt = ref;
+    if (FindJob(job.id, nullptr) != nullptr) {
+        outError = "duplicate job id '" + job.id + "'";
+        return BuildError(outError);
+    }
+    job.num = nextJobNum_++;
+    tq.jobs.push_back(job);
+    queues_[taskqueue] = tq;
+    ReevaluateAll();
+    SaveQueue(queues_[taskqueue]);
+    cv_.notify_all();
+
+    return "{\"ok\":true,\"taskqueue\":\"" + JsonEscape(taskqueue) +
+           "\",\"id\":\"" + JsonEscape(job.id) +
+           "\",\"added\":[\"" + JsonEscape(job.id) + "\"]}";
+}
+
 std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError) {
     outError.clear();
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1585,6 +1680,14 @@ std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const 
 } // namespace pc
 
 namespace pc {
+
+bool TaskQueueManager::GetJobSnapshot(const std::string& id, TaskQueueJob& outJob) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const TaskQueueJob* found = FindJobConst(id);
+    if (!found) return false;
+    outJob = *found;
+    return true;
+}
 
 std::string TaskQueueManager::TaskQueueGet(const std::string& id, bool includeInstructions, int rev, std::string& outError) {
     outError.clear();
@@ -1647,8 +1750,13 @@ void TaskQueueManager::RequeueJobLocked(TaskQueue& tq, TaskQueueJob& job, bool r
 }
 
 std::string TaskQueueManager::TaskQueueRetry(const std::string& id, bool resetAttempts, bool refreshInstructions, std::string& outError) {
+    return TaskQueueRetry(id, resetAttempts, refreshInstructions, TaskQueueCaller::Gui, outError);
+}
+
+std::string TaskQueueManager::TaskQueueRetry(const std::string& id, bool resetAttempts, bool refreshInstructions,
+                                             TaskQueueCaller caller, std::string& outError) {
     outError.clear();
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     TaskQueue* tq = nullptr;
     TaskQueueJob* job = FindJob(id, &tq);
     if (!job) {
@@ -1663,6 +1771,26 @@ std::string TaskQueueManager::TaskQueueRetry(const std::string& id, bool resetAt
         outError = "job '" + id + "' already succeeded";
         return BuildError(outError);
     }
+    if (!job->bt.id.empty()) {
+        if (caller == TaskQueueCaller::External) {
+            outError = "this job is managed by a behavior tree; use bt_retry";
+            return BuildError(outError);
+        }
+        TaskQueueBtRef ref = job->bt;
+        TaskQueueJob snap = *job;
+        BtRetryCallback cb = btRetryCb_;
+        lock.unlock();
+        if (!cb) {
+            outError = "behavior tree retry handler not registered";
+            return BuildError(outError);
+        }
+        if (!cb(ref, resetAttempts, outError)) {
+            return BuildError(outError.empty() ? "behavior tree retry failed" : outError);
+        }
+        TaskQueueJob updated = snap;
+        GetJobSnapshot(id, updated);
+        return "{\"ok\":true,\"source_changed\":false,\"bt_retried\":true,\"job\":" + JobToJson(updated, true) + "}";
+    }
 
     RequeueJobLocked(*tq, *job, resetAttempts, refreshInstructions);
     ReevaluateAll();
@@ -1672,33 +1800,57 @@ std::string TaskQueueManager::TaskQueueRetry(const std::string& id, bool resetAt
 }
 
 std::string TaskQueueManager::TaskQueueRetryFailed(const std::string& taskqueue, int64_t sinceSec, bool resetAttempts, bool refreshInstructions, std::string& outError) {
+    return TaskQueueRetryFailed(taskqueue, sinceSec, resetAttempts, refreshInstructions, TaskQueueCaller::Gui, outError);
+}
+
+std::string TaskQueueManager::TaskQueueRetryFailed(const std::string& taskqueue, int64_t sinceSec, bool resetAttempts,
+                                                   bool refreshInstructions, TaskQueueCaller caller, std::string& outError) {
     outError.clear();
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!taskqueue.empty() && queues_.find(taskqueue) == queues_.end()) {
-        outError = "task queue not found: " + taskqueue;
-        return BuildError(outError);
-    }
-    const int64_t cutoff = static_cast<int64_t>(time(nullptr)) - sinceSec;
     std::vector<std::string> retried;
-    for (auto& [name, tq] : queues_) {
-        if (!taskqueue.empty() && name != taskqueue) continue;
-        bool changed = false;
-        for (auto& job : tq.jobs) {
-            if (job.state != "failed") continue;
-            if (sinceSec > 0) {
-                const int64_t ts = ParseTimestampStrToEpoch(job.updatedAt);
-                if (ts <= 0 || ts < cutoff) continue;
-            }
-            RequeueJobLocked(tq, job, resetAttempts, refreshInstructions);
-            retried.push_back(job.id);
-            changed = true;
+    std::vector<std::pair<std::string, TaskQueueBtRef>> btToRetry;
+    BtRetryCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!taskqueue.empty() && queues_.find(taskqueue) == queues_.end()) {
+            outError = "task queue not found: " + taskqueue;
+            return BuildError(outError);
         }
-        if (changed) {
-            ReevaluateAll();
-            SaveQueue(tq);
+        cb = btRetryCb_;
+        const int64_t cutoff = static_cast<int64_t>(time(nullptr)) - sinceSec;
+        for (auto& [name, tq] : queues_) {
+            if (!taskqueue.empty() && name != taskqueue) continue;
+            bool changed = false;
+            for (auto& job : tq.jobs) {
+                if (job.state != "failed") continue;
+                if (sinceSec > 0) {
+                    const int64_t ts = ParseTimestampStrToEpoch(job.updatedAt);
+                    if (ts <= 0 || ts < cutoff) continue;
+                }
+                if (!job.bt.id.empty()) {
+                    if (caller == TaskQueueCaller::Gui) {
+                        btToRetry.push_back({job.id, job.bt});
+                    }
+                    continue;
+                }
+                RequeueJobLocked(tq, job, resetAttempts, refreshInstructions);
+                retried.push_back(job.id);
+                changed = true;
+            }
+            if (changed) {
+                ReevaluateAll();
+                SaveQueue(tq);
+            }
+        }
+        if (!retried.empty()) cv_.notify_all();
+    }
+    if (cb) {
+        for (const auto& item : btToRetry) {
+            std::string btErr;
+            if (cb(item.second, resetAttempts, btErr)) {
+                retried.push_back(item.first);
+            }
         }
     }
-    if (!retried.empty()) cv_.notify_all();
     std::ostringstream oss;
     oss << "{\"ok\":true,\"retried_count\":" << retried.size() << ",\"retried\":[";
     for (size_t i = 0; i < retried.size(); ++i) {
@@ -1714,6 +1866,11 @@ std::string TaskQueueManager::TaskQueueRetryFailed(const std::string& taskqueue,
 namespace pc {
 
 std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::string& rawPatchJson, std::string& outError) {
+    return TaskQueueUpdate(id, rawPatchJson, TaskQueueCaller::Gui, outError);
+}
+
+std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::string& rawPatchJson,
+                                              TaskQueueCaller caller, std::string& outError) {
     outError.clear();
     const std::string patchJson = NormalizeJobJsonKeys(rawPatchJson);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1721,6 +1878,10 @@ std::string TaskQueueManager::TaskQueueUpdate(const std::string& id, const std::
     TaskQueueJob* job = FindJob(id, &tq);
     if (!job) {
         outError = "job not found: " + id;
+        return BuildError(outError);
+    }
+    if (!job->bt.id.empty() && caller == TaskQueueCaller::External) {
+        outError = "this job is managed by a behavior tree; use bt_retry";
         return BuildError(outError);
     }
     bool onlyNotes = HasJsonKey(patchJson, "notes");
@@ -1884,6 +2045,9 @@ std::string TaskQueueManager::TaskQueueCancel(const std::string& id, std::string
         EmitEventLocked(*tq, "jobCancelled", id, job->attempts.empty() ? 0 : job->attempts.back().n);
         ReevaluateAll();
         SaveQueue(*tq);
+        if (schedulerRunning_.load()) {
+            pendingFinished_.push_back({*job, "cancelled"});
+        }
         resp = "{\"ok\":true,\"job\":" + JobToJson(*job, true) + "}";
         pm = pm_;
     }
@@ -1891,6 +2055,7 @@ std::string TaskQueueManager::TaskQueueCancel(const std::string& id, std::string
         std::string err;
         pm->KillProcess(pid, err);
     }
+    FlushFinishedCallbacks();
     return resp;
 }
 
@@ -2370,6 +2535,9 @@ void TaskQueueManager::ApplyAttemptOutcome(TaskQueue& tq, TaskQueueJob& job, boo
         ReevaluateAll();
         SaveAllLocked();
         CheckQueueNotices(tq);
+        if (schedulerRunning_.load()) {
+            pendingFinished_.push_back({job, "succeeded"});
+        }
         cv_.notify_all();
         return;
     }
@@ -2413,6 +2581,9 @@ void TaskQueueManager::ApplyAttemptOutcome(TaskQueue& tq, TaskQueueJob& job, boo
         job.retryAtMs = 0;
         EmitEventLocked(tq, "jobFailed", job.id, a.n);
         ReevaluateAll();
+        if (schedulerRunning_.load()) {
+            pendingFinished_.push_back({job, "failed"});
+        }
     }
     SaveAllLocked();
     CheckQueueNotices(tq);
@@ -2432,6 +2603,10 @@ static std::wstring GetTaskQueueLogDirWide() {
 static std::wstring GetAttemptLogPathWide(const std::string& jobId, int n) {
     return GetTaskQueueLogDirWide() + L"\\" + Utf8ToWide(SanitizeFileNameComponent(jobId)) +
            L"." + std::to_wstring(n) + L".log";
+}
+
+std::wstring TaskQueueManager::GetAttemptLogFileWide(const std::string& jobId, int n) {
+    return GetAttemptLogPathWide(jobId, n);
 }
 
 static std::string QuoteCommandArg(const std::string& s) {
@@ -2528,72 +2703,75 @@ bool TaskQueueManager::BuildLaunchRequest(TaskQueue& tq, TaskQueueJob& job, int 
 namespace pc {
 
 void TaskQueueManager::ProcessSchedulerTick() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!pm_) return;
-    int64_t now = static_cast<int64_t>(GetNowTickMs());
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pm_) return;
+        int64_t now = static_cast<int64_t>(GetNowTickMs());
 
-    // Ready jobs of all queues in one global order (priority, then registration order), so jobs
-    // that share a resource start in that order even when they live in different queues.
-    struct Candidate { TaskQueue* tq; TaskQueueJob* job; };
-    std::vector<Candidate> ready;
-    std::map<std::string, int> running;
-    for (auto& [name, tq] : queues_) {
-        int r = 0;
-        for (const auto& j : tq.jobs) {
-            if (j.state == "running") r++;
+        // Ready jobs of all queues in one global order (priority, then registration order), so jobs
+        // that share a resource start in that order even when they live in different queues.
+        struct Candidate { TaskQueue* tq; TaskQueueJob* job; };
+        std::vector<Candidate> ready;
+        std::map<std::string, int> running;
+        for (auto& [name, tq] : queues_) {
+            int r = 0;
+            for (const auto& j : tq.jobs) {
+                if (j.state == "running") r++;
+            }
+            running[name] = r;
+            if (tq.paused) continue;
+            for (auto& j : tq.jobs) {
+                if (IsReadyLocked(j, now)) ready.push_back({ &tq, &j });
+            }
         }
-        running[name] = r;
-        if (tq.paused) continue;
-        for (auto& j : tq.jobs) {
-            if (IsReadyLocked(j, now)) ready.push_back({ &tq, &j });
+        std::stable_sort(ready.begin(), ready.end(), [](const Candidate& a, const Candidate& b) {
+            return RunsBefore(*a.job, *b.job);
+        });
+
+        // A job that has to wait (full queue or a running conflict) keeps its place: later jobs that
+        // conflict with it wait behind it instead of overtaking it.
+        std::vector<const TaskQueueJob*> waiters;
+        bool locks = resourceLocksEnabled_.load();
+        bool changed = false;
+        for (const auto& c : ready) {
+            TaskQueue& tq = *c.tq;
+            TaskQueueJob& job = *c.job;
+            std::string holder, resource;
+            bool wait = running[tq.name] >= tq.concurrency ||
+                        FindRunningResourceConflictLocked(job, holder, resource);
+            for (size_t w = 0; !wait && locks && w < waiters.size(); ++w) {
+                wait = FindResourceConflict(job.resources, job.cwd, waiters[w]->resources, waiters[w]->cwd, resource);
+            }
+            if (wait) {
+                if (!job.resources.empty()) waiters.push_back(&job);
+                continue;
+            }
+            int n = static_cast<int>(job.attempts.size()) + 1;
+            LaunchItem item;
+            BuildLaunchRequest(tq, job, n, item);
+            TaskQueueAttempt a;
+            a.n = n;
+            a.start = GetCurrentTimestampStr();
+            a.instructionsRev = job.instructions.rev;
+            a.startFiletime = NowFiletime();
+            job.attempts.push_back(a);
+            job.state = "running";
+            job.updatedAt = a.start;
+            EmitEventLocked(tq, "jobStarted", job.id, n);
+
+            std::string err;
+            int pid = pm_->StartProcess(item.req, err);
+            if (pid > 0) {
+                job.attempts.back().processId = pid;
+                running[tq.name]++;
+            } else {
+                ApplyAttemptOutcome(tq, job, false, "launchFailed", -1, err);
+            }
+            changed = true;
         }
+        if (changed) SaveAllLocked();
     }
-    std::stable_sort(ready.begin(), ready.end(), [](const Candidate& a, const Candidate& b) {
-        return RunsBefore(*a.job, *b.job);
-    });
-
-    // A job that has to wait (full queue or a running conflict) keeps its place: later jobs that
-    // conflict with it wait behind it instead of overtaking it.
-    std::vector<const TaskQueueJob*> waiters;
-    bool locks = resourceLocksEnabled_.load();
-    bool changed = false;
-    for (const auto& c : ready) {
-        TaskQueue& tq = *c.tq;
-        TaskQueueJob& job = *c.job;
-        std::string holder, resource;
-        bool wait = running[tq.name] >= tq.concurrency ||
-                    FindRunningResourceConflictLocked(job, holder, resource);
-        for (size_t w = 0; !wait && locks && w < waiters.size(); ++w) {
-            wait = FindResourceConflict(job.resources, job.cwd, waiters[w]->resources, waiters[w]->cwd, resource);
-        }
-        if (wait) {
-            if (!job.resources.empty()) waiters.push_back(&job);
-            continue;
-        }
-        int n = static_cast<int>(job.attempts.size()) + 1;
-        LaunchItem item;
-        BuildLaunchRequest(tq, job, n, item);
-        TaskQueueAttempt a;
-        a.n = n;
-        a.start = GetCurrentTimestampStr();
-        a.instructionsRev = job.instructions.rev;
-        a.startFiletime = NowFiletime();
-        job.attempts.push_back(a);
-        job.state = "running";
-        job.updatedAt = a.start;
-        EmitEventLocked(tq, "jobStarted", job.id, n);
-
-        std::string err;
-        int pid = pm_->StartProcess(item.req, err);
-        if (pid > 0) {
-            job.attempts.back().processId = pid;
-            running[tq.name]++;
-        } else {
-            ApplyAttemptOutcome(tq, job, false, "launchFailed", -1, err);
-        }
-        changed = true;
-    }
-    if (changed) SaveAllLocked();
+    FlushFinishedCallbacks();
 }
 
 void TaskQueueManager::SchedulerLoop() {
@@ -2608,58 +2786,61 @@ void TaskQueueManager::SchedulerLoop() {
 }
 
 void TaskQueueManager::OnProcessFinished(int processId, int exitCode, const std::string& endKind) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [name, tq] : queues_) {
-        (void)name;
-        for (auto& job : tq.jobs) {
-            if (job.attempts.empty()) continue;
-            TaskQueueAttempt& a = job.attempts.back();
-            if (a.processId != processId) continue;
-            if (job.state != "running" && job.state != "cancelled") return;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [name, tq] : queues_) {
+            (void)name;
+            for (auto& job : tq.jobs) {
+                if (job.attempts.empty()) continue;
+                TaskQueueAttempt& a = job.attempts.back();
+                if (a.processId != processId) continue;
+                if (job.state != "running" && job.state != "cancelled") return;
 
-            std::wstring logPath = GetAttemptLogPathWide(job.id, a.n);
-            std::string logText = ReadFileUtf8Wide(logPath);
-            if (!logText.empty()) {
-                std::wstring tailPath = GetTaskQueueLogDirWide() + L"\\" +
-                    Utf8ToWide(SanitizeFileNameComponent(job.id)) + L"." + std::to_wstring(a.n) + L".tail.txt";
-                WriteFileAtomicWide(tailPath, GetTailLines(logText, 50));
-                a.lastLinesFile = WideToUtf8(tailPath);
-            }
-
-            if (job.state == "cancelled") {
-                a.end = GetCurrentTimestampStr();
-                a.reason = "killed";
-                a.exitCode = exitCode;
-                a.checkDetail = "cancelled";
-                job.updatedAt = a.end;
-                tq.version++;
-                std::string ev = "{\"version\":" + std::to_string(tq.version) +
-                                 ",\"type\":\"jobCancelled\",\"taskqueue\":\"" + JsonEscape(tq.name) +
-                                 "\",\"job_id\":\"" + JsonEscape(job.id) +
-                                 "\",\"attempt\":" + std::to_string(a.n) +
-                                 ",\"timestamp\":\"" + GetCurrentTimestampStr() + "\"}\r\n";
-                AppendToLogFileWide(GetTaskEventsFileWide(tq.name), ev);
-                if (!tq.notifyFile.empty()) {
-                    std::string notify = ev;
-                    if (notify.size() >= 2 && notify[notify.size()-2]=='\r' && notify[notify.size()-1]=='\n') notify = notify.substr(0, notify.size()-2);
-                    WriteFileAtomicWide(Utf8ToWide(tq.notifyFile), notify);
+                std::wstring logPath = GetAttemptLogPathWide(job.id, a.n);
+                std::string logText = ReadFileUtf8Wide(logPath);
+                if (!logText.empty()) {
+                    std::wstring tailPath = GetTaskQueueLogDirWide() + L"\\" +
+                        Utf8ToWide(SanitizeFileNameComponent(job.id)) + L"." + std::to_wstring(a.n) + L".tail.txt";
+                    WriteFileAtomicWide(tailPath, GetTailLines(logText, 50));
+                    a.lastLinesFile = WideToUtf8(tailPath);
                 }
-                SaveQueue(tq);
-                CheckQueueNotices(tq);
-                cv_.notify_all();
-                return;
-            }
 
-            std::string detail;
-            bool ok = EvaluateSuccess(job, a, endKind, exitCode, WideToUtf8(logPath), detail);
-            std::string reason;
-            if (ok) reason = "ok";
-            else if (endKind == "completed") reason = "checkFailed";
-            else reason = endKind;
-            ApplyAttemptOutcome(tq, job, ok, reason, exitCode, detail);
-            return;
+                if (job.state == "cancelled") {
+                    a.end = GetCurrentTimestampStr();
+                    a.reason = "killed";
+                    a.exitCode = exitCode;
+                    a.checkDetail = "cancelled";
+                    job.updatedAt = a.end;
+                    tq.version++;
+                    std::string ev = "{\"version\":" + std::to_string(tq.version) +
+                                     ",\"type\":\"jobCancelled\",\"taskqueue\":\"" + JsonEscape(tq.name) +
+                                     "\",\"job_id\":\"" + JsonEscape(job.id) +
+                                     "\",\"attempt\":" + std::to_string(a.n) +
+                                     ",\"timestamp\":\"" + GetCurrentTimestampStr() + "\"}\r\n";
+                    AppendToLogFileWide(GetTaskEventsFileWide(tq.name), ev);
+                    if (!tq.notifyFile.empty()) {
+                        std::string notify = ev;
+                        if (notify.size() >= 2 && notify[notify.size()-2]=='\r' && notify[notify.size()-1]=='\n') notify = notify.substr(0, notify.size()-2);
+                        WriteFileAtomicWide(Utf8ToWide(tq.notifyFile), notify);
+                    }
+                    SaveQueue(tq);
+                    CheckQueueNotices(tq);
+                    cv_.notify_all();
+                    return;
+                }
+
+                std::string detail;
+                bool ok = EvaluateSuccess(job, a, endKind, exitCode, WideToUtf8(logPath), detail);
+                std::string reason;
+                if (ok) reason = "ok";
+                else if (endKind == "completed") reason = "checkFailed";
+                else reason = endKind;
+                ApplyAttemptOutcome(tq, job, ok, reason, exitCode, detail);
+                break;
+            }
         }
     }
+    FlushFinishedCallbacks();
 }
 
 } // namespace pc

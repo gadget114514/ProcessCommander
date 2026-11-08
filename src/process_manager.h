@@ -85,6 +85,22 @@ struct ProcessSnapshot {
     std::string streamFilePath;
 };
 
+class ProcessManager;
+
+struct AgentExtractedResult {
+    bool found = false;
+    std::string result;
+    std::string source;
+    bool isError = false;
+    bool truncated = false;
+    ProcessSnapshot snap;
+    LlmAgentState agentState;
+};
+
+// Shared helper to extract a worker's final response from its LLM stream (or fallback output),
+// used by IPC run_worker/wait_worker and by Behavior Tree worker nodes (${<id>.result}).
+AgentExtractedResult ExtractAgentResult(ProcessManager& pm, int id, bool finished, int settleWaitMs = 100);
+
 class ProcessManager {
 public:
     using CreateTerminalCallback = std::function<TerminalView*(

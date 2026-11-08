@@ -25,6 +25,18 @@ add_executable(ProcessCommander
     src/llm_stream_agy.cpp
     src/llm_stream_codex.cpp
     src/activity_tree.cpp
+    src/bt_debug_view.cpp
+    src/behavior_tree.cpp
+    src/behavior_tree_parse.cpp
+    src/behavior_tree_vars.cpp
+    src/behavior_tree_cond.cpp
+    src/behavior_tree_exec.cpp
+    src/behavior_tree_escalate.cpp
+    src/behavior_tree_state.cpp
+    src/behavior_tree_runtime.cpp
+    src/worker_engines.cpp
+    src/bt_manager.cpp
+    src/bt_manager_api.cpp
     src/gui_dashboard.cpp
     src/app.rc
     src/agent_template.rc
@@ -251,3 +263,212 @@ target_link_libraries(llm_stream_smoke PRIVATE
     winmm
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/libsixel.lib"
 )
+
+# Headless test for the behavior tree debug model (src/bt_debug_view.cpp).
+add_executable(bt_debug_view_smoke
+    tests/bt_debug_view_smoke.cpp
+    src/bt_debug_view.cpp
+    src/common.cpp
+)
+
+target_compile_definitions(bt_debug_view_smoke PRIVATE PC_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+target_include_directories(bt_debug_view_smoke PRIVATE
+    src
+    include
+)
+
+if(MSVC)
+    target_compile_options(bt_debug_view_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(bt_debug_view_smoke PRIVATE
+    user32
+    shell32
+    advapi32
+    crypt32
+)
+
+# Headless test for the worker engine registry and output schema validator (src/worker_engines.cpp).
+add_executable(worker_engines_smoke
+    tests/worker_engines_smoke.cpp
+    src/worker_engines.cpp
+    src/common.cpp
+)
+
+target_include_directories(worker_engines_smoke PRIVATE
+    src
+    include
+)
+
+if(MSVC)
+    target_compile_options(worker_engines_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(worker_engines_smoke PRIVATE
+    user32
+    shell32
+    advapi32
+    crypt32
+)
+
+# Headless test for the behavior tree core engine (src/behavior_tree*.cpp).
+add_executable(behavior_tree_smoke
+    tests/behavior_tree_smoke.cpp
+    tests/behavior_tree_smoke_part2.cpp
+    src/behavior_tree.cpp
+    src/behavior_tree_parse.cpp
+    src/behavior_tree_vars.cpp
+    src/behavior_tree_cond.cpp
+    src/behavior_tree_exec.cpp
+    src/behavior_tree_escalate.cpp
+    src/behavior_tree_state.cpp
+    src/behavior_tree_runtime.cpp
+    src/worker_engines.cpp
+    src/bt_debug_view.cpp
+    src/common.cpp
+)
+
+target_compile_definitions(behavior_tree_smoke PRIVATE PC_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+target_include_directories(behavior_tree_smoke PRIVATE
+    src
+    include
+)
+
+if(MSVC)
+    target_compile_options(behavior_tree_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(behavior_tree_smoke PRIVATE
+    user32
+    shell32
+    advapi32
+    crypt32
+)
+
+# Headless integration test for BtManager + TaskQueueManager + ProcessManager.
+add_executable(bt_integration_smoke
+    tests/bt_integration_smoke.cpp
+    tests/bt_integration_smoke_part2.cpp
+    src/bt_manager.cpp
+    src/bt_manager_api.cpp
+    src/behavior_tree.cpp
+    src/behavior_tree_parse.cpp
+    src/behavior_tree_vars.cpp
+    src/behavior_tree_cond.cpp
+    src/behavior_tree_exec.cpp
+    src/behavior_tree_escalate.cpp
+    src/behavior_tree_state.cpp
+    src/behavior_tree_runtime.cpp
+    src/worker_engines.cpp
+    src/taskqueue.cpp
+    src/chain_guard.cpp
+    src/process_manager.cpp
+    src/llm_stream.cpp
+    src/llm_stream_claude.cpp
+    src/llm_stream_opencode.cpp
+    src/llm_stream_agy.cpp
+    src/llm_stream_codex.cpp
+    src/common.cpp
+    src/Terminal/src/ConPtySession.cpp
+    src/Terminal/src/ImageManager.cpp
+    src/Terminal/src/TerminalBuffer.cpp
+    src/Terminal/src/TerminalEmulator.cpp
+    src/Terminal/src/TerminalView.cpp
+)
+
+target_include_directories(bt_integration_smoke PRIVATE
+    src
+    include
+    src/Terminal/include
+    src/Terminal/src
+)
+
+if(MSVC)
+    target_compile_options(bt_integration_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(bt_integration_smoke PRIVATE
+    user32
+    gdi32
+    comctl32
+    shell32
+    advapi32
+    psapi
+    ole32
+    shlwapi
+    imm32
+    winmm
+    d2d1
+    dwrite
+    dwmapi
+    windowscodecs
+    crypt32
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/libsixel.lib"
+)
+
+# Headless smoke test for BT IPC actions (src/ipc_server.cpp + BtManager + TaskQueueManager + ProcessManager).
+add_executable(bt_ipc_smoke
+    tests/bt_ipc_smoke.cpp
+    src/ipc_server.cpp
+    src/bt_manager.cpp
+    src/bt_manager_api.cpp
+    src/behavior_tree.cpp
+    src/behavior_tree_parse.cpp
+    src/behavior_tree_vars.cpp
+    src/behavior_tree_cond.cpp
+    src/behavior_tree_exec.cpp
+    src/behavior_tree_escalate.cpp
+    src/behavior_tree_state.cpp
+    src/behavior_tree_runtime.cpp
+    src/worker_engines.cpp
+    src/taskqueue.cpp
+    src/chain_guard.cpp
+    src/process_manager.cpp
+    src/llm_stream.cpp
+    src/llm_stream_claude.cpp
+    src/llm_stream_opencode.cpp
+    src/llm_stream_agy.cpp
+    src/llm_stream_codex.cpp
+    src/common.cpp
+    src/Terminal/src/ConPtySession.cpp
+    src/Terminal/src/ImageManager.cpp
+    src/Terminal/src/TerminalBuffer.cpp
+    src/Terminal/src/TerminalEmulator.cpp
+    src/Terminal/src/TerminalView.cpp
+)
+
+target_include_directories(bt_ipc_smoke PRIVATE
+    src
+    include
+    src/Terminal/include
+    src/Terminal/src
+)
+
+if(MSVC)
+    target_compile_options(bt_ipc_smoke PRIVATE /W4 /utf-8 /EHsc)
+endif()
+
+target_link_libraries(bt_ipc_smoke PRIVATE
+    user32
+    gdi32
+    comctl32
+    shell32
+    advapi32
+    psapi
+    ole32
+    shlwapi
+    imm32
+    winmm
+    d2d1
+    dwrite
+    dwmapi
+    windowscodecs
+    crypt32
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/libsixel.lib"
+)
+
+
+
+

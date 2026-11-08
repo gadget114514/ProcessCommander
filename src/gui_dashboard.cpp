@@ -2,6 +2,7 @@
 #include "common.h"
 #include "llm_stream.h"
 #include "activity_tree.h"
+#include "bt_debug_view.h"
 #include "TerminalView.h"
 #include "TerminalGridView.h"
 #include "SettingsManager.h"
@@ -760,6 +761,7 @@ enum ControlId {
     IDC_BTN_USAGE = 1027,
     IDC_BTN_STREAM_PANE = 1028,
     IDC_BTN_REFRESH = 1029,
+    IDC_BT_DEBUG = 1030,  // "BT" toolbar button / Ctrl+Shift+B: behavior tree view
     IDC_SET_LANG_JA = 6001,
     IDC_SET_LANG_EN = 6002,
     IDC_SET_LANG_ES = 6003,
@@ -899,6 +901,7 @@ struct DashboardState {
     int lastUsagePanelProcId = -2;
     // JSON stream bottom pane below the process / task lists
     HWND hwndBtnStreamPane = nullptr;
+    HWND hwndBtnBtView = nullptr;
     HWND hwndBtnRefresh = nullptr;
     HWND hwndStreamPane = nullptr;
     LlmStreamDlgState* streamPane = nullptr; // owned by hwndStreamPane
@@ -2046,6 +2049,11 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
                 st->showStreamPane ? Tr(L"タスク監視ペインを非表示", L"Hide Monitor Pane", L"Ocultar panel de monitor")
                                    : Tr(L"タスク監視ペインを表示", L"Show Monitor Pane", L"Mostrar panel de monitor"));
         }
+        if (st->hwndBtnBtView) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnBtView,
+                Tr(L"ビヘイビアツリーを表示 (Ctrl+Shift+B)", L"Show Behavior Trees (Ctrl+Shift+B)",
+                   L"Mostrar árboles de comportamiento (Ctrl+Shift+B)"));
+        }
         if (st->hwndBtnRefresh) {
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnRefresh,
                 Tr(L"すべてのリストを最新の情報に更新", L"Refresh All Lists", L"Actualizar todas las listas"));
@@ -2446,11 +2454,17 @@ static void ShowTaskQueueContextMenu(DashboardState* st, const std::string& jobI
     AppendMenuW(hMenu, MF_STRING, 3105, Tr(L"終了済みを消去", L"Purge finished", L"Purgar finalizados"));
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, 3106, Tr(L"詳細を表示", L"Show details", L"Ver detalles"));
+    if (resp.find("\"bt\":{") != std::string::npos) {
+        AppendMenuW(hMenu, MF_STRING, 3111, Tr(L"ビヘイビアツリーで表示", L"Show in Behavior Tree", L"Ver en el árbol de comportamiento"));
+    }
 
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, ptScreen.x, ptScreen.y, 0, st->hwndMain, nullptr);
     DestroyMenu(hMenu);
 
-    if (cmd == 3110) {
+    if (cmd == 3111) {
+        // The right-clicked row is the selected row, so the view opens on this job's node.
+        SendMessageW(st->hwndMain, WM_COMMAND, IDC_BT_DEBUG, 0);
+    } else if (cmd == 3110) {
         CopyTextToClipboard(st->hwndMain, cellText);
     } else if (cmd == 3107) {
         if (MessageBoxW(st->hwndMain,
@@ -3152,6 +3166,7 @@ static void LayoutControls(DashboardState* st, int width, int height) {
         {st->hwndBtnToggleList, 28},
         {st->hwndBtnToggleTerm, 30},
         {st->hwndBtnStreamPane, 28},
+        {st->hwndBtnBtView, 34},
         {st->hwndBtnUsage, 28},
         {st->hwndBtnHideTray, 28},
         {st->hwndBtnRefresh, 28},
@@ -3902,6 +3917,543 @@ static void ShowTaskDetailsDialog(DashboardState* st, int procId) {
     );
     if (hDlg) {
         ShowWindow(hDlg, SW_SHOW);
+        SetForegroundWindow(hDlg);
+    } else {
+        delete ds;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Behavior tree debug view (doc/behavior-tree-plan.md 8.1). Developer-only: it opens with
+// Ctrl+Shift+B and is never listed in menus or help, because users are not told about BTs.
+// Reads <logs>/behaviortrees/*.json through bt_debug_view and shows each tree in a TreeView.
+// ---------------------------------------------------------------------------
+
+enum BtDebugControlId {
+    IDC_BTDBG_TREE = 2101,
+    IDC_BTDBG_DETAIL = 2102,
+    IDC_BTDBG_STATUS = 2103,
+    IDC_BTDBG_REFRESH = 2104,
+    IDC_BTDBG_COPY = 2105,
+    IDC_BTDBG_FOLDER = 2106,
+    IDC_BTDBG_SHOWALL = 2107,
+};
+constexpr UINT_PTR kBtDebugTimerId = 1;
+constexpr UINT kBtDebugRefreshMs = 2000;
+constexpr int64_t kBtDebugRecentSec = 24 * 3600;  // finished trees older than this are hidden unless "show all"
+
+struct BtDebugDlgState {
+    DashboardState* dash = nullptr;
+    HFONT hFontUi = nullptr;
+    HFONT hFontMono = nullptr;
+    HWND hwndLabel = nullptr;
+    HWND hwndTree = nullptr;
+    HWND hwndDetail = nullptr;
+    HWND hwndStatus = nullptr;
+    HWND hwndBtnRefresh = nullptr;
+    HWND hwndBtnCopy = nullptr;
+    HWND hwndBtnFolder = nullptr;
+    HWND hwndBtnClose = nullptr;
+    HWND hwndBtnShowAll = nullptr;
+    bool showAll = false;                    // also list finished trees older than kBtDebugRecentSec
+    std::unordered_set<std::string> finishedTrees;  // ids of finished trees (drawn muted)
+    std::wstring dir;
+    std::string signature;                  // what the tree showed last time; rebuild only on change
+    std::vector<BtDebugNode> trees;
+    std::vector<const BtDebugNode*> items;  // TreeView lParam -> node (points into trees)
+    std::unordered_map<std::string, HTREEITEM> itemByKey;
+    std::unordered_set<std::string> knownKeys;  // keys seen before: new ones start expanded
+    std::string selectedKey;
+    std::string pendingSelectKey;           // node to select on the next rebuild
+    std::string pendingSelectJob;           // job selected in the task list when opened
+    bool rebuilding = false;
+};
+
+static HWND g_btDebugWnd = nullptr;
+
+static const BtDebugNode* BtDebugItemNode(BtDebugDlgState* ds, HTREEITEM h) {
+    if (!ds || !h) return nullptr;
+    TVITEMW it = {};
+    it.mask = TVIF_PARAM;
+    it.hItem = h;
+    if (!TreeView_GetItem(ds->hwndTree, &it)) return nullptr;
+    size_t idx = static_cast<size_t>(it.lParam);
+    return idx < ds->items.size() ? ds->items[idx] : nullptr;
+}
+
+static std::string BtDebugJobState(BtDebugDlgState* ds, const std::string& jobId) {
+    if (!ds->dash || !ds->dash->tqm) return "";
+    std::string err;
+    std::string resp = ds->dash->tqm->TaskQueueGet(jobId, false, 0, err);
+    if (resp.find("\"ok\":true") == std::string::npos) return "missing";
+    return JsonGetString(resp, "state", "");
+}
+
+// The node's own label plus the current task-queue state of its last job.
+static std::wstring BtDebugLabel(BtDebugDlgState* ds, const BtDebugNode& n) {
+    std::wstring label = Utf8ToWide(n.label);
+    if (!n.jobIds.empty()) {
+        std::string js = BtDebugJobState(ds, n.jobIds.back());
+        if (!js.empty()) label += L" (" + Utf8ToWide(js) + L")";
+    }
+    return label;
+}
+
+static void BtDebugCollectLabels(BtDebugDlgState* ds, const BtDebugNode& n,
+                                 std::unordered_map<std::string, std::wstring>& labels, std::string& sig) {
+    std::wstring label = BtDebugLabel(ds, n);
+    sig += n.key;
+    sig += '\x1f';
+    sig += WideToUtf8(label);
+    sig += '\x1f';
+    sig += n.detailJson;
+    sig += '\x1e';
+    labels[n.key] = std::move(label);
+    for (const auto& c : n.children) BtDebugCollectLabels(ds, c, labels, sig);
+}
+
+static void BtDebugShowDetail(BtDebugDlgState* ds) {
+    HTREEITEM h = TreeView_GetSelection(ds->hwndTree);
+    const BtDebugNode* n = BtDebugItemNode(ds, h);
+    if (!n) {
+        SetWindowTextW(ds->hwndDetail, L"");
+        return;
+    }
+    std::string text = n->key + "\n" + n->detailJson;
+    for (const auto& jobId : n->jobIds) {
+        text += "\n\n--- job " + jobId + " ---\n";
+        if (!ds->dash || !ds->dash->tqm) continue;
+        std::string err;
+        std::string resp = ds->dash->tqm->TaskQueueGet(jobId, false, 0, err);
+        auto parsed = nlohmann::json::parse(resp, nullptr, false);
+        text += parsed.is_discarded() ? resp : parsed.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+    }
+    SetWindowTextW(ds->hwndDetail, NormalizeCrLfWide(text).c_str());
+}
+
+static void BtDebugInsert(BtDebugDlgState* ds, HTREEITEM parent, const BtDebugNode& n,
+                          const std::unordered_map<std::string, std::wstring>& labels,
+                          const std::unordered_map<std::string, bool>& expanded) {
+    auto lit = labels.find(n.key);
+    std::wstring label = lit != labels.end() ? lit->second : Utf8ToWide(n.label);
+    TVINSERTSTRUCTW tvis = {};
+    tvis.hParent = parent;
+    tvis.hInsertAfter = TVI_LAST;
+    tvis.item.mask = TVIF_TEXT | TVIF_PARAM;
+    tvis.item.pszText = const_cast<wchar_t*>(label.c_str());
+    tvis.item.lParam = static_cast<LPARAM>(ds->items.size());
+    ds->items.push_back(&n);
+    HTREEITEM h = TreeView_InsertItem(ds->hwndTree, &tvis);
+    if (!h) return;
+    ds->itemByKey[n.key] = h;
+    for (const auto& c : n.children) BtDebugInsert(ds, h, c, labels, expanded);
+    if (n.children.empty()) return;
+    auto eit = expanded.find(n.key);
+    // New rows open, except a finished tree's own row, which starts closed so active trees stay in view.
+    bool startClosed = n.key == n.btId && ds->finishedTrees.count(n.btId);
+    bool expand = eit != expanded.end() ? eit->second : (!ds->knownKeys.count(n.key) && !startClosed);
+    if (expand) TreeView_Expand(ds->hwndTree, h, TVE_EXPAND);
+}
+
+static void BtDebugSaveExpanded(BtDebugDlgState* ds, HTREEITEM h, std::unordered_map<std::string, bool>& out) {
+    for (; h; h = TreeView_GetNextSibling(ds->hwndTree, h)) {
+        if (const BtDebugNode* n = BtDebugItemNode(ds, h)) {
+            out[n->key] = (TreeView_GetItemState(ds->hwndTree, h, TVIS_EXPANDED) & TVIS_EXPANDED) != 0;
+        }
+        BtDebugSaveExpanded(ds, TreeView_GetChild(ds->hwndTree, h), out);
+    }
+}
+
+static bool BtDebugIsFinished(const std::string& state) {
+    return state == "succeeded" || state == "failed" || state == "cancelled";
+}
+
+// UTC "YYYY-MM-DDTHH:MM:SS" (the format of the state files' updatedAt) for now - ageSec.
+static std::string BtDebugUtcStamp(int64_t ageSec) {
+    std::time_t t = std::time(nullptr) - static_cast<std::time_t>(ageSec);
+    std::tm tmUtc = {};
+    gmtime_s(&tmUtc, &t);
+    char buf[32] = {};
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tmUtc);
+    return buf;
+}
+
+static void BtDebugReload(BtDebugDlgState* ds, bool force) {
+    std::vector<std::string> errors;
+    std::vector<BtDebugNode> loaded = LoadBtDebugTrees(ds->dir, errors);  // newest first
+    std::string keepTree;  // a tree the caller asked to see is shown even when it would be hidden
+    if (!ds->pendingSelectJob.empty()) {
+        std::string key = FindBtNodeKeyByJob(loaded, ds->pendingSelectJob);
+        if (!key.empty()) {
+            ds->pendingSelectKey = key;
+            keepTree = key.substr(0, key.find('/'));
+        }
+        ds->pendingSelectJob.clear();
+        force = force || !ds->pendingSelectKey.empty();
+    }
+
+    // Active trees (running, waiting for a decision, paused) first, then finished ones. Finished
+    // trees not updated for kBtDebugRecentSec are hidden unless "show all" is on.
+    const std::string cutoff = BtDebugUtcStamp(kBtDebugRecentSec);
+    std::vector<BtDebugNode> trees, finished;
+    std::unordered_set<std::string> finishedIds;
+    int hidden = 0;
+    for (auto& t : loaded) {
+        if (!BtDebugIsFinished(t.state)) {
+            trees.push_back(std::move(t));
+            continue;
+        }
+        auto j = nlohmann::json::parse(t.detailJson, nullptr, false);
+        std::string updated = (j.is_object() && j.contains("updatedAt") && j["updatedAt"].is_string())
+                                  ? j["updatedAt"].get<std::string>() : "";
+        if (!ds->showAll && t.btId != keepTree && updated < cutoff) {
+            hidden++;
+            continue;
+        }
+        finishedIds.insert(t.btId);
+        finished.push_back(std::move(t));
+    }
+    size_t activeCount = trees.size();
+    for (auto& t : finished) trees.push_back(std::move(t));
+
+    std::unordered_map<std::string, std::wstring> labels;
+    std::string sig = ds->showAll ? "all\x1e" : "recent\x1e";
+    for (const auto& t : trees) BtDebugCollectLabels(ds, t, labels, sig);
+
+    std::wstringstream status;
+    status << Tr(L"実行中 ", L"Active ", L"Activos ") << activeCount
+           << Tr(L"  終了 ", L"  Finished ", L"  Finalizados ") << (trees.size() - activeCount);
+    if (hidden > 0) {
+        status << Tr(L"  (24 時間より前の終了分 ", L"  (finished over 24h ago hidden: ",
+                     L"  (finalizados hace más de 24 h ocultos: ")
+               << hidden << Tr(L" 件は非表示)", L")", L")");
+    }
+    status << L"   " << ds->dir;
+    for (const auto& e : errors) status << L"   ! " << Utf8ToWide(e);
+    SetWindowTextW(ds->hwndStatus, status.str().c_str());
+
+    if (!force && sig == ds->signature) return;
+    ds->signature = std::move(sig);
+
+    std::unordered_map<std::string, bool> expanded;
+    BtDebugSaveExpanded(ds, TreeView_GetRoot(ds->hwndTree), expanded);
+    std::string selectKey = !ds->pendingSelectKey.empty() ? ds->pendingSelectKey : ds->selectedKey;
+    bool revealSelection = !ds->pendingSelectKey.empty();
+    ds->pendingSelectKey.clear();
+
+    int scrollPos = GetScrollPos(ds->hwndTree, SB_VERT);
+    ds->rebuilding = true;
+    SendMessageW(ds->hwndTree, WM_SETREDRAW, FALSE, 0);
+    TreeView_DeleteAllItems(ds->hwndTree);
+    ds->items.clear();
+    ds->itemByKey.clear();
+    ds->trees = std::move(trees);
+    ds->finishedTrees = std::move(finishedIds);
+    for (const auto& t : ds->trees) BtDebugInsert(ds, TVI_ROOT, t, labels, expanded);
+    for (const auto& kv : ds->itemByKey) ds->knownKeys.insert(kv.first);
+
+    auto sit = ds->itemByKey.find(selectKey);
+    if (sit == ds->itemByKey.end() && selectKey.empty() && !ds->trees.empty()) {
+        sit = ds->itemByKey.find(ds->trees.front().key);  // nothing chosen yet: show the newest tree
+    }
+    if (sit != ds->itemByKey.end()) {
+        selectKey = sit->first;
+        TreeView_SelectItem(ds->hwndTree, sit->second);
+        if (revealSelection) TreeView_EnsureVisible(ds->hwndTree, sit->second);
+        ds->selectedKey = selectKey;
+    } else {
+        ds->selectedKey.clear();
+    }
+    if (!revealSelection) {
+        // Keep the user's scroll position: put the same line back at the top.
+        HTREEITEM first = TreeView_GetRoot(ds->hwndTree);
+        for (int i = 0; i < scrollPos && first; ++i) first = TreeView_GetNextVisible(ds->hwndTree, first);
+        if (first) TreeView_SelectSetFirstVisible(ds->hwndTree, first);
+    }
+    SendMessageW(ds->hwndTree, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(ds->hwndTree, nullptr, TRUE);
+    ds->rebuilding = false;
+    BtDebugShowDetail(ds);
+}
+
+static COLORREF BtDebugStateColor(const std::string& state, bool& has) {
+    has = true;
+    if (state == "running") return g_theme.rowRunning;
+    if (state == "failed" || state == "cancelled") return g_theme.rowFailed;
+    if (state == "succeeded") return g_theme.rowCompleted;
+    if (state == "waitingForLlm" || state == "paused") return g_theme.rowIdle;
+    has = false;
+    return g_theme.panel;
+}
+
+static void BtDebugLayout(HWND hwnd, BtDebugDlgState* ds) {
+    RECT rc = {};
+    GetClientRect(hwnd, &rc);
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    const int pad = 12;
+    int innerW = (std::max)(200, w - pad * 2);
+    int btnY = (std::max)(160, h - pad - 30);
+    int statusY = btnY - 26;
+    int mainY = pad + 22;
+    int mainH = (std::max)(80, statusY - mainY - 6);
+    int treeW = innerW * 58 / 100;
+    MoveWindow(ds->hwndLabel, pad, pad, innerW, 18, TRUE);
+    MoveWindow(ds->hwndTree, pad, mainY, treeW, mainH, TRUE);
+    MoveWindow(ds->hwndDetail, pad + treeW + 8, mainY, innerW - treeW - 8, mainH, TRUE);
+    MoveWindow(ds->hwndStatus, pad, statusY, innerW, 20, TRUE);
+    int x = pad;
+    MoveWindow(ds->hwndBtnRefresh, x, btnY, 120, 30, TRUE);
+    x += 126;
+    MoveWindow(ds->hwndBtnCopy, x, btnY, 140, 30, TRUE);
+    x += 146;
+    MoveWindow(ds->hwndBtnFolder, x, btnY, 140, 30, TRUE);
+    x += 146;
+    MoveWindow(ds->hwndBtnShowAll, x, btnY, 150, 30, TRUE);
+    x += 6;
+    MoveWindow(ds->hwndBtnClose, (std::max)(x + 150, w - pad - 100), btnY, 100, 30, TRUE);
+}
+
+static LRESULT CALLBACK BtDebugWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ds = reinterpret_cast<BtDebugDlgState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            ds = reinterpret_cast<BtDebugDlgState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+
+            HDC hdc = GetDC(hwnd);
+            int fontSize = -MulDiv(9, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+            ReleaseDC(hwnd, hdc);
+            ds->hFontMono = CreateFontW(fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                FIXED_PITCH | FF_MODERN, L"Consolas");
+
+            ds->hwndLabel = CreateWindowExW(0, L"STATIC",
+                Tr(L"ビヘイビアツリー — 各タスクを起動したノードとツリーの進み具合",
+                   L"Behavior trees - the nodes that started each task and how far each tree has run",
+                   L"Árboles de comportamiento - nodos que iniciaron cada tarea y progreso"),
+                WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, hwnd, nullptr, nullptr, nullptr);
+            ds->hwndTree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS |
+                TVS_SHOWSELALWAYS | TVS_FULLROWSELECT,
+                0, 0, 10, 10, hwnd, (HMENU)IDC_BTDBG_TREE, nullptr, nullptr);
+            TreeView_SetBkColor(ds->hwndTree, g_theme.panel);
+            TreeView_SetTextColor(ds->hwndTree, g_theme.listText);
+            TreeView_SetLineColor(ds->hwndTree, g_theme.border);
+            ds->hwndDetail = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
+                ES_AUTOHSCROLL | ES_READONLY,
+                0, 0, 10, 10, hwnd, (HMENU)IDC_BTDBG_DETAIL, nullptr, nullptr);
+            ds->hwndStatus = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS | SS_NOPREFIX,
+                0, 0, 10, 10, hwnd, (HMENU)IDC_BTDBG_STATUS, nullptr, nullptr);
+            ds->hwndBtnRefresh = CreateWindowExW(0, L"BUTTON", Tr(L"再読み込み", L"Reload", L"Recargar"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd, (HMENU)IDC_BTDBG_REFRESH, nullptr, nullptr);
+            ds->hwndBtnCopy = CreateWindowExW(0, L"BUTTON", Tr(L"詳細をコピー", L"Copy Details", L"Copiar detalles"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd, (HMENU)IDC_BTDBG_COPY, nullptr, nullptr);
+            ds->hwndBtnFolder = CreateWindowExW(0, L"BUTTON", Tr(L"フォルダーを開く", L"Open Folder", L"Abrir carpeta"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd, (HMENU)IDC_BTDBG_FOLDER, nullptr, nullptr);
+            ds->hwndBtnShowAll = CreateWindowExW(0, L"BUTTON", Tr(L"☐ すべて表示", L"☐ Show all", L"☐ Mostrar todo"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd, (HMENU)IDC_BTDBG_SHOWALL, nullptr, nullptr);
+            ds->hwndBtnClose = CreateWindowExW(0, L"BUTTON", Tr(L"閉じる", L"Close", L"Cerrar"),
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, hwnd, (HMENU)IDOK, nullptr, nullptr);
+
+            SendMessageW(ds->hwndLabel, WM_SETFONT, (WPARAM)(ds->dash ? ds->dash->hFontUiBold : nullptr), TRUE);
+            HWND uiCtrls[] = {ds->hwndTree, ds->hwndStatus, ds->hwndBtnRefresh, ds->hwndBtnCopy, ds->hwndBtnFolder,
+                              ds->hwndBtnShowAll, ds->hwndBtnClose};
+            for (HWND h : uiCtrls) SendMessageW(h, WM_SETFONT, (WPARAM)ds->hFontUi, TRUE);
+            SendMessageW(ds->hwndDetail, WM_SETFONT, (WPARAM)(ds->hFontMono ? ds->hFontMono : ds->hFontUi), TRUE);
+
+            BtDebugLayout(hwnd, ds);
+            BtDebugReload(ds, true);
+            SetTimer(hwnd, kBtDebugTimerId, kBtDebugRefreshMs, nullptr);
+            ApplyNativeThemeToWindow(hwnd);
+            return 0;
+        }
+        case WM_TIMER:
+            if (ds && wParam == kBtDebugTimerId) BtDebugReload(ds, false);
+            return 0;
+        case WM_NOTIFY: {
+            auto* pnmh = reinterpret_cast<NMHDR*>(lParam);
+            if (!ds || !pnmh || pnmh->hwndFrom != ds->hwndTree) break;
+            if (pnmh->code == TVN_SELCHANGEDW && !ds->rebuilding) {
+                const BtDebugNode* n = BtDebugItemNode(ds, TreeView_GetSelection(ds->hwndTree));
+                ds->selectedKey = n ? n->key : "";
+                BtDebugShowDetail(ds);
+                return 0;
+            }
+            if (pnmh->code == NM_CUSTOMDRAW) {
+                auto* cd = reinterpret_cast<NMTVCUSTOMDRAW*>(lParam);
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    size_t idx = static_cast<size_t>(cd->nmcd.lItemlParam);
+                    if (idx < ds->items.size() && !(cd->nmcd.uItemState & CDIS_SELECTED) &&
+                        ds->finishedTrees.count(ds->items[idx]->btId)) {
+                        cd->clrText = g_theme.muted;  // finished trees are shown faded
+                        cd->clrTextBk = g_theme.panel;
+                    } else if (idx < ds->items.size() && !(cd->nmcd.uItemState & CDIS_SELECTED)) {
+                        bool has = false;
+                        COLORREF bg = BtDebugStateColor(ds->items[idx]->state, has);
+                        if (has) {
+                            cd->clrTextBk = bg;
+                            cd->clrText = g_theme.listText;
+                        }
+                    }
+                    return CDRF_DODEFAULT;
+                }
+            }
+            break;
+        }
+        case WM_SIZE:
+            if (ds) BtDebugLayout(hwnd, ds);
+            return 0;
+        case WM_GETMINMAXINFO: {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            mmi->ptMinTrackSize.x = 640;
+            mmi->ptMinTrackSize.y = 360;
+            return 0;
+        }
+        case WM_COMMAND: {
+            int id = LOWORD(wParam);
+            if (!ds) break;
+            if (id == IDC_BTDBG_REFRESH) {
+                BtDebugReload(ds, true);
+            } else if (id == IDC_BTDBG_COPY) {
+                int len = GetWindowTextLengthW(ds->hwndDetail);
+                std::wstring text(static_cast<size_t>(len) + 1, L'\0');
+                GetWindowTextW(ds->hwndDetail, &text[0], len + 1);
+                text.resize(static_cast<size_t>(len));
+                if (!text.empty()) CopyTextToClipboard(hwnd, text);
+            } else if (id == IDC_BTDBG_SHOWALL) {
+                ds->showAll = !ds->showAll;
+                SetWindowTextW(ds->hwndBtnShowAll, ds->showAll ? Tr(L"☑ すべて表示", L"☑ Show all", L"☑ Mostrar todo")
+                                                               : Tr(L"☐ すべて表示", L"☐ Show all", L"☐ Mostrar todo"));
+                InvalidateRect(ds->hwndBtnShowAll, nullptr, TRUE);
+                BtDebugReload(ds, true);
+            } else if (id == IDC_BTDBG_FOLDER) {
+                CreateDirectoryW(ds->dir.c_str(), nullptr);
+                ShellExecuteW(hwnd, L"open", ds->dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            } else if (id == IDOK || id == IDCANCEL) {
+                DestroyWindow(hwnd);
+            }
+            return 0;
+        }
+        case WM_DRAWITEM: {
+            auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (!dis || !ds) break;
+            bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+            HBRUSH bgBrush = CreateSolidBrush(pressed ? g_theme.border : g_theme.panel);
+            FillRect(dis->hDC, &dis->rcItem, bgBrush);
+            DeleteObject(bgBrush);
+            HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
+            HGDIOBJ oldPen = SelectObject(dis->hDC, borderPen);
+            HGDIOBJ oldBrush = SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom);
+            SelectObject(dis->hDC, oldBrush);
+            SelectObject(dis->hDC, oldPen);
+            DeleteObject(borderPen);
+            if (dis->itemState & ODS_FOCUS) {
+                RECT rcFocus = dis->rcItem;
+                InflateRect(&rcFocus, -2, -2);
+                DrawFocusRect(dis->hDC, &rcFocus);
+            }
+            wchar_t text[256] = {};
+            GetWindowTextW(dis->hwndItem, text, 256);
+            RECT rc = dis->rcItem;
+            InflateRect(&rc, -4, 0);
+            SetBkMode(dis->hDC, TRANSPARENT);
+            SetTextColor(dis->hDC, g_theme.text);
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, ds->hFontUi));
+            DrawTextW(dis->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dis->hDC, oldFont);
+            return TRUE;
+        }
+        case WM_ERASEBKGND: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            RECT rc = {};
+            GetClientRect(hwnd, &rc);
+            FillRect(hdc, &rc, g_dialogBgBrush);
+            return 1;
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(hdc, g_theme.text);
+            SetBkColor(hdc, g_theme.panel);
+            return reinterpret_cast<LRESULT>(g_dialogBgBrush);
+        }
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY:
+            KillTimer(hwnd, kBtDebugTimerId);
+            if (g_btDebugWnd == hwnd) g_btDebugWnd = nullptr;
+            return 0;
+        case WM_NCDESTROY:
+            if (ds) {
+                if (ds->hFontMono) DeleteObject(ds->hFontMono);
+                delete ds;
+            }
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// Opens the debug view (or brings it forward). When a task-list row is selected, its job's node
+// is selected in the tree.
+static void ShowBtDebugDialog(DashboardState* st) {
+    if (!st) return;
+    std::string jobId;
+    if (st->hwndTaskList) {
+        int idx = ListView_GetNextItem(st->hwndTaskList, -1, LVNI_SELECTED);
+        if (idx >= 0 && idx < static_cast<int>(st->taskJobIds.size())) jobId = st->taskJobIds[idx];
+    }
+
+    if (g_btDebugWnd && IsWindow(g_btDebugWnd)) {
+        auto* ds = reinterpret_cast<BtDebugDlgState*>(GetWindowLongPtrW(g_btDebugWnd, GWLP_USERDATA));
+        if (ds && !jobId.empty()) {
+            ds->pendingSelectJob = jobId;
+            BtDebugReload(ds, false);
+        }
+        if (IsIconic(g_btDebugWnd)) ShowWindow(g_btDebugWnd, SW_RESTORE);
+        SetForegroundWindow(g_btDebugWnd);
+        return;
+    }
+
+    static bool regDone = false;
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    if (!regDone) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = BtDebugWndProc;
+        wc.hInstance = hInst;
+        wc.hIcon = LoadIconW(nullptr, IDI_INFORMATION);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"ProcessCommanderBtDebugWnd";
+        RegisterClassExW(&wc);
+        regDone = true;
+    }
+
+    auto* ds = new BtDebugDlgState();
+    ds->dash = st;
+    ds->hFontUi = st->hFontUi;
+    ds->dir = GetBehaviorTreesDirWide();
+    ds->pendingSelectJob = jobId;
+
+    RECT rcParent = {};
+    GetWindowRect(st->hwndMain, &rcParent);
+    int dlgW = 1100;
+    int dlgH = 700;
+    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
+    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
+    HWND hDlg = CreateWindowExW(0, L"ProcessCommanderBtDebugWnd",
+        Tr(L"ビヘイビアツリー", L"Behavior Trees", L"Árboles de comportamiento"),
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y, dlgW, dlgH, st->hwndMain, nullptr, hInst, ds);
+    if (hDlg) {
+        g_btDebugWnd = hDlg;
         SetForegroundWindow(hDlg);
     } else {
         delete ds;
@@ -7758,6 +8310,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_USAGE, nullptr, nullptr);
             st->hwndBtnStreamPane = CreateWindowExW(0, L"BUTTON", L"{}",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 28, 24, hwnd, (HMENU)IDC_BTN_STREAM_PANE, nullptr, nullptr);
+            st->hwndBtnBtView = CreateWindowExW(0, L"BUTTON", L"BT",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 34, 24, hwnd, (HMENU)IDC_BT_DEBUG, nullptr, nullptr);
 
             static bool usageClassRegistered = false;
             if (!usageClassRegistered) {
@@ -7796,6 +8350,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnToggleList);
                 addTool(st->hwndBtnToggleTerm);
                 addTool(st->hwndBtnStreamPane);
+                addTool(st->hwndBtnBtView);
                 addTool(st->hwndBtnHideTray);
                 addTool(st->hwndBtnRefresh);
             }
@@ -7876,7 +8431,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             HWND uiCtrls[] = {
                 st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillAll,
                 st->hwndBtnGridView,
-                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnHideTray, st->hwndBtnRefresh, st->hwndClock,
+                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnBtView, st->hwndBtnHideTray, st->hwndBtnRefresh, st->hwndClock,
                 st->hwndBtnViewTasks, st->hwndList, st->hwndTaskList, st->hwndTab
             };
             for (HWND h : uiCtrls) {
@@ -8298,6 +8853,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     st->pm->ClearFinished();
                     RefreshDashboardData(st);
                 }
+            } else if (id == IDC_BT_DEBUG) {
+                ShowBtDebugDialog(st);
             } else if (id == IDC_BTN_VIEW_TASKS) {
                 if (st->listDisplayMode == ListDisplayMode::TwoRows) {
                     st->listDisplayMode = ListDisplayMode::ProcessOnly;
@@ -8739,11 +9296,14 @@ int RunGuiDashboard(ProcessManager& pm, IpcServer& ipc, TaskQueueManager& tqm) {
     UpdateWindow(hwnd);
     ApplyNativeThemeToWindow(hwnd);
 
-    ACCEL accel = {};
-    accel.fVirt = FVIRTKEY | FCONTROL;
-    accel.key = 'T';
-    accel.cmd = IDC_BTN_VIEW_TASKS;
-    HACCEL hAccel = CreateAcceleratorTableW(&accel, 1);
+    ACCEL accels[2] = {};
+    accels[0].fVirt = FVIRTKEY | FCONTROL;
+    accels[0].key = 'T';
+    accels[0].cmd = IDC_BTN_VIEW_TASKS;
+    accels[1].fVirt = FVIRTKEY | FCONTROL | FSHIFT;
+    accels[1].key = 'B';
+    accels[1].cmd = IDC_BT_DEBUG;
+    HACCEL hAccel = CreateAcceleratorTableW(accels, 2);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {

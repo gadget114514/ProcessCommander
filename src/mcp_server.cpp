@@ -2,6 +2,7 @@
 #include "ipc_client.h"
 #include "common.h"
 #include "nlohmann/json.hpp"
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <io.h>
@@ -379,6 +380,90 @@ int RunMcpServer() {
                 << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Optional task queue filter\"},"
                 << "\"root\":{\"type\":\"string\",\"description\":\"Optional job id: return only its upstream/downstream component\"}"
                 << "}}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_validate\","
+                << "\"description\":\"Validate a behavior tree JSON definition (syntax, node types, limits, worker engines) without running it. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"bt\":{\"type\":\"object\",\"description\":\"Behavior tree definition object\"},"
+                << "\"file\":{\"type\":\"string\",\"description\":\"Path to a behavior tree JSON file\"}"
+                << "}}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_start\","
+                << "\"description\":\"Register and start a behavior tree for multi-step work with branching, retries, worker calls or checks that would otherwise need the LLM to watch and add jobs by hand. After bt_start, call bt_wait to monitor completion or escalations and answer escalations with bt_resume. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"bt\":{\"type\":\"object\",\"description\":\"Behavior tree definition object (id, summary, intent, cwd, vars, limits, worker, root)\"},"
+                << "\"file\":{\"type\":\"string\",\"description\":\"Path to a behavior tree JSON file\"}"
+                << "}}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_get\","
+                << "\"description\":\"Get a behavior tree's state, per-node status/runs/jobs, variables, and active escalation packet. Set compact=true for one-line-per-node summary. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
+                << "\"compact\":{\"type\":\"boolean\",\"description\":\"Return compact tree and one-line-per-node text (default false)\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_list\","
+                << "\"description\":\"List registered behavior trees with state, version, nodeRuns and timestamps. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{}}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_wait\","
+                << "\"description\":\"Wait (long poll) until a behavior tree finishes or reaches waitingForLlm/paused, returning tree state and any escalation decision packet. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
+                << "\"sinceVersion\":{\"type\":\"integer\",\"description\":\"Version last seen by caller (default 0)\"},"
+                << "\"timeoutMs\":{\"type\":\"integer\",\"description\":\"Max wait in milliseconds (default 30000)\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_resume\","
+                << "\"description\":\"Answer an active escalate node (stored in ${<node>.answer}) and resume the behavior tree branch. Requires a concise rationale. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
+                << "\"node\":{\"type\":\"string\",\"description\":\"Escalate node id or path\"},"
+                << "\"answer\":{\"type\":\"string\",\"description\":\"Decision answer (must match expect if specified)\"},"
+                << "\"rationale\":{\"type\":\"string\",\"description\":\"Required rationale recorded in escalation status\"},"
+                << "\"vars\":{\"type\":\"object\",\"description\":\"Optional extra variables to set before resuming\"}"
+                << "},\"required\":[\"id\",\"node\",\"answer\",\"rationale\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_retry\","
+                << "\"description\":\"Retry a failed/cancelled behavior tree from the failed leaf or a specified node. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
+                << "\"from\":{\"type\":\"string\",\"description\":\"Optional node id/path to retry from\"},"
+                << "\"resetCounters\":{\"type\":\"boolean\",\"description\":\"Reset retry/repeat counters (default false)\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_update\","
+                << "\"description\":\"Replace the definition of non-running nodes in a behavior tree while keeping the exact same tree shape, node types and IDs. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
+                << "\"node\":{\"type\":\"string\",\"description\":\"Optional target node id or path\"},"
+                << "\"bt\":{\"type\":\"object\",\"description\":\"Replacement tree or node object\"},"
+                << "\"patch\":{\"type\":\"object\",\"description\":\"Node field patch object\"},"
+                << "\"file\":{\"type\":\"string\",\"description\":\"Path to replacement JSON file\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_cancel\","
+                << "\"description\":\"Cancel a behavior tree and kill any running jobs it launched. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"}"
+                << "},\"required\":[\"id\"]}"
+                << "},"
+                << "{"
+                << "\"name\":\"bt_pause\","
+                << "\"description\":\"Pause or unpause a behavior tree and its underlying task queue. See doc/behavior-tree.md.\","
+                << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+                << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
+                << "\"paused\":{\"type\":\"boolean\",\"description\":\"true to pause, false to resume (default true)\"}"
+                << "},\"required\":[\"id\"]}"
                 << "}"
                 << "]}}";
             std::cout << oss.str() << "\n" << std::flush;
@@ -595,6 +680,31 @@ int RunMcpServer() {
                 ipcReq << "{\"action\":\"taskqueue_graph\""
                        << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
                        << ",\"root\":\"" << JsonEscape(JsonGetString(argsJson, "root", "")) << "\"}";
+            }
+            else if (toolName.rfind("bt_", 0) == 0) {
+                auto argsObj = nlohmann::json::parse(argsJson, nullptr, false);
+                if (argsObj.is_discarded() || !argsObj.is_object()) {
+                    argsObj = nlohmann::json::object();
+                }
+                argsObj["action"] = toolName;
+                if (argsObj.contains("file") && argsObj["file"].is_string()) {
+                    std::string fileArg = argsObj["file"].get<std::string>();
+                    std::wstring absW = ResolveAbsolutePathWide(Utf8ToWide(fileArg));
+                    argsObj["file"] = WideToUtf8(absW);
+                    if (!argsObj.contains("bt") && !argsObj.contains("patch")) {
+                        std::ifstream ifs(absW, std::ios::binary);
+                        if (!ifs) {
+                            std::cout << BuildMcpToolResult(
+                                rpcId, "{\"ok\":false,\"error\":\"cannot open file: " + JsonEscape(fileArg) + "\"}", true)
+                                      << "\n" << std::flush;
+                            continue;
+                        }
+                        std::ostringstream fss;
+                        fss << ifs.rdbuf();
+                        argsObj["bt"] = fss.str();
+                    }
+                }
+                ipcReq << argsObj.dump();
             }
             else {
                 std::cout << BuildMcpToolResult(rpcId, "Unknown tool: " + toolName, true) << "\n" << std::flush;

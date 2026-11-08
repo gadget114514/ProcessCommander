@@ -1,4 +1,5 @@
 #include "process_manager.h"
+#include "nlohmann/json.hpp"
 #include <psapi.h>
 #include <sstream>
 #include <algorithm>
@@ -1454,6 +1455,59 @@ void ProcessManager::LoadState() {
 
         processes_.push_back(proc);
     }
+}
+
+AgentExtractedResult ExtractAgentResult(ProcessManager& pm, int id, bool finished, int settleWaitMs) {
+    constexpr size_t kMaxResultBytes = 64 * 1024;
+    constexpr int kOutputFallbackLines = 50;
+
+    AgentExtractedResult out;
+    if (!pm.GetSnapshot(id, out.snap)) {
+        return out;
+    }
+    out.found = true;
+
+    // The monitor marks the process finished as soon as it exits, which can be before the reader
+    // thread has ingested the last lines, and the last line is the one holding the result.
+    if (finished && settleWaitMs > 0) {
+        int stableTicks = 0;
+        for (int i = 0; i < 30 && stableTicks < 3; ++i) {
+            uint64_t bytesBefore = out.snap.totalBytesRead;
+            Sleep(static_cast<DWORD>(settleWaitMs));
+            pm.GetSnapshot(id, out.snap);
+            stableTicks = (out.snap.totalBytesRead == bytesBefore) ? stableTicks + 1 : 0;
+        }
+    }
+
+    std::vector<LlmStreamEvent> events;
+    pm.GetAgentStream(id, 0, "", 0, events, out.agentState);
+
+    if (finished) {
+        for (auto it = events.rbegin(); it != events.rend(); ++it) {
+            if (it->type != "result" && it->type != "error" && it->type != "message") continue;
+            out.result = it->content;
+            out.source = it->type;
+            out.isError = it->type == "error";
+            // Claude's result line can carry a short "summary" as content; the report is in "result".
+            auto raw = nlohmann::json::parse(it->rawJson, nullptr, false);
+            if (it->type != "message" && raw.is_object() && raw.contains("result") && raw["result"].is_string()) {
+                out.result = raw["result"].get<std::string>();
+            }
+            break;
+        }
+        if (out.result.empty()) {
+            pm.GetOutput(id, true, kOutputFallbackLines, out.result);
+            out.source = "output";
+        }
+    }
+
+    out.truncated = out.result.size() > kMaxResultBytes;
+    if (out.truncated) {
+        size_t cut = kMaxResultBytes;
+        while (cut > 0 && (static_cast<unsigned char>(out.result[cut]) & 0xC0) == 0x80) cut--;
+        out.result.resize(cut);
+    }
+    return out;
 }
 
 } // namespace pc

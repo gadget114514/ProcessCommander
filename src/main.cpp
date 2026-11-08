@@ -2,6 +2,7 @@
 #include "process_manager.h"
 #include "ipc_server.h"
 #include "taskqueue.h"
+#include "bt_manager.h"
 #include "mcp_server.h"
 #include "gui_dashboard.h"
 #include "cli.h"
@@ -53,6 +54,7 @@ WORKING MODEL (LLM orchestration):
     Supervisor LLM (Claude Code, opencode, ...)
       |  start_process   -> one long-running worker command
       |  taskqueue_add   -> ordered/dependent worker jobs
+      |  bt_start        -> a behavior tree: steps, branches, retries, checks
       v
     ProcessCommander
       |  owns processes, timeouts, logs, retries, state
@@ -77,6 +79,12 @@ WORKING MODEL (LLM orchestration):
     5. On failure, fix the cause and call taskqueue_retry. Blocked dependents
        resume automatically.
     6. Keep the supervisor context small: read artifacts, not raw transcripts.
+    7. When the next step depends on results (build -> fix -> rebuild loops,
+       test -> fix -> retest, "if this file says X then ..."), do not watch and
+       add jobs by hand: write the whole plan as a behavior tree (BT) and submit
+       it once with bt_start. ProcessCommander runs it, adding each step as an
+       ordinary job, and returns to you only when a decision is needed
+       (escalate) or the tree finishes. See BEHAVIOR TREES below.
 
 CONSOLE CLIENT / CLI SETUP:
   Use pcder.exe for CLI commands (start, list, logs, send, wait, kill, kill-all, clear).
@@ -110,7 +118,7 @@ MCP SERVER SETUP:
     - The dashboard auto-starts on first use and owns the Named Pipe server.
     - Logs, state and task queues live under logs/ (override: PROCESS_COMMANDER_LOG_DIR).
 
-  MCP tools (24):
+  MCP tools (34):
     Process (6):
       start_process, list_processes, get_process_output, send_process_input,
       wait_process, kill_process
@@ -121,13 +129,18 @@ MCP SERVER SETUP:
       taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,
       taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,
       taskqueue_graph
+    Behavior tree (10):
+      bt_validate, bt_start, bt_get, bt_list, bt_wait, bt_resume, bt_retry,
+      bt_update, bt_cancel, bt_pause
 
   HOW TO USE (decision guide):
     - One command, e.g. a build script, CLI worker or shell -> start_process
     - One task for a worker LLM, final result only         -> run_worker
       Harnesses do not see this as a native sub-agent; a thin custom agent that
       calls run_worker makes it one, at the cost of the wrapper's tokens.
-    - Multiple steps, order, dependencies or retries      -> taskqueue_add + dependsOn
+    - Multiple steps, fixed order or dependencies         -> taskqueue_add + dependsOn
+    - Steps whose next step depends on results: branches,
+      fix loops, checks, worker LLM steps, your decisions -> bt_start + bt_wait
     - Never write &&, ||, a single &, PowerShell ';', newline chains or polling
       loops. ChainGuard rejects them: one job = one command with its own timeoutSec.
     - Required taskqueue job fields: id, command, summary, timeoutSec.
@@ -140,6 +153,42 @@ MCP SERVER SETUP:
       blocked = a dependency failed; running; succeeded; failed; cancelled.
     - Observe with taskqueue_wait / taskqueue_list / taskqueue_graph; after fixing
       the cause use taskqueue_retry (blocked dependents resume automatically).
+
+  BEHAVIOR TREES (bt_*):
+    A behavior tree is one JSON document describing the whole workflow. Leaves run
+    work (job = one command, worker = one task for a worker LLM); composites decide
+    what runs next (sequence, fallback, parallel, if, retry, repeat, timeout);
+    conditions check results (fileExists, fileNewer, outputMatches, exitCode,
+    jsonValue, var, nodeState); escalate hands a decision back to you.
+    Flow:
+      1. bt_validate (optional), then bt_start {bt: {...}} or {file: "plan.json"}.
+      2. Loop on bt_wait {id, sinceVersion, timeoutMs}. It returns when the tree
+         finishes or waits for you (state "waitingForLlm" + a decision packet).
+      3. Answer with bt_resume {id, node, answer, rationale}. The packet holds the
+         question, guidance, allowed answers and the logs/files/vars you asked to
+         include, so you can decide even after your context was compacted.
+      4. On failure read bt_get {id, compact: true}; fix the cause (bt_update for
+         a non-running node's definition) and call bt_retry {id, from}.
+    Rules:
+      - retry / repeat need "max". Jobs need command, summary, timeoutSec; workers
+        need prompt, summary, timeoutSec and optionally engine / model (claude,
+        agy, opencode, codex or ones defined in <data dir>\engines.json).
+      - Write "intent" (the goal) and, on escalate, "question" + "guidance" for
+        your future self. ${name} expands variables; in command it is quoted as
+        one argument. Do not retry BT jobs with taskqueue_retry; use bt_retry.
+    Minimal example (build, and on failure let a worker fix it, up to 3 times):
+      {"id": "fix-build", "summary": "Build and fix", "intent": "Release build passes",
+       "cwd": "D:/repo",
+       "root": {"type": "retry", "max": 3, "child": {"type": "fallback", "children": [
+         {"type": "job", "id": "build", "summary": "Build", "timeoutSec": 1800,
+          "command": "cmake --build build --config Release"},
+         {"type": "sequence", "children": [
+           {"type": "worker", "id": "fix", "engine": "claude", "summary": "Fix build",
+            "timeoutSec": 3600, "prompt": "Fix the build errors in ${build.logFile}."},
+           {"type": "fail"}]}]}}}
+    Full format, every node type and three complete examples:
+      doc\behavior-tree.md (English), doc\behavior-tree-ja.md (Japanese), in the
+      ProcessCommander installation folder. `pcder.exe bt --help` lists the CLI.
 
   For the full machine-readable guide (agent.quick_start, decision, states):
     pcder.exe help --json
@@ -264,11 +313,13 @@ int main() {
         pm.SetProcessFinishedCallback([&tqm](int pid, int ec, const std::string& kind) {
             tqm.OnProcessFinished(pid, ec, kind);
         });
-        IpcServer ipc(pm, tqm);
+        BtManager btm(pm, tqm);
+        IpcServer ipc(pm, tqm, &btm);
         ipc.Start();
         int rc = RunGuiDashboard(pm, ipc, tqm);
         ipc.Stop();
         pm.SetProcessFinishedCallback(nullptr);
+        btm.Shutdown();
         tqm.ShutdownTaskQueueManager();
         if (hMutex) CloseHandle(hMutex);
         return rc;

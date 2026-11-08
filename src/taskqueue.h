@@ -108,6 +108,17 @@ struct TaskQueueDefer {
     int limit = 60;
 };
 
+struct TaskQueueBtRef {
+    std::string id;
+    std::string node;
+    int run = 0;
+};
+
+enum TaskQueueCaller {
+    Gui = 0,
+    External = 1,
+};
+
 struct TaskQueueJob {
     std::string id;
     std::string taskqueue;
@@ -135,6 +146,7 @@ struct TaskQueueJob {
     std::string updatedAt;
     std::string notes;
     int64_t retryAtMs = 0;
+    TaskQueueBtRef bt;
 };
 
 struct TaskQueue {
@@ -161,20 +173,31 @@ public:
     ~TaskQueueManager();
 
     using ProcessFinishedCallback = std::function<void(int processId, int exitCode, const std::string& endKind)>;
+    using JobFinishedCallback = std::function<void(const TaskQueueJob& snapshot, const std::string& finalState)>;
+    using BtRetryCallback = std::function<bool(const TaskQueueBtRef& ref, bool resetCounters, std::string& outError)>;
+
     void SetProcessFinishedCallback(ProcessFinishedCallback cb);
+    void SetJobFinishedCallback(JobFinishedCallback cb);
+    void SetBtRetryCallback(BtRetryCallback cb);
     void SetProcessManager(ProcessManager* pm);
 
     // Task queue operations. Each returns a complete JSON response string
     // ({"ok":true,...} or {"ok":false,"error":"..."}).
     std::string TaskQueueAdd(const std::string& taskqueue, const std::string& jobsJson, int64_t concurrency, const std::string& notifyFile, std::string& outError);
+    // Internal entry point used only by the BT layer to add a BT-managed job.
+    std::string AddBtJob(const std::string& taskqueue, const std::string& jobJson, const TaskQueueBtRef& ref, std::string& outError);
     // sinceSec > 0 keeps only jobs whose updatedAt is within the last sinceSec seconds.
     std::string TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError);
     std::string TaskQueueGet(const std::string& id, bool includeInstructions, int rev, std::string& outError);
+    bool GetJobSnapshot(const std::string& id, TaskQueueJob& outJob) const;
     std::string TaskQueueRetry(const std::string& id, bool resetAttempts, bool refreshInstructions, std::string& outError);
+    std::string TaskQueueRetry(const std::string& id, bool resetAttempts, bool refreshInstructions, TaskQueueCaller caller, std::string& outError);
     // Retries every failed job (optionally limited to one queue and to jobs whose updatedAt is
     // within the last sinceSec seconds; sinceSec <= 0 means no time limit). Returns the retried ids.
     std::string TaskQueueRetryFailed(const std::string& taskqueue, int64_t sinceSec, bool resetAttempts, bool refreshInstructions, std::string& outError);
+    std::string TaskQueueRetryFailed(const std::string& taskqueue, int64_t sinceSec, bool resetAttempts, bool refreshInstructions, TaskQueueCaller caller, std::string& outError);
     std::string TaskQueueUpdate(const std::string& id, const std::string& patchJson, std::string& outError);
+    std::string TaskQueueUpdate(const std::string& id, const std::string& patchJson, TaskQueueCaller caller, std::string& outError);
     std::string TaskQueueCancel(const std::string& id, std::string& outError);
     std::string TaskQueuePause(const std::string& taskqueue, bool paused, std::string& outError);
     std::string TaskQueueWait(const std::string& taskqueue, int sinceVersion, int timeoutMs, std::string& outError);
@@ -209,6 +232,7 @@ public:
     static std::wstring GetInstructionsDirWide(const std::string& name);
     static std::wstring GetInstructionsFileWide(const std::string& name, const std::string& jobId, int rev);
     static std::wstring GetTaskEventsFileWide(const std::string& name);
+    static std::wstring GetAttemptLogFileWide(const std::string& jobId, int n);
 
     // Event notification (events.jsonl + notifyFile). Public for the GUI layer.
     void EmitTaskQueueEvent(const std::string& taskqueue, const std::string& type, const std::string& jobId, int64_t attempt);
@@ -226,6 +250,7 @@ private:
     void SaveAllLocked();
     void SchedulerLoop();
     void ProcessSchedulerTick();
+    void FlushFinishedCallbacks();
 
     TaskQueueJob* FindJob(const std::string& id, TaskQueue** outQueue);
     const TaskQueueJob* FindJobConst(const std::string& id) const;
@@ -262,7 +287,10 @@ private:
 
     ProcessManager* pm_ = nullptr;
     ProcessFinishedCallback finishedCb_;
-    std::mutex mutex_;
+    JobFinishedCallback jobFinishedCb_;
+    BtRetryCallback btRetryCb_;
+    std::vector<std::pair<TaskQueueJob, std::string>> pendingFinished_;
+    mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::map<std::string, TaskQueue> queues_;
     std::map<std::string, std::string> lastNotice_; // taskqueue -> last emitted notice type

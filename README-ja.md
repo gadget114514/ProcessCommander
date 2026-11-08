@@ -67,6 +67,25 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 
 ---
 
+## ビヘイビアツリー: 次に何をするかの判断を ProcessCommander の中で行う
+
+次の手順が前の結果しだいの作業（ビルド → 修正 → 再ビルド、テスト → 修正 → 再テスト、「このファイルが X なら Y をする」）では、これまで監督役の LLM が付きっきりでした。ジョブの終了を待ち、結果を読み、次を決めてジョブを足す、を繰り返していました。ProcessCommander はビヘイビアツリー (BT) の実行機構を内蔵しました。LLM は作業全体を 1 つの JSON のツリーとして書き、`bt_start` で一度だけ渡します。ProcessCommander がツリーをたどり、各手順を普通のタスクキューのジョブとして実行し、決まりきった判断は自分で行います。
+
+| | これまで（LLM が 1 手順ずつ回す） | ビヘイビアツリー |
+| :--- | :--- | :--- |
+| 次の手順を決めるのは | 監督役の LLM。手順ごとに 1 ターン | ProcessCommander がツリーに従って決める（分岐、ループ、リトライ、条件の確認） |
+| トークンとターン | 手順ごとにターンとコンテキストを使う | `bt_start` 1 回。LLM が呼ばれるのは本当に判断が要るとき (`escalate`) と終了時だけ |
+| 監督役の LLM | 起きて見張り続ける必要がある | `bt_wait` で待つ、寝る、コンテキストが圧縮される、のどれでもツリーは進む |
+| 終わらないループ | LLM が止めるかどうか次第 | `retry` / `repeat` は `max` が必須。ツリー全体も `maxNodeRuns` と `maxWallSec` で打ち切る |
+| 機械的な確認 | LLM がログや終了コードを読む | 組み込みの条件: `exitCode`, `fileExists`, `fileNewer`, `outputMatches`, `jsonValue`, `var` |
+| 判断の記録 | 会話履歴に埋もれる | `escalate` が判断に必要な材料（目的、質問、基準、ログ、ファイル）をまとめて渡し、回答と理由を記録する |
+| 再起動 | LLM がどこまで進んだかを覚えておく必要がある | ツリーの状態は変化のたびに保存され、ProcessCommander を再起動しても続きから進む |
+| ワーカーのエンジン | CLI ごとにコマンドラインを手で書く | `worker` の手順はエンジン名（`claude`, `agy`, `opencode`, `codex`、または `engines.json` の独自定義）で指定。1 つのツリーで混在できる |
+
+変わらない点: 各手順は今まで通りタスクキューのジョブで、タイムアウト、成功条件、リソースロック、ログを持ち、タスク一覧にも普通のジョブとして並びます。ツールバーの **BT** ボタン（Ctrl+Shift+B）で、どのノードがどのタスクを起動したか、各ツリーがどこまで進んだかを表示できます。LLM は `pcder help --json` と [doc/behavior-tree-ja.md](doc/behavior-tree-ja.md) から書き方を知ります。
+
+---
+
 ## ドキュメント
 
 | ドキュメント | 内容 |
@@ -75,6 +94,7 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 | [主な特徴](doc/features-ja.md) | ダッシュボード GUI、シェル起動、履歴、トレイ、ログ、設定、タスクキュー概要 |
 | [CLI](doc/cli-ja.md) | `pcder.exe` の使い方、stdin モード、完了通知 |
 | [タスクキュー](doc/taskqueue-ja.md) | 順序・依存・ジョブのフィールド・状態・ChainGuard |
+| [ビヘイビアツリー](doc/behavior-tree-ja.md) | BT の形式、ノードの種類、変数、ワーカーのエンジン、escalate、例 |
 | [MCP サーバー](doc/mcp-ja.md) | MCP 登録と MCP ツール |
 | [データディレクトリ](doc/data-directory-ja.md) | プロジェクト内・git 管理の `--data-dir` |
 | [Pros/Cons（英語）](doc/pros-cons-comparison.md) | サブエージェント等との使い分け |

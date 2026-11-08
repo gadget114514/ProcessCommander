@@ -67,6 +67,23 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 - Your harness does not see this as a native sub-agent. To have it shown as one, define a thin custom agent (Claude Code: `.claude/agents/<name>.md`, cheap model, this tool only) that calls `run_worker` and returns the result. The wrapper costs extra tokens; calling `run_worker` directly is cheapest.
 - For several steps with an order, dependencies or retries, use the [task queue](doc/taskqueue.md) instead.
 
+## Behavior trees: the next-step decisions run inside ProcessCommander
+
+When the next step depends on the result of the previous one (build → fix → rebuild, test → fix → retest, "if this file says X, do Y"), the supervisor LLM used to stay in the loop: wait for a job, read its result, decide, add the next job, and repeat. ProcessCommander now has a built-in behavior tree (BT) engine. The LLM writes the whole plan once as a JSON tree and submits it with `bt_start`; ProcessCommander walks the tree, runs every step as an ordinary task-queue job, and makes the routine decisions itself.
+
+| | Before (LLM drives each step) | With behavior trees |
+| :--- | :--- | :--- |
+| Who decides the next step | The supervisor LLM, one turn per step | ProcessCommander, from the tree (branches, loops, retries, condition checks) |
+| Tokens and turns | Every step costs a turn and context | One `bt_start`; the LLM is called back only for real decisions (`escalate`) or at the end |
+| Supervisor availability | Must stay alive and attentive | Can wait on `bt_wait`, sleep, or have its context compacted; the tree keeps running |
+| Runaway loops | Depends on the LLM stopping | `retry` / `repeat` need `max`; `maxNodeRuns` and `maxWallSec` cap the whole tree |
+| Mechanical checks | The LLM reads logs and exit codes | Built-in conditions: `exitCode`, `fileExists`, `fileNewer`, `outputMatches`, `jsonValue`, `var` |
+| Decisions | Lost in the chat history | `escalate` sends a self-contained decision packet (goal, question, guidance, logs, files) and records the answer with its rationale |
+| Restarts | The LLM must remember where it was | The tree's state is saved after every change and resumes after a ProcessCommander restart |
+| Worker engines | Command lines written by hand per CLI | `worker` steps name an engine (`claude`, `agy`, `opencode`, `codex` or your own in `engines.json`); one tree can mix engines |
+
+What stays the same: each step is still a normal task-queue job with its own timeout, success check, resource locks and logs, and it appears in the task list like any other job. The **BT** toolbar button (Ctrl+Shift+B) opens a view of each tree, showing which node started which task and how far each tree has run. LLMs learn the format from `pcder help --json` and [doc/behavior-tree.md](doc/behavior-tree.md).
+
 ## Documentation
 
 | Document | Contents |
@@ -75,6 +92,7 @@ The response carries `finished`, `success`, `state`, `exit_code`, `result`, `res
 | [Key Features](doc/features.md) | Dashboard GUI, shell launcher, history, tray, logs, Job Objects, settings, task queue overview |
 | [Console CLI](doc/cli.md) | `pcder.exe` usage, JSON output, stdin modes, completion, `help --json` keys |
 | [Task Queue](doc/taskqueue.md) | Ordered jobs, dependencies, job fields, states, ChainGuard |
+| [Behavior Trees](doc/behavior-tree.md) | BT format, node types, variables, worker engines, escalate, examples |
 | [MCP Server](doc/mcp.md) | MCP registration and the MCP tools |
 | [Data Directory](doc/data-directory.md) | Project-local, git-managed `--data-dir` |
 | [Pros/Cons](doc/pros-cons-comparison.md) | When to use ProcessCommander vs. sub-agents and alternatives |

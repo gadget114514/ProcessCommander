@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "common.h"
 #include "ipc_client.h"
+#include "nlohmann/json.hpp"
 #include <iostream>
 #include <sstream>
 #include <algorithm>
@@ -412,6 +413,23 @@ TASK QUEUE:
   taskqueue purge [<name>] --older-than-days <N>   (finished jobs not updated for N days; all queues if <name> omitted)
   reset [--yes]                                    (delete ALL project data in the data directory; lists targets without --yes; refused while running)
 
+BEHAVIOR TREES (for LLM agents; next step depends on results):
+  bt validate|start --file <bt.json>    Check / register and run a behavior tree
+  bt wait --id <id> [--since-version <n>] [--timeout-ms <ms>]
+      Long-poll until the tree finishes or waits for your decision (escalate).
+  bt resume --id <id> --node <node> --answer <a> --rationale <why> [--vars <json>]
+  bt get --id <id> [--compact]  |  bt list
+  bt retry --id <id> [--from <node>] [--reset-counters]
+  bt update --id <id> [--node <node>] (--file <path> | --bt <json> | --patch <json>)
+  bt cancel --id <id>  |  bt pause --id <id> [--paused true|false]
+      Leaves: job (one command), worker (one task for a worker LLM; engine/model);
+      composites: sequence, fallback, parallel, if, retry/repeat (max required),
+      timeout; conditions: fileExists, fileNewer, outputMatches, exitCode,
+      jsonValue, var, nodeState; escalate returns a decision packet to you.
+      Each leaf runs as an ordinary task-queue job; retry BT jobs with bt retry,
+      not taskqueue retry. Full format and examples: doc\behavior-tree.md in the
+      installation folder; `pcder bt --help` for all options.
+
   start/run ... --allow-chain
       Allow a chained command (&&, ||, &, ';') as a single process. Task-queue
       jobs never allow chains; use dependsOn instead.
@@ -465,6 +483,12 @@ SETUP FOR LLM AGENTS:
 "        does not run the work itself, chain commands, or fabricate success.\n"
 "      - One job = one command. Use start_process for a single worker; use\n"
 "        taskqueue_add with dependsOn for multiple steps or dependencies.\n"
+"      - When the next step depends on results (build -> fix -> rebuild,\n"
+"        test -> fix -> retest, branch on a file's content), do not watch and\n"
+"        add jobs by hand: write the plan as a behavior tree and submit it once\n"
+"        with bt_start, then loop on bt_wait and answer escalations with\n"
+"        bt_resume (answer + rationale). See BEHAVIOR TREES above and\n"
+"        doc\\behavior-tree.md.\n"
 "      - Each job needs a one-line summary and its own timeoutSec. Pass detailed\n"
 "        instructions via instructionsFile/instructionsText; the worker reads\n"
 "        {instructions} / PC_JOB_INSTRUCTIONS and writes artifacts.\n"
@@ -486,7 +510,7 @@ SETUP FOR LLM AGENTS:
 "        and returns the result. The wrapper costs extra tokens; calling run_worker\n"
 "        directly is cheapest.\n"
 "\n"
-"    MCP tools (24):\n"
+"    MCP tools (34):\n"
 "      Process:    start_process, list_processes, get_process_output,\n"
 "                  send_process_input, wait_process, kill_process\n"
 "      Worker:     run_worker, wait_worker, get_worker_stream, get_worker_state,\n"
@@ -495,6 +519,8 @@ SETUP FOR LLM AGENTS:
 "                  taskqueue_update, taskqueue_cancel, taskqueue_pause, taskqueue_resume,\n"
 "                  taskqueue_wait, taskqueue_purge, taskqueue_link, taskqueue_unlink,\n"
 "                  taskqueue_graph\n"
+"      Behavior tree: bt_validate, bt_start, bt_get, bt_list, bt_wait, bt_resume,\n"
+"                  bt_retry, bt_update, bt_cancel, bt_pause\n"
 "\n"
 "NOTE:\n"
 "  The GUI dashboard is provided by ProcessCommander.exe, which is auto-started\n"
@@ -680,6 +706,24 @@ void PrintCliUsageJson() {
         {"name": "purge", "usage": "pcder taskqueue purge <name> [--states succeeded,failed,cancelled]", "description": "Remove finished jobs."}
       ],
       "options": []
+    },)" R"(
+    {
+      "name": "bt",
+      "description": "Behavior trees: submit a whole multi-step workflow (branches, fix loops, checks, worker LLM steps, escalations) as one JSON document; ProcessCommander runs it and each leaf becomes an ordinary task-queue job. See agent.behavior_tree and doc/behavior-tree.md.",
+      "usage": "pcder bt <validate|start|get|list|wait|resume|retry|update|cancel|pause> ...",
+      "subcommands": [
+        {"name": "validate", "usage": "pcder bt validate --file <bt.json> | --bt <json>", "description": "Check a tree without running it."},
+        {"name": "start", "usage": "pcder bt start --file <bt.json> | --bt <json>", "description": "Register and start a tree."},
+        {"name": "wait", "usage": "pcder bt wait --id <id> [--since-version <n>] [--timeout-ms <ms>]", "description": "Long-poll until the tree finishes or waits for a decision (state waitingForLlm, with the decision packet)."},
+        {"name": "resume", "usage": "pcder bt resume --id <id> --node <node> --answer <answer> --rationale <text> [--vars <json>]", "description": "Answer an escalate node; rationale is required."},
+        {"name": "get", "usage": "pcder bt get --id <id> [--compact]", "description": "Node states, runs, variables and jobs; --compact prints one line per node."},
+        {"name": "list", "usage": "pcder bt list", "description": "All trees and their states."},
+        {"name": "retry", "usage": "pcder bt retry --id <id> [--from <node>] [--reset-counters]", "description": "Resume a failed tree from the failed leaf or the given node."},
+        {"name": "update", "usage": "pcder bt update --id <id> [--node <node>] --file <path> | --bt <json> | --patch <json>", "description": "Replace the definition of non-running nodes; the tree shape cannot change."},
+        {"name": "cancel", "usage": "pcder bt cancel --id <id>", "description": "Cancel the tree and its running jobs."},
+        {"name": "pause", "usage": "pcder bt pause --id <id> [--paused true|false]", "description": "Stop or resume starting new leaves; running jobs continue."}
+      ],
+      "options": []
     },
     {
       "name": "worker",
@@ -758,7 +802,7 @@ void PrintCliUsageJson() {
           }
         }
       },
-      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "run_worker", "wait_worker", "get_worker_stream", "get_worker_state", "update_worker_info", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph"]
+      "tools": ["start_process", "list_processes", "get_process_output", "send_process_input", "wait_process", "kill_process", "run_worker", "wait_worker", "get_worker_stream", "get_worker_state", "update_worker_info", "taskqueue_add", "taskqueue_list", "taskqueue_get", "taskqueue_retry", "taskqueue_update", "taskqueue_cancel", "taskqueue_pause", "taskqueue_resume", "taskqueue_wait", "taskqueue_purge", "taskqueue_link", "taskqueue_unlink", "taskqueue_graph", "bt_validate", "bt_start", "bt_get", "bt_list", "bt_wait", "bt_resume", "bt_retry", "bt_update", "bt_cancel", "bt_pause"]
     }
   },
   "agent": {
@@ -829,6 +873,7 @@ void PrintCliUsageJson() {
     "decision": {
       "single_command": "start_process",
       "multiple_commands_or_dependencies": "taskqueue_add",
+      "next_step_depends_on_results": "bt_start + bt_wait (+ bt_resume): branches, build-fix loops, test-fix-retest, result checks, worker LLM steps or decisions you must make mid-way. Do not watch and add jobs by hand.",
       "never": ["&&", "||", "single &", "powershell ;", "newline chains", "polling loops such as Test-Path or goto"],
       "reason": "One job = one command, so each job keeps its own timeout, success check and retry; chains are rejected."
     },
@@ -840,6 +885,37 @@ void PrintCliUsageJson() {
       "success": "exitCode (default 0) AND filesNewer (exist and newer than the attempt start) AND outputRegex (last 200 log lines).",
       "idle": "outputSec and cpuSec must both be set; kill only when output AND CPU are idle.",
       "defer": "{exitCodes (default [75]), delaySec (60), limit (60, 0 = no limit)}: exit codes meaning nothing ran; the job is re-run after delaySec without using up maxAttempts. {\"exitCodes\": []} turns it off."
+    },
+)" R"(    "behavior_tree": {
+      "summary": "One JSON document describing the whole workflow. ProcessCommander ticks it on job completion and timers, adds each leaf as an ordinary task-queue job, and returns to you only when a decision is needed (escalate) or the tree finishes.",
+      "when": "Use instead of taskqueue_add when the next step depends on results: if/else, build -> fix -> rebuild, test -> fix -> retest, file/JSON/log checks, worker LLM steps, or a decision you must make mid-way.",
+      "flow": [
+        "Optionally bt_validate, then bt_start with {bt: {...}} or {file: \"plan.json\"}.",
+        "Loop on bt_wait {id, sinceVersion, timeoutMs}; it returns on finish or when state is waitingForLlm with a decision packet.",
+        "Answer with bt_resume {id, node, answer, rationale}. The packet contains the intent, question, guidance, allowed answers, path, and the logs/vars/files you listed in include, so you can decide without earlier context.",
+        "On failure read bt_get {id, compact: true}; fix the cause (bt_update changes a non-running node's definition) and call bt_retry {id, from}."
+      ],
+      "nodes": {
+        "leaves": "job {command, summary, timeoutSec, success, capture}, worker {prompt, summary, timeoutSec, engine, model, outputSchema}, wait {sec}, set {var, value}, escalate {question, guidance, expect, include, timeoutSec, fallback {afterSec, engine, model}}, fail, succeed",
+        "composites": "sequence, fallback (selector), parallel {success: all|any|n}, if {cond, then, else}",
+        "decorators": "retry {max}, repeat {max, until}, invert, forceSuccess, forceFailure, timeout {sec}",
+        "conditions": "fileExists, fileNewer, outputMatches, exitCode, jsonValue, var, nodeState"
+      },
+      "variables": "${name} expands BT vars; in command it is quoted as one argument. Node variables: ${<id>.state|exitCode|logFile|jobId|runs}, ${<worker>.result} (final response), ${<worker>.output.<path>} (JSON the worker wrote to PC_BT_RESULT_FILE), ${<escalate>.answer}.",
+      "engines": "Workers name an engine (claude, agy, opencode, codex, or ones in <data dir>/engines.json) and optionally a model; permission flags live only in the engine definition.",
+      "limits": "retry/repeat max <= 100 (required); limits.maxNodeRuns default 200; limits.maxWallSec default 86400; depth 32; 1000 nodes.",
+      "rules": [
+        "Write intent (the goal) and, on escalate, question + guidance for your future self.",
+        "Do not use taskqueue_retry/taskqueue_update on BT jobs; use bt_retry/bt_update.",
+        "subtree is not supported yet."
+      ],
+      "example": {"id": "fix-build", "summary": "Build and fix", "intent": "Release build passes", "cwd": "D:/repo",
+        "root": {"type": "retry", "max": 3, "child": {"type": "fallback", "children": [
+          {"type": "job", "id": "build", "summary": "Build", "timeoutSec": 1800, "command": "cmake --build build --config Release"},
+          {"type": "sequence", "children": [
+            {"type": "worker", "id": "fix", "engine": "claude", "summary": "Fix build", "timeoutSec": 3600, "prompt": "Fix the build errors in ${build.logFile}."},
+            {"type": "fail"}]}]}}},
+      "guide": "doc/behavior-tree.md (English) and doc/behavior-tree-ja.md (Japanese) in the ProcessCommander installation folder; pcder bt --help for the CLI."
     },
     "states": {
       "waiting": "Queued and ready; waiting for a free slot or the retry delay.",
@@ -1141,6 +1217,48 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
             return 0;
         }
         std::cout << respJson << "\n";
+        return 0;
+    }
+
+    if (action.rfind("bt_", 0) == 0) {
+        if (action == "bt_validate") {
+            std::cout << "Behavior tree definition is valid.\n";
+            return 0;
+        }
+        if (action == "bt_list") {
+            auto trees = ExtractJsonObjectArray(respJson, "trees");
+            if (trees.empty()) {
+                std::cout << "No behavior trees found.\n";
+                return 0;
+            }
+            std::cout << "Behavior trees (" << trees.size() << "):\n\n";
+            for (const auto& t : trees) {
+                std::cout << "  [" << JsonGetString(t, "state", "idle") << "] "
+                          << JsonGetString(t, "id", "");
+                std::string sum = JsonGetString(t, "summary", "");
+                if (!sum.empty()) std::cout << " \"" << sum << "\"";
+                std::cout << "  runs=" << JsonGetInt(t, "nodeRuns", 0)
+                          << "  version=" << JsonGetInt(t, "version", 0);
+                std::string detail = JsonGetString(t, "detail", "");
+                if (!detail.empty()) std::cout << "  detail=" << detail;
+                std::string upd = JsonGetString(t, "updatedAt", "");
+                if (!upd.empty()) std::cout << "  " << upd;
+                std::cout << "\n";
+            }
+            return 0;
+        }
+        std::string compact = JsonGetString(respJson, "compact", "");
+        if (!compact.empty()) {
+            std::cout << compact << "\n";
+        } else {
+            std::cout << "[" << JsonGetString(respJson, "state", "") << "] "
+                      << JsonGetString(respJson, "id", "") << "\n";
+        }
+        std::string esc = ExtractJsonObject(respJson, "escalation");
+        if (!esc.empty()) {
+            std::cout << "Escalation (" << JsonGetString(esc, "node", "") << "): "
+                      << JsonGetString(esc, "question", "") << "\n";
+        }
         return 0;
     }
 
@@ -1836,6 +1954,198 @@ if (subcmd == "start" || subcmd == "run") {
             return failWith("unknown taskqueue command: " + op +
                             " (add, list, get, retry, cancel, pause, resume, graph, wait, purge)");
         }
+    }
+    else if (subcmd == "bt") {
+        auto printBtHelp = []() {
+            std::cout
+                << "Usage: pcder bt <subcommand> [options] [--json]\n\n"
+                << "Subcommands:\n"
+                << "  validate  --file <path> | --bt <json>              Validate a behavior tree JSON definition\n"
+                << "  start     --file <path> | --bt <json>              Register and start a behavior tree\n"
+                << "  get       --id <id> [--compact]                    Get behavior tree state and node status\n"
+                << "  list                                               List behavior trees\n"
+                << "  wait      --id <id> [--since-version <n>] [--timeout-ms <ms>]\n"
+                << "                                                     Wait for completion or escalation\n"
+                << "  resume    --id <id> --node <node> --answer <ans> --rationale <text> [--vars <json>]\n"
+                << "                                                     Answer an active escalate node\n"
+                << "  retry     --id <id> [--from <node>] [--reset-counters]\n"
+                << "                                                     Retry from failed leaf or specified node\n"
+                << "  update    --id <id> [--node <node>] (--file <path> | --bt <json> | --patch <json>)\n"
+                << "                                                     Replace definition of non-running nodes\n"
+                << "  cancel    --id <id>                                Cancel a behavior tree and its running jobs\n"
+                << "  pause     --id <id> [--paused true|false]          Pause or resume a behavior tree\n\n"
+                << "See doc/behavior-tree.md for the full JSON format and guide.\n";
+        };
+
+        std::string op = (args.size() >= 3) ? args[2] : "";
+        bool wantsHelp = (op.empty() || op == "--help" || op == "-h" || op == "help");
+        for (size_t i = 2; i < args.size(); ++i) {
+            if (args[i] == "--help" || args[i] == "-h") wantsHelp = true;
+        }
+        if (wantsHelp) {
+            printBtHelp();
+            return 0;
+        }
+
+        auto failWith = [&](const std::string& msg) {
+            if (jsonOutput) std::cout << "{\"ok\":false,\"error\":\"" << JsonEscape(msg) << "\"}\n";
+            else std::cerr << "Error: " << msg << "\n";
+            return 1;
+        };
+
+        std::string id;
+        std::string file;
+        std::string btRaw;
+        std::string patchRaw;
+        std::string node;
+        std::string answer;
+        std::string rationale;
+        std::string varsRaw;
+        std::string fromNode;
+        bool resetCounters = false;
+        bool compact = false;
+        bool paused = true;
+        uint64_t sinceVersion = 0;
+        int timeoutMs = 30000;
+
+        for (size_t i = 3; i < args.size(); ++i) {
+            const std::string& a = args[i];
+            if (a == "--id" && i + 1 < args.size()) id = args[++i];
+            else if (a == "--file" && i + 1 < args.size()) file = args[++i];
+            else if (a == "--bt" && i + 1 < args.size()) btRaw = args[++i];
+            else if (a == "--patch" && i + 1 < args.size()) patchRaw = args[++i];
+            else if (a == "--node" && i + 1 < args.size()) node = args[++i];
+            else if (a == "--answer" && i + 1 < args.size()) answer = args[++i];
+            else if (a == "--rationale" && i + 1 < args.size()) rationale = args[++i];
+            else if (a == "--vars" && i + 1 < args.size()) varsRaw = args[++i];
+            else if (a == "--from" && i + 1 < args.size()) fromNode = args[++i];
+            else if (a == "--reset-counters") {
+                resetCounters = true;
+                if (i + 1 < args.size() && (args[i + 1] == "true" || args[i + 1] == "false")) {
+                    resetCounters = (args[++i] == "true");
+                }
+            } else if (a == "--compact") {
+                compact = true;
+                if (i + 1 < args.size() && (args[i + 1] == "true" || args[i + 1] == "false")) {
+                    compact = (args[++i] == "true");
+                }
+            } else if (a == "--paused") {
+                if (i + 1 < args.size() && args[i + 1][0] != '-') {
+                    std::string pv = args[++i];
+                    paused = (pv != "false" && pv != "0");
+                } else {
+                    paused = true;
+                }
+            } else if ((a == "--since-version" || a == "--since") && i + 1 < args.size()) {
+                try { sinceVersion = static_cast<uint64_t>(std::stoull(args[++i])); } catch (...) {}
+            } else if ((a == "--timeout-ms" || a == "--wait-ms") && i + 1 < args.size()) {
+                try { timeoutMs = std::stoi(args[++i]); } catch (...) {}
+            } else if (!a.empty() && a[0] != '-') {
+                if ((op == "validate" || op == "start") && file.empty() && btRaw.empty()) file = a;
+                else if (id.empty()) id = a;
+            }
+        }
+
+        auto loadBtText = [&](std::string& outText) -> bool {
+            if (!btRaw.empty()) {
+                outText = btRaw;
+                return true;
+            }
+            if (!patchRaw.empty()) {
+                outText = patchRaw;
+                return true;
+            }
+            if (!file.empty()) {
+                std::wstring absW = ResolveAbsolutePathWide(Utf8ToWide(file));
+                std::ifstream ifs(absW, std::ios::binary);
+                if (!ifs) return false;
+                std::ostringstream ss;
+                ss << ifs.rdbuf();
+                outText = ss.str();
+                return true;
+            }
+            return false;
+        };
+
+        nlohmann::json jReq;
+        if (op == "validate" || op == "start") {
+            std::string text;
+            if (!loadBtText(text)) {
+                return failWith(file.empty() ? (op + " requires --file <path> or --bt <json>")
+                                             : ("cannot read file: " + file));
+            }
+            jReq["action"] = "bt_" + op;
+            jReq["bt"] = text;
+            subcmd = "bt_" + op;
+        } else if (op == "get") {
+            if (id.empty()) return failWith("get requires --id <id>");
+            jReq["action"] = "bt_get";
+            jReq["id"] = id;
+            jReq["compact"] = compact;
+            subcmd = "bt_get";
+        } else if (op == "list") {
+            jReq["action"] = "bt_list";
+            subcmd = "bt_list";
+        } else if (op == "wait") {
+            if (id.empty()) return failWith("wait requires --id <id>");
+            jReq["action"] = "bt_wait";
+            jReq["id"] = id;
+            jReq["sinceVersion"] = sinceVersion;
+            jReq["timeoutMs"] = timeoutMs;
+            subcmd = "bt_wait";
+        } else if (op == "resume") {
+            if (id.empty()) return failWith("resume requires --id <id>");
+            if (node.empty()) return failWith("resume requires --node <node>");
+            if (answer.empty()) return failWith("resume requires --answer <answer>");
+            if (rationale.empty()) return failWith("resume requires --rationale <rationale>");
+            jReq["action"] = "bt_resume";
+            jReq["id"] = id;
+            jReq["node"] = node;
+            jReq["answer"] = answer;
+            jReq["rationale"] = rationale;
+            if (!varsRaw.empty()) {
+                auto vj = nlohmann::json::parse(varsRaw, nullptr, false);
+                if (vj.is_discarded() || !vj.is_object()) {
+                    return failWith("--vars must be a valid JSON object");
+                }
+                jReq["vars"] = std::move(vj);
+            }
+            subcmd = "bt_resume";
+        } else if (op == "retry") {
+            if (id.empty()) return failWith("retry requires --id <id>");
+            jReq["action"] = "bt_retry";
+            jReq["id"] = id;
+            jReq["from"] = fromNode;
+            jReq["resetCounters"] = resetCounters;
+            subcmd = "bt_retry";
+        } else if (op == "update") {
+            if (id.empty()) return failWith("update requires --id <id>");
+            std::string text;
+            if (!loadBtText(text)) {
+                return failWith(file.empty() ? "update requires --file <path>, --bt <json>, or --patch <json>"
+                                             : ("cannot read file: " + file));
+            }
+            jReq["action"] = "bt_update";
+            jReq["id"] = id;
+            jReq["node"] = node;
+            jReq["bt"] = text;
+            subcmd = "bt_update";
+        } else if (op == "cancel") {
+            if (id.empty()) return failWith("cancel requires --id <id>");
+            jReq["action"] = "bt_cancel";
+            jReq["id"] = id;
+            subcmd = "bt_cancel";
+        } else if (op == "pause") {
+            if (id.empty()) return failWith("pause requires --id <id>");
+            jReq["action"] = "bt_pause";
+            jReq["id"] = id;
+            jReq["paused"] = paused;
+            subcmd = "bt_pause";
+        } else {
+            return failWith("unknown bt command: " + op +
+                            " (validate, start, get, list, wait, resume, retry, update, cancel, pause)");
+        }
+        reqJson << jReq.dump();
     }
     else if (subcmd == "worker" || subcmd == "agent") {  // agent: name used up to v2.3.1
         std::string op = (args.size() >= 3 && args[2][0] != '-') ? args[2] : "status";

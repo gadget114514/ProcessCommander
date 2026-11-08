@@ -1,8 +1,10 @@
 #include "ipc_server.h"
+#include "bt_manager.h"
 #include "chain_guard.h"
 #include "llm_stream.h"
 #include "nlohmann/json.hpp"
 #include <ctime>
+#include <fstream>
 #include <sstream>
 #include <cctype>
 
@@ -102,7 +104,10 @@ static std::string ExtractRawJsonValue(const std::string& json, const std::strin
 }
 
 IpcServer::IpcServer(ProcessManager& pm, TaskQueueManager& tqm, HWND notifyHwnd)
-    : pm_(pm), tqm_(tqm), notifyHwnd_(notifyHwnd) {}
+    : pm_(pm), tqm_(tqm), btm_(nullptr), notifyHwnd_(notifyHwnd) {}
+
+IpcServer::IpcServer(ProcessManager& pm, TaskQueueManager& tqm, BtManager* btm, HWND notifyHwnd)
+    : pm_(pm), tqm_(tqm), btm_(btm), notifyHwnd_(notifyHwnd) {}
 
 IpcServer::~IpcServer() {
     Stop();
@@ -200,80 +205,35 @@ void IpcServer::HandleClient(HANDLE hPipe) {
 // The worker's final report for run_worker / wait_worker: only this reaches the supervisor's context,
 // the raw stream stays in stream_file. Size-capped so one run cannot flood that context.
 static std::string AgentResultToJson(ProcessManager& pm, int id, bool finished) {
-    constexpr size_t kMaxResultBytes = 64 * 1024;
-    constexpr int kOutputFallbackLines = 50;
-
-    ProcessSnapshot snap;
-    if (!pm.GetSnapshot(id, snap)) {
+    AgentExtractedResult ex = ExtractAgentResult(pm, id, finished);
+    if (!ex.found) {
         return "{\"ok\":false,\"error\":\"Process ID not found.\"}";
-    }
-    // The monitor marks the process finished as soon as it exits, which can be before the reader
-    // thread has ingested the last lines, and the last line is the one holding the result.
-    if (finished) {
-        int stableTicks = 0;
-        for (int i = 0; i < 30 && stableTicks < 3; ++i) {
-            uint64_t bytesBefore = snap.totalBytesRead;
-            Sleep(100);
-            pm.GetSnapshot(id, snap);
-            stableTicks = (snap.totalBytesRead == bytesBefore) ? stableTicks + 1 : 0;
-        }
-    }
-
-    std::vector<LlmStreamEvent> events;
-    LlmAgentState st;
-    pm.GetAgentStream(id, 0, "", 0, events, st);
-
-    std::string result, source;
-    bool isError = false;
-    if (finished) {
-        for (auto it = events.rbegin(); it != events.rend(); ++it) {
-            if (it->type != "result" && it->type != "error" && it->type != "message") continue;
-            result = it->content;
-            source = it->type;
-            isError = it->type == "error";
-            // Claude's result line can carry a short "summary" as content; the report is in "result".
-            auto raw = nlohmann::json::parse(it->rawJson, nullptr, false);
-            if (it->type != "message" && raw.is_object() && raw.contains("result") && raw["result"].is_string()) {
-                result = raw["result"].get<std::string>();
-            }
-            break;
-        }
-        if (result.empty()) {
-            pm.GetOutput(id, true, kOutputFallbackLines, result);
-            source = "output";
-        }
-    }
-    bool truncated = result.size() > kMaxResultBytes;
-    if (truncated) {
-        size_t cut = kMaxResultBytes;
-        while (cut > 0 && (static_cast<unsigned char>(result[cut]) & 0xC0) == 0x80) cut--;
-        result.resize(cut);
     }
 
     std::ostringstream oss;
     oss << "{\"ok\":true,\"id\":" << id
         << ",\"finished\":" << (finished ? "true" : "false")
-        << ",\"success\":" << ((finished && snap.state == ProcState::Completed && !isError) ? "true" : "false")
-        << ",\"state\":\"" << ProcStateToString(snap.state) << "\""
-        << ",\"exit_code\":" << snap.exitCode
-        << ",\"elapsed_ms\":" << snap.elapsedMs
-        << ",\"agent_type\":\"" << JsonEscape(st.agentType) << "\""
-        << ",\"model\":\"" << JsonEscape(st.model) << "\""
-        << ",\"result\":\"" << JsonEscape(result) << "\""
-        << ",\"result_source\":\"" << source << "\""
-        << ",\"result_truncated\":" << (truncated ? "true" : "false")
-        << ",\"tool_calls\":" << st.toolCalls
-        << ",\"tool_errors\":" << st.toolErrors
-        << ",\"num_turns\":" << st.numTurns
-        << ",\"permission_denials\":" << st.permissionDenials
-        << ",\"total_tokens\":" << st.totalTokens
-        << ",\"cost_usd\":" << st.costUsd;
+        << ",\"success\":" << ((finished && ex.snap.state == ProcState::Completed && !ex.isError) ? "true" : "false")
+        << ",\"state\":\"" << ProcStateToString(ex.snap.state) << "\""
+        << ",\"exit_code\":" << ex.snap.exitCode
+        << ",\"elapsed_ms\":" << ex.snap.elapsedMs
+        << ",\"agent_type\":\"" << JsonEscape(ex.agentState.agentType) << "\""
+        << ",\"model\":\"" << JsonEscape(ex.agentState.model) << "\""
+        << ",\"result\":\"" << JsonEscape(ex.result) << "\""
+        << ",\"result_source\":\"" << ex.source << "\""
+        << ",\"result_truncated\":" << (ex.truncated ? "true" : "false")
+        << ",\"tool_calls\":" << ex.agentState.toolCalls
+        << ",\"tool_errors\":" << ex.agentState.toolErrors
+        << ",\"num_turns\":" << ex.agentState.numTurns
+        << ",\"permission_denials\":" << ex.agentState.permissionDenials
+        << ",\"total_tokens\":" << ex.agentState.totalTokens
+        << ",\"cost_usd\":" << ex.agentState.costUsd;
     if (!finished) {
-        oss << ",\"activity\":\"" << JsonEscape(st.activity) << "\""
-            << ",\"activity_target\":\"" << JsonEscape(st.activityTarget) << "\"";
+        oss << ",\"activity\":\"" << JsonEscape(ex.agentState.activity) << "\""
+            << ",\"activity_target\":\"" << JsonEscape(ex.agentState.activityTarget) << "\"";
     }
-    oss << ",\"log_file\":\"" << JsonEscape(snap.logFilePath) << "\""
-        << ",\"stream_file\":\"" << JsonEscape(st.streamFilePath) << "\"}";
+    oss << ",\"log_file\":\"" << JsonEscape(ex.snap.logFilePath) << "\""
+        << ",\"stream_file\":\"" << JsonEscape(ex.agentState.streamFilePath) << "\"}";
     return oss.str();
 }
 
@@ -587,17 +547,17 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             if (!sinceStr.empty() && !ParseDurationToSec(sinceStr, sinceSec)) {
                 err = "invalid since '" + sinceStr + "' (use a number followed by m, h or d, e.g. 6h)";
             } else if (!retryId.empty()) {
-                resp = tqm_.TaskQueueRetry(retryId, resetAttempts, refreshInstr, err);
+                resp = tqm_.TaskQueueRetry(retryId, resetAttempts, refreshInstr, TaskQueueCaller::External, err);
             } else if (JsonGetBool(reqJson, "failed", false)) {
                 // Bulk retry: every failed job, optionally limited to one queue and a time window.
                 resp = tqm_.TaskQueueRetryFailed(JsonGetString(reqJson, "taskqueue", ""),
-                                                 sinceSec, resetAttempts, refreshInstr, err);
+                                                 sinceSec, resetAttempts, refreshInstr, TaskQueueCaller::External, err);
             } else {
                 err = "taskqueue_retry requires an id, or failed=true for bulk retry";
             }
         } else if (action == "taskqueue_update") {
             resp = tqm_.TaskQueueUpdate(JsonGetString(reqJson, "id", ""),
-                                        ExtractRawJsonValue(reqJson, "patch"), err);
+                                        ExtractRawJsonValue(reqJson, "patch"), TaskQueueCaller::External, err);
         } else if (action == "taskqueue_cancel") {
             resp = tqm_.TaskQueueCancel(JsonGetString(reqJson, "id", ""), err);
         } else if (action == "taskqueue_pause") {
@@ -633,6 +593,143 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             return resp;
         }
         return "{\"ok\":false,\"error\":\"" + JsonEscape(err.empty() ? "unknown taskqueue action" : err) + "\"}";
+    }
+    else if (action.rfind("bt_", 0) == 0) {
+        if (!btm_) {
+            return "{\"ok\":false,\"error\":\"behavior trees are not available\"}";
+        }
+        using json = nlohmann::json;
+        json req = json::parse(reqJson, nullptr, false);
+        if (req.is_discarded() || !req.is_object()) {
+            return "{\"ok\":false,\"error\":\"invalid JSON request\"}";
+        }
+
+        auto extractBtPayload = [&](std::string& outJsonText, std::string& outErr) -> bool {
+            for (const char* k : {"bt", "patch", "nodeDef", "def", "json"}) {
+                if (req.contains(k) && !req[k].is_null()) {
+                    if (req[k].is_object() || req[k].is_array()) {
+                        outJsonText = req[k].dump();
+                        return true;
+                    }
+                    if (req[k].is_string()) {
+                        outJsonText = req[k].get<std::string>();
+                        return !outJsonText.empty();
+                    }
+                }
+            }
+            if (req.contains("file") && req["file"].is_string()) {
+                std::string fileUtf8 = req["file"].get<std::string>();
+                if (fileUtf8.empty()) {
+                    outErr = "file path cannot be empty";
+                    return false;
+                }
+                std::wstring absPath = ResolveAbsolutePathWide(Utf8ToWide(fileUtf8));
+                std::ifstream ifs(absPath, std::ios::binary);
+                if (!ifs) {
+                    outErr = "cannot open file: " + fileUtf8;
+                    return false;
+                }
+                std::ostringstream ss;
+                ss << ifs.rdbuf();
+                outJsonText = ss.str();
+                return true;
+            }
+            if (action == "bt_update") {
+                json patch = req;
+                patch.erase("action");
+                patch.erase("id");
+                patch.erase("node");
+                if (!patch.empty()) {
+                    outJsonText = patch.dump();
+                    return true;
+                }
+            }
+            outErr = action + " requires 'bt' (JSON) or 'file'";
+            return false;
+        };
+
+        std::string resp;
+        if (action == "bt_validate") {
+            std::string btJson, err;
+            if (!extractBtPayload(btJson, err)) {
+                return "{\"ok\":false,\"valid\":false,\"error\":\"" + JsonEscape(err) + "\"}";
+            }
+            resp = btm_->Validate(btJson);
+        } else if (action == "bt_start") {
+            std::string btJson, err;
+            if (!extractBtPayload(btJson, err)) {
+                return "{\"ok\":false,\"error\":\"" + JsonEscape(err) + "\"}";
+            }
+            resp = btm_->Start(btJson);
+        } else if (action == "bt_get") {
+            std::string id = req.value("id", std::string());
+            bool compact = req.value("compact", false);
+            resp = btm_->Get(id, compact);
+        } else if (action == "bt_list") {
+            resp = btm_->List();
+        } else if (action == "bt_wait") {
+            std::string id = req.value("id", std::string());
+            uint64_t sinceVer = 0;
+            if (req.contains("sinceVersion") && req["sinceVersion"].is_number()) {
+                sinceVer = req["sinceVersion"].get<uint64_t>();
+            } else if (req.contains("since_version") && req["since_version"].is_number()) {
+                sinceVer = req["since_version"].get<uint64_t>();
+            }
+            int timeoutMs = 30000;
+            if (req.contains("timeoutMs") && req["timeoutMs"].is_number_integer()) {
+                timeoutMs = req["timeoutMs"].get<int>();
+            } else if (req.contains("timeout_ms") && req["timeout_ms"].is_number_integer()) {
+                timeoutMs = req["timeout_ms"].get<int>();
+            }
+            resp = btm_->Wait(id, sinceVer, timeoutMs);
+        } else if (action == "bt_resume") {
+            std::string id = req.value("id", std::string());
+            std::string node = req.value("node", std::string());
+            std::string answer = req.value("answer", std::string());
+            std::string rationale = req.value("rationale", std::string());
+            std::string varsJson;
+            if (req.contains("vars") && !req["vars"].is_null()) {
+                if (req["vars"].is_object()) varsJson = req["vars"].dump();
+                else if (req["vars"].is_string()) varsJson = req["vars"].get<std::string>();
+                else varsJson = req["vars"].dump();
+            }
+            resp = btm_->Resume(id, node, answer, rationale, varsJson);
+        } else if (action == "bt_retry") {
+            std::string id = req.value("id", std::string());
+            std::string from = req.value("from", req.value("fromNode", req.value("from_node", req.value("node", std::string()))));
+            bool resetCounters = false;
+            if (req.contains("resetCounters") && req["resetCounters"].is_boolean()) {
+                resetCounters = req["resetCounters"].get<bool>();
+            } else if (req.contains("reset_counters") && req["reset_counters"].is_boolean()) {
+                resetCounters = req["reset_counters"].get<bool>();
+            }
+            resp = btm_->Retry(id, from, resetCounters);
+        } else if (action == "bt_update") {
+            std::string id = req.value("id", std::string());
+            std::string node = req.value("node", std::string());
+            std::string btJson, err;
+            if (!extractBtPayload(btJson, err)) {
+                return "{\"ok\":false,\"error\":\"" + JsonEscape(err) + "\"}";
+            }
+            resp = btm_->Update(id, node, btJson);
+        } else if (action == "bt_cancel") {
+            std::string id = req.value("id", std::string());
+            resp = btm_->Cancel(id);
+        } else if (action == "bt_pause") {
+            std::string id = req.value("id", std::string());
+            bool paused = true;
+            if (req.contains("paused")) {
+                if (req["paused"].is_boolean()) paused = req["paused"].get<bool>();
+                else if (req["paused"].is_string()) paused = (req["paused"].get<std::string>() != "false" && req["paused"].get<std::string>() != "0");
+            }
+            resp = btm_->Pause(id, paused);
+        } else {
+            return "{\"ok\":false,\"error\":\"Unknown BT IPC action: " + JsonEscape(action) + "\"}";
+        }
+
+        HWND hwnd = notifyHwnd_.load();
+        if (hwnd) PostMessageW(hwnd, WM_PC_IPC_EVENT, 0, 0);
+        return resp;
     }
     return "{\"ok\":false,\"error\":\"Unknown IPC action: " + JsonEscape(action) + "\"}";
 }
