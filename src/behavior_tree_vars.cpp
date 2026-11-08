@@ -52,6 +52,11 @@ bool RegexSearchMultiline(const std::string& text, const std::regex& re, std::sm
 
 } // namespace
 
+std::string BtVarPreview(const std::string& v, size_t maxBytes) {
+    if (v.size() <= maxBytes) return v;
+    return Utf8Prefix64K(v, maxBytes) + " ...[truncated, " + std::to_string(v.size()) + " bytes]";
+}
+
 bool BehaviorTree::Impl::LookupVar(const BehaviorTree& bt, const std::string& expr, std::string& outVal) const {
     auto it = bt.vars_.find(expr);
     if (it != bt.vars_.end()) {

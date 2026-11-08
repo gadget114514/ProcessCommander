@@ -17,6 +17,11 @@ ProcessCommander Behavior Trees (BTs) let an LLM agent declare a complete multi-
 3. When `state == "waitingForLlm"`, read the returned `escalation` decision packet and call `bt_resume` with `id`, `node`, `answer`, and a required `rationale` (plus optional `vars`).
 4. If the tree fails and you fix an external issue or update a non-running node with `bt_update`, resume from the failed node with `bt_retry`.
 
+**Reply sizes.** Every reply is read by an LLM, so only `bt_get` (without `compact`) returns the whole state document:
+- `bt_start`, `bt_resume`, `bt_retry`, `bt_update`, `bt_cancel`, `bt_pause`, and `bt_get` with `compact: true` return `{ok, id, state, detail, version, nodeRuns, taskqueue, compact}` plus `escalation` when the tree is `waitingForLlm`. There is no `tree` field.
+- `bt_wait` (when it returns on finish or escalation) adds `tree`, with each variable value longer than 200 bytes cut to a prefix plus `...[truncated, N bytes]`.
+- `bt_get` returns `tree` with every variable in full.
+
 ---
 
 ## 2. Top-Level JSON Schema
@@ -178,8 +183,8 @@ ProcessCommander includes 4 built-in worker engines (`agy` [default, `defaultMod
 
 ### 5.2 Structured Output (`PC_BT_RESULT_FILE` and `outputSchema`)
 - Every `worker` job receives the environment variable `PC_BT_RESULT_FILE` pointing to `<dataDir>\behaviortrees\<btId>\results\<jobId>.json`.
-- When `"outputSchema"` is set on a `worker` node (supports `type`, `required`, `properties`, `enum`, `items`), ProcessCommander appends instructions telling the worker to write its JSON result to `PC_BT_RESULT_FILE` and validates the file when the worker exits.
-- If the worker exits `0` but `PC_BT_RESULT_FILE` is missing, invalid JSON, or violates `outputSchema`, the node fails with `detail: "outputInvalid"`.
+- When `"outputSchema"` is set on a `worker` node (supports `type`, `required`, `properties`, `enum`, `items`), ProcessCommander appends the schema and the result file path to the worker's instructions file, and validates the file when the worker exits.
+- If the worker exits `0` but `PC_BT_RESULT_FILE` is missing, invalid JSON, or violates `outputSchema`, the node fails with `detail: "outputInvalid: <reason>"` (for example `outputInvalid: output is empty` or `outputInvalid: $.count: ...`).
 
 ---
 
@@ -200,7 +205,7 @@ ProcessCommander includes 4 built-in worker engines (`agy` [default, `defaultMod
 When execution reaches an `escalate` node:
 1. Only that branch pauses; sibling branches under a `parallel` node continue running.
 2. ProcessCommander snapshots the decision context and writes `<dataDir>/behaviortrees/<id>/escalations/<node>.<run>.json` and `.md`.
-3. The decision packet includes `btId`, `node`, `run`, `intent`, `question`, `guidance`, `expect`, `path` (root-to-node trail with states/runs), `vars`, `include` snapshots (`logs` up to 200 lines per node, `vars`, `files` up to 64 KB per file), and `howToResume`.
+3. The decision packet includes `btId`, `node`, `run`, `intent`, `question`, `guidance`, `expect`, `path` (root-to-node trail with states/runs), `vars` (every variable, values over 200 bytes truncated), `include` snapshots (`logs` up to 200 lines per node, `vars`, `files` up to 64 KB per file), and `howToResume`.
 4. `bt_wait` returns immediately with `"state": "waitingForLlm"` and `"escalation": { ... }`.
 5. Call `bt_resume` with `id`, `node`, `answer`, `rationale` (**required** non-empty string), and optional `vars` object. If `expect` is non-empty, `answer` must match one of its entries.
 6. Optional `"fallback"`: `{"afterSec": 300, "engine": "claude", "model": "sonnet"}`. If no `bt_resume` arrives within `afterSec`, ProcessCommander launches a fallback worker with the `.md` decision packet; the worker writes `{"answer": "...", "rationale": "...", "vars": {...}}` to `PC_BT_RESULT_FILE`. (`fallback.command` is not supported and is rejected at validation.)
@@ -395,14 +400,14 @@ When execution reaches an `escalate` node:
 
 - **`bt_get` with `compact: true`**:
   - Returns `"compact"`: a one-line-per-node indented tree showing `[state] type id "summary"  job <jobId>  - <detail>`.
-  - Compacts `"tree"` by omitting `"prompt"`, `"instructionsText"`, `"guidance"`, and `"idle"` child entries in `children` arrays.
+  - Omits `"tree"`. Call `bt_get` without `compact` for the full state document (definitions, statuses, and variables in full).
 - **Files on disk**:
   - State file: `<dataDir>/behaviortrees/<id>.json`
   - Event log: `<dataDir>/bt-<id>.events.jsonl` (events: `btStarted`, `nodeStarted`, `nodeFinished`, `varSet`, `escalated`, `btSucceeded`, `btFailed`, `btCancelled`)
 - **Common `detail` failure codes**:
   - `exit <N>` / `timeout` / `idleTimeout`: Underlying task-queue job failed or timed out.
   - `launchFailed`: Job failed to start (e.g. rejected by `ChainGuard` for using `&&`, `||`, or `;`).
-  - `outputInvalid`: Worker exited `0`, but `PC_BT_RESULT_FILE` was missing, unparseable, or failed `outputSchema`.
+  - `outputInvalid: <reason>`: Worker exited `0`, but `PC_BT_RESULT_FILE` was missing, unparseable, or failed `outputSchema`.
   - `undefinedVar: <name>`: A `${name}` placeholder could not be resolved when the node ran.
   - `escalationTimeout`: `escalate.timeoutSec` expired before `bt_resume` or `fallback` answered.
   - `limitExceeded`: Tree exceeded `limits.maxNodeRuns` or `limits.maxWallSec`.

@@ -288,6 +288,10 @@ private:
     ProcessManager* pm_ = nullptr;
     ProcessFinishedCallback finishedCb_;
     JobFinishedCallback jobFinishedCb_;
+    // Job-finished callbacks running right now (guarded by mutex_). SetJobFinishedCallback(nullptr)
+    // waits for this to reach 0 so the callback's owner can be destroyed safely afterwards.
+    int jobFinishedCbInFlight_ = 0;
+    std::condition_variable jobFinishedCbIdleCv_;
     BtRetryCallback btRetryCb_;
     std::vector<std::pair<TaskQueueJob, std::string>> pendingFinished_;
     mutable std::mutex mutex_;

@@ -165,7 +165,8 @@ int main() {
             };
 
             json rStart = h.Call({{"action", "bt_start"}, {"bt", twoJobBt}});
-            Check(rStart.value("ok", false) && rStart.value("id", "") == "ipc-two-jobs",
+            Check(rStart.value("ok", false) && rStart.value("id", "") == "ipc-two-jobs" &&
+                      !rStart.contains("tree") && rStart.contains("compact") && rStart.contains("version"),
                   "bt_start registers and starts ipc-two-jobs");
 
             json rWait = h.Call({{"action", "bt_wait"}, {"id", "ipc-two-jobs"}, {"sinceVersion", 0}, {"timeoutMs", 15000}});
@@ -174,7 +175,7 @@ int main() {
 
             json rGetCompact = h.Call({{"action", "bt_get"}, {"id", "ipc-two-jobs"}, {"compact", true}});
             std::string compactStr = rGetCompact.value("compact", "");
-            Check(rGetCompact.value("ok", false) &&
+            Check(rGetCompact.value("ok", false) && !rGetCompact.contains("tree") &&
                   compactStr.find("[succeeded] ipc-two-jobs") != std::string::npos &&
                   compactStr.find("[succeeded] job job_a") != std::string::npos &&
                   compactStr.find("[succeeded] job job_b") != std::string::npos,
@@ -321,8 +322,9 @@ int main() {
                     {"timeoutSec", 30}
                 }}
             });
-            Check(rUpdate.value("ok", false) &&
-                  rUpdate["tree"]["root"]["children"][1].value("command", "") == "cmd /c exit 0",
+            json gUpdated = h.Call({{"action", "bt_get"}, {"id", "ipc-fail-update-retry"}});
+            Check(rUpdate.value("ok", false) && !rUpdate.contains("tree") &&
+                  gUpdated["tree"]["root"]["children"][1].value("command", "") == "cmd /c exit 0",
                   "bt_update replaces command of non-running node step_broken");
 
             // Now bt_retry from step_broken

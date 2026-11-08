@@ -17,6 +17,11 @@ ProcessCommander のビヘイビアツリー (BT) は、条件分岐 (`if`/`fall
 3. `state == "waitingForLlm"` で返ったら、レスポンス内の `escalation` 判断パケットを読み、`bt_resume` に `id`, `node`, `answer`, 必須の `rationale` (および任意の `vars`) を渡して再開する。
 4. 失敗 (`failed`) 後に外部要因を直すか `bt_update` で非 `running` ノードの定義を修正した場合は、`bt_retry` で失敗ノードから再開する。
 
+**応答の大きさ。** 応答はすべて LLM が読むので、状態ドキュメント全体を返すのは `bt_get` (`compact` なし) だけです。
+- `bt_start`、`bt_resume`、`bt_retry`、`bt_update`、`bt_cancel`、`bt_pause`、`compact: true` の `bt_get` は `{ok, id, state, detail, version, nodeRuns, taskqueue, compact}` を返し、`waitingForLlm` のときは `escalation` も付く。`tree` は含まない。
+- `bt_wait` (終了や `escalate` で返ったとき) はこれに `tree` を加える。ただし 200 バイトを超える変数の値は、先頭部分と `...[truncated, N bytes]` に切り詰める。
+- `bt_get` は変数をすべて省略せずに `tree` を返す。
+
 ---
 
 ## 2. トップレベル JSON 形式
@@ -176,7 +181,7 @@ ProcessCommander のビヘイビアツリー (BT) は、条件分岐 (`if`/`fall
 
 ### 5.2 構造化出力 (`PC_BT_RESULT_FILE` と `outputSchema`)
 - `worker` ジョブには環境変数 `PC_BT_RESULT_FILE` (`<dataDir>\behaviortrees\<btId>\results\<jobId>.json`) が渡されます。
-- `"outputSchema"` (`type`, `required`, `properties`, `enum`, `items`) を指定すると、ワーカー終了時に `PC_BT_RESULT_FILE` を検証します。終了コードが `0` でもファイル欠落・JSON 不正・スキーマ不一致なら `detail: "outputInvalid"` で失敗します。
+- `"outputSchema"` (`type`, `required`, `properties`, `enum`, `items`) を指定すると、スキーマと結果ファイルのパスをワーカーの指示書ファイルに追記し、ワーカー終了時に `PC_BT_RESULT_FILE` を検証します。終了コードが `0` でもファイル欠落・JSON 不正・スキーマ不一致なら `detail: "outputInvalid: <理由>"` (例: `outputInvalid: output is empty`) で失敗します。
 
 ---
 
@@ -385,14 +390,14 @@ ProcessCommander のビヘイビアツリー (BT) は、条件分岐 (`if`/`fall
 
 - **`bt_get` (`compact: true`)**:
   - `"compact"` フィールドに 1 ノード 1 行のインデント付きツリー文字列 (`[state] type id "summary"  job <jobId>  - <detail>`) を返します。
-  - `"tree"` からは長い `"prompt"` / `"instructionsText"` / `"guidance"` と `"idle"` の子要素が省略されます。
+  - `"tree"` は返しません。定義・状態・変数をすべて見るときは `compact` なしの `bt_get` を使います。
 - **保存ファイル**:
   - 状態ファイル: `<dataDir>/behaviortrees/<id>.json`
   - イベントログ: `<dataDir>/bt-<id>.events.jsonl` (`btStarted`, `nodeStarted`, `nodeFinished`, `varSet`, `escalated`, `btSucceeded`, `btFailed`, `btCancelled`)
 - **主な失敗 `detail` 一覧**:
   - `exit <N>` / `timeout` / `idleTimeout`: タスクキュージョブの非ゼロ終了・タイムアウト。
   - `launchFailed`: ジョブ起動失敗 (`ChainGuard` による `&&` / `||` / `;` 拒否など)。
-  - `outputInvalid`: `worker` が終了コード 0 で終わったが、`PC_BT_RESULT_FILE` が無いか `outputSchema` に違反。
+  - `outputInvalid: <理由>`: `worker` が終了コード 0 で終わったが、`PC_BT_RESULT_FILE` が無いか `outputSchema` に違反。
   - `undefinedVar: <name>`: 実行時に未定義の `${name}` を参照した。
   - `escalationTimeout`: `escalate.timeoutSec` 以内に回答が得られなかった。
   - `limitExceeded`: `limits.maxNodeRuns` または `limits.maxWallSec` を超過した。

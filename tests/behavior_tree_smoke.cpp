@@ -131,7 +131,8 @@ int main() {
         bt2.Start(1000);
         bt2.OnJobFinished("worker-test-1", true, 0, "w1.log", "done",
                           1200, "Bad json output", R"({"file":"only_file_missing_issues"})");
-        Check(bt2.State() == "failed" && bt2.NodeDetail("w1") == "outputInvalid",
+        Check(bt2.State() == "failed" && bt2.NodeDetail("w1").rfind("outputInvalid: ", 0) == 0 &&
+              bt2.NodeDetail("w1").find("issues") != std::string::npos,
               "worker outputSchema failure fails node with outputInvalid: " + bt2.NodeDetail("w1"));
     }
 

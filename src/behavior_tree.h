@@ -13,6 +13,14 @@
 
 namespace pc {
 
+// Variable values shown to an LLM (tool replies, escalation packets) are cut to this
+// many bytes; a worker's ${<id>.result} alone can be 64 KB. bt_get returns them in full.
+constexpr size_t kBtVarPreviewBytes = 200;
+
+// Returns v unchanged when it fits in maxBytes; otherwise a UTF-8-safe prefix followed
+// by " ...[truncated, N bytes]".
+std::string BtVarPreview(const std::string& v, size_t maxBytes = kBtVarPreviewBytes);
+
 struct BtJobIdle {
     int outputSec = 0;
     int cpuSec = 0;

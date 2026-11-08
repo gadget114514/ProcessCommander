@@ -673,8 +673,15 @@ void TaskQueueManager::SetProcessFinishedCallback(ProcessFinishedCallback cb) {
 }
 
 void TaskQueueManager::SetJobFinishedCallback(JobFinishedCallback cb) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    const bool clearing = !cb;
     jobFinishedCb_ = std::move(cb);
+    // FlushFinishedCallbacks calls a copy outside mutex_, and the owner (BtManager) clears
+    // the callback right before it is destroyed: wait for calls already running. The caller
+    // must not hold a lock that the callback takes, and must not be inside the callback.
+    if (clearing) {
+        jobFinishedCbIdleCv_.wait(lock, [this] { return jobFinishedCbInFlight_ == 0; });
+    }
 }
 
 void TaskQueueManager::SetBtRetryCallback(BtRetryCallback cb) {
@@ -693,7 +700,15 @@ void TaskQueueManager::FlushFinishedCallbacks() {
         }
         items.swap(pendingFinished_);
         cb = jobFinishedCb_;
+        jobFinishedCbInFlight_++;
     }
+    struct InFlightGuard {
+        TaskQueueManager& self;
+        ~InFlightGuard() {
+            std::lock_guard<std::mutex> lock(self.mutex_);
+            if (--self.jobFinishedCbInFlight_ == 0) self.jobFinishedCbIdleCv_.notify_all();
+        }
+    } guard{*this};
     for (const auto& [snap, state] : items) {
         cb(snap, state);
     }

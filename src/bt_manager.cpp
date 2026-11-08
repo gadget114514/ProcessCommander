@@ -238,8 +238,23 @@ std::string BtManager::StartWorker(const BtWorkerSpec& spec) {
     std::string queueName = LookupQueueNameForBtLocked(spec.btId);
     const std::string jobId = UniqueJobId(spec.proposedJobId);
 
+    std::wstring resultFileW = GetBtResultFileWide(spec.btId, jobId);
+    DeleteFileW(resultFileW.c_str());
+    const std::string resultPathUtf8 = WideToUtf8(resultFileW);
+
+    // The node's outputSchema is checked when the worker exits, so the worker has to
+    // see it; without it the worker guesses the shape and the node fails outputInvalid.
+    std::string instructions = spec.prompt;
+    if (!spec.outputSchema.empty()) {
+        instructions +=
+            "\n\n---\n## Required result file\n"
+            "When you finish, write your result as a JSON value to the file named by the "
+            "PC_BT_RESULT_FILE environment variable (" + resultPathUtf8 + "). "
+            "It must match this JSON Schema:\n```json\n" + spec.outputSchema + "\n```\n";
+    }
+
     std::wstring instrFileW = TaskQueueManager::GetInstructionsFileWide(queueName, jobId, 1);
-    WriteFileAtomicWide(instrFileW, spec.prompt);
+    WriteFileAtomicWide(instrFileW, instructions);
     std::string instrPathUtf8 = WideToUtf8(instrFileW);
 
     std::string launchPrompt =
@@ -255,18 +270,15 @@ std::string BtManager::StartWorker(const BtWorkerSpec& spec) {
         return "";
     }
 
-    std::wstring resultFileW = GetBtResultFileWide(spec.btId, jobId);
-    DeleteFileW(resultFileW.c_str());
-
     std::map<std::string, std::string> env = spec.env;
-    env["PC_BT_RESULT_FILE"] = WideToUtf8(resultFileW);
+    env["PC_BT_RESULT_FILE"] = resultPathUtf8;
 
     nlohmann::json jobJson = BuildAddBtJobJson(
         jobId,
         spec.summary,
         cmd,
         spec.cwd,
-        spec.prompt,
+        instructions,
         effTimeout,
         1,
         env,

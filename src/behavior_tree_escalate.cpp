@@ -150,8 +150,10 @@ void BehaviorTree::Impl::StartEscalateNode(BehaviorTree& bt, BtNode& node, int64
         filesObj[relFile] = Truncate64K(ReadFileUtf8Wide(fp));
     }
 
+    // Every variable, cut short: a worker's ${<id>.result} can be 64 KB and the packet is
+    // read by an LLM. Values the decision really needs go in include.vars, in full.
     json allVarsObj = json::object();
-    for (const auto& [k, v] : bt.vars_) allVarsObj[k] = v;
+    for (const auto& [k, v] : bt.vars_) allVarsObj[k] = BtVarPreview(v);
 
     json pktJson;
     pktJson["btId"] = pkt.btId;

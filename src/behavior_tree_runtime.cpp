@@ -264,7 +264,9 @@ void BehaviorTree::OnJobFinished(const std::string& jobId,
             std::string schemaErr;
             if (!ValidateOutput(resolvedResultJson, node.outputSchema, schemaErr)) {
                 node.state = "failed";
-                node.detail = "outputInvalid";
+                // Keep the reason: without it the supervisor has to dig through the result file.
+                node.detail = schemaErr.empty() ? "outputInvalid"
+                                                : "outputInvalid: " + BtVarPreview(schemaErr);
                 EmitEvent(nowMs, "nodeFinished", node.nodeKey, node.state, node.detail, node.runs);
                 Tick(nowMs);
                 return;

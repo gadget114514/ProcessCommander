@@ -173,6 +173,7 @@ int main() {
             json btDef = {
                 {"id", "bt-worker-ok"},
                 {"cwd", tempDirUtf8},
+                {"vars", {{"long_note", std::string(300, 'x')}}},
                 {"root", {
                     {"type", "sequence"},
                     {"children", json::array({
@@ -217,6 +218,25 @@ int main() {
                   "w1.output.target and w1.output.count populated in vars");
             Check(vars.value("w1.result", "").find("Worker analyzed module_alpha") != std::string::npos,
                   "w1.result populated from worker output");
+
+            // bt_wait cuts long variable values; bt_get returns them in full.
+            const std::string trimmed = vars.value("long_note", "");
+            Check(trimmed.size() < 300 && trimmed.find("truncated, 300 bytes") != std::string::npos,
+                  "bt_wait trims long variable values: " + trimmed);
+            json getW = json::parse(h.btm->Get("bt-worker-ok", false), nullptr, false);
+            Check(getW["tree"]["vars"].value("long_note", "") == std::string(300, 'x'),
+                  "bt_get returns full variable values");
+
+            // The worker sees the node's outputSchema in its instructions file.
+            std::string w1Job;
+            const json& w1Jobs = getW["tree"]["root"]["children"][0]["status"]["jobs"];
+            if (w1Jobs.is_array() && !w1Jobs.empty()) w1Job = w1Jobs.back().get<std::string>();
+            std::string instr = ReadFileUtf8Wide(
+                TaskQueueManager::GetInstructionsFileWide(getW.value("taskqueue", ""), w1Job, 1));
+            Check(instr.find("Required result file") != std::string::npos &&
+                      instr.find("PC_BT_RESULT_FILE") != std::string::npos &&
+                      instr.find("\"count\"") != std::string::npos,
+                  "worker instructions include the outputSchema: " + instr);
             std::string verifyContent = ReadFileUtf8Wide(verifyOutW);
             Check(verifyContent.find("module_alpha") != std::string::npos &&
                   verifyContent.find("7") != std::string::npos,
@@ -250,7 +270,7 @@ int main() {
 
             h.btm->Start(btDef.dump());
             json waitBad = json::parse(h.btm->Wait("bt-worker-bad-schema", 0, 15000), nullptr, false);
-            Check(waitBad.value("state", "") == "failed" && waitBad.value("detail", "") == "outputInvalid",
+            Check(waitBad.value("state", "") == "failed" && waitBad.value("detail", "").rfind("outputInvalid: ", 0) == 0,
                   "worker with invalid schema fails with outputInvalid (got state=" +
                   waitBad.value("state", "") + ", detail=" + waitBad.value("detail", "") + ")");
         }

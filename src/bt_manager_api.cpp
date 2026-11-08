@@ -154,38 +154,6 @@ std::string FormatCompactTreeText(const json& bt) {
     return res;
 }
 
-void CompactNodeInPlace(json& node) {
-    if (!node.is_object()) return;
-    node.erase("prompt");
-    node.erase("instructions_text");
-    node.erase("instructionsText");
-    node.erase("guidance");
-
-    auto compactArray = [](json& arr) {
-        if (!arr.is_array()) return;
-        json filtered = json::array();
-        for (auto& item : arr) {
-            if (item.is_object()) {
-                std::string st = "idle";
-                if (item.contains("status") && item["status"].is_object()) {
-                    st = item["status"].value("state", "idle");
-                }
-                if (st == "idle") continue;
-                CompactNodeInPlace(item);
-            }
-            filtered.push_back(std::move(item));
-        }
-        arr = std::move(filtered);
-    };
-
-    if (node.contains("children")) compactArray(node["children"]);
-    for (const char* key : {"cond", "then", "else", "child", "until"}) {
-        if (node.contains(key) && node[key].is_object()) {
-            CompactNodeInPlace(node[key]);
-        }
-    }
-}
-
 void FindWaitingEscalationNodeKey(const json& node, const std::string& btId, std::string& outKey) {
     if (!outKey.empty() || !node.is_object()) return;
     if (node.value("type", "") == "escalate" &&
@@ -211,15 +179,17 @@ void FindWaitingEscalationNodeKey(const json& node, const std::string& btId, std
     }
 }
 
-json BuildTreeResponseJson(const BehaviorTree& tree, bool compact) {
+// How much of the tree a reply carries. Every reply is read by an LLM, so only bt_get
+// (without compact) pays for the whole state document.
+enum class TreeView {
+    Summary,        // id/state/version/nodeRuns, the compact text and any escalation; no "tree"
+    TrimmedVars,    // plus "tree", with long variable values cut to kBtVarPreviewBytes
+    Full,           // plus "tree", with every variable in full
+};
+
+json BuildTreeResponseJson(const BehaviorTree& tree, TreeView view) {
     json stateDoc = json::parse(tree.ToStateJson(), nullptr, false);
     if (stateDoc.is_discarded()) stateDoc = json::object();
-
-    std::string compactText = FormatCompactTreeText(stateDoc);
-
-    if (compact && stateDoc.contains("root")) {
-        CompactNodeInPlace(stateDoc["root"]);
-    }
 
     json out;
     out["ok"] = true;
@@ -229,8 +199,7 @@ json BuildTreeResponseJson(const BehaviorTree& tree, bool compact) {
     out["version"] = tree.Version();
     out["nodeRuns"] = tree.NodeRuns();
     out["taskqueue"] = tree.TaskQueueName();
-    out["compact"] = std::move(compactText);
-    out["tree"] = std::move(stateDoc);
+    out["compact"] = FormatCompactTreeText(stateDoc);
 
     if (tree.State() == "waitingForLlm") {
         std::string escNode;
@@ -241,8 +210,8 @@ json BuildTreeResponseJson(const BehaviorTree& tree, bool compact) {
                 break;
             }
         }
-        if (escNode.empty() && out["tree"].contains("root")) {
-            FindWaitingEscalationNodeKey(out["tree"]["root"], tree.Id(), escNode);
+        if (escNode.empty() && stateDoc.contains("root")) {
+            FindWaitingEscalationNodeKey(stateDoc["root"], tree.Id(), escNode);
         }
         if (!escNode.empty()) {
             std::string pktStr = tree.GetEscalationPacketJson(escNode);
@@ -251,6 +220,18 @@ json BuildTreeResponseJson(const BehaviorTree& tree, bool compact) {
                 out["escalation"] = std::move(pkt);
             }
         }
+    }
+
+    if (view != TreeView::Summary) {
+        if (view == TreeView::TrimmedVars) {
+            auto vars = stateDoc.find("vars");
+            if (vars != stateDoc.end() && vars->is_object()) {
+                for (auto& v : *vars) {
+                    if (v.is_string()) v = BtVarPreview(v.get<std::string>());
+                }
+            }
+        }
+        out["tree"] = std::move(stateDoc);
     }
     return out;
 }
@@ -304,7 +285,7 @@ std::string BtManager::Start(const std::string& jsonText) {
     activeLaunchingQueueName_.clear();
 
     PersistEntryLocked(*entryPtr);
-    return BuildTreeResponseJson(*entryPtr->tree, false).dump();
+    return BuildTreeResponseJson(*entryPtr->tree, TreeView::Summary).dump();
 }
 
 std::string BtManager::Get(const std::string& id, bool compact) {
@@ -313,7 +294,7 @@ std::string BtManager::Get(const std::string& id, bool compact) {
     if (it == trees_.end() || !it->second || !it->second->tree) {
         return MakeErrorJson("behavior tree not found: " + id);
     }
-    return BuildTreeResponseJson(*it->second->tree, compact).dump();
+    return BuildTreeResponseJson(*it->second->tree, compact ? TreeView::Summary : TreeView::Full).dump();
 }
 
 std::string BtManager::List() {
@@ -390,7 +371,7 @@ std::string BtManager::Wait(const std::string& id, uint64_t sinceVersion, int ti
         out["hint"] = "Still running; call bt_wait again with this version. Use bt_get for node details.";
         return out.dump();
     }
-    return BuildTreeResponseJson(tree, false).dump();
+    return BuildTreeResponseJson(tree, TreeView::TrimmedVars).dump();
 }
 
 std::string BtManager::Resume(const std::string& id,
@@ -426,7 +407,7 @@ std::string BtManager::Resume(const std::string& id,
     }
 
     PersistEntryLocked(entry);
-    return BuildTreeResponseJson(*entry.tree, false).dump();
+    return BuildTreeResponseJson(*entry.tree, TreeView::Summary).dump();
 }
 
 std::string BtManager::Retry(const std::string& id,
@@ -448,7 +429,7 @@ std::string BtManager::Retry(const std::string& id,
     }
 
     PersistEntryLocked(entry);
-    return BuildTreeResponseJson(*entry.tree, false).dump();
+    return BuildTreeResponseJson(*entry.tree, TreeView::Summary).dump();
 }
 
 std::string BtManager::Update(const std::string& id,
@@ -467,7 +448,7 @@ std::string BtManager::Update(const std::string& id,
     }
 
     PersistEntryLocked(entry);
-    return BuildTreeResponseJson(*entry.tree, false).dump();
+    return BuildTreeResponseJson(*entry.tree, TreeView::Summary).dump();
 }
 
 std::string BtManager::Update(const std::string& id,
@@ -485,7 +466,7 @@ std::string BtManager::Cancel(const std::string& id) {
     TreeEntry& entry = *it->second;
     entry.tree->Cancel(NowEpochMs());
     PersistEntryLocked(entry);
-    return BuildTreeResponseJson(*entry.tree, false).dump();
+    return BuildTreeResponseJson(*entry.tree, TreeView::Summary).dump();
 }
 
 std::string BtManager::Pause(const std::string& id, bool paused) {
@@ -508,7 +489,7 @@ std::string BtManager::Pause(const std::string& id, bool paused) {
     tqm_.TaskQueuePause(entry.tree->TaskQueueName(), paused, tqErr);
 
     PersistEntryLocked(entry);
-    return BuildTreeResponseJson(*entry.tree, false).dump();
+    return BuildTreeResponseJson(*entry.tree, TreeView::Summary).dump();
 }
 
 } // namespace pc
