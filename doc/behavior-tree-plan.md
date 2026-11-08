@@ -1,5 +1,9 @@
 # ProcessCommander ビヘイビアツリー (BT) 設計案
 
+> **関連資料:**
+> - [ビヘイビアツリーガイド (日本語版)](behavior-tree-ja.md) / [English Guide](behavior-tree.md): 利用者・LLM 向け総合ガイド
+> - [トークン消費削減ガイド](behavior-tree-token-optimization-ja.md): BT によるトークン削減設計とベストプラクティス
+
 ## 1. 目的
 
 タスクキューは「順序・依存・再実行」を PC に移した。しかし **分岐の判断** はまだ LLM 側に残っている:

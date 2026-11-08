@@ -2,6 +2,11 @@
 
 ProcessCommander Behavior Trees (BTs) let an LLM agent declare a complete multi-step workflow—including conditional branching, bounded retry/fix loops, LLM worker invocations, file/JSON/log assertions, and human/supervisor escalation gates—in a single JSON definition. ProcessCommander ticks the tree automatically on job completion and timers without consuming LLM tokens between steps.
 
+> **Related Documents:**
+> - [Token Optimization Guide](behavior-tree-token-optimization.md): How BTs eliminate token overhead, `compact: true`, and payload tuning
+> - [Architecture & Design Plan](behavior-tree-plan.md): Architectural design, execution model, and safety limits
+> - [日本語ガイド (Japanese Guide)](behavior-tree-ja.md)
+
 ---
 
 ## 1. When to Use a Behavior Tree vs. `taskqueue_add`

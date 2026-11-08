@@ -82,7 +82,13 @@ When the next step depends on the result of the previous one (build → fix → 
 | Restarts | The LLM must remember where it was | The tree's state is saved after every change and resumes after a ProcessCommander restart |
 | Worker engines | Command lines written by hand per CLI | `worker` steps name an engine (`claude`, `agy`, `opencode`, `codex` or your own in `engines.json`); one tree can mix engines |
 
-What stays the same: each step is still a normal task-queue job with its own timeout, success check, resource locks and logs, and it appears in the task list like any other job. The **BT** toolbar button (Ctrl+Shift+B) opens a view of each tree, showing which node started which task and how far each tree has run. LLMs learn the format from `pcder help --json` and [doc/behavior-tree.md](doc/behavior-tree.md).
+What stays the same: each step is still a normal task-queue job with its own timeout, success check, resource locks and logs, and it appears in the task list like any other job. The **BT** toolbar button (Ctrl+Shift+B) opens a view of each tree, showing which node started which task and how far each tree has run. LLMs learn the format from `pcder help --json` and the documentation linked below.
+
+### Behavior Tree Documentation
+
+- **[Behavior Trees Guide](doc/behavior-tree.md)** ([日本語版](doc/behavior-tree-ja.md)): Comprehensive guide covering JSON definition format, node types, variables, worker engines, escalate decision packets, and complete examples.
+- **[Token Optimization Guide](doc/behavior-tree-token-optimization.md)** ([日本語版](doc/behavior-tree-token-optimization-ja.md)): Token-saving principles, `compact: true` in `bt_wait`, escalation line/byte limits, preview truncation, and authoring best practices.
+- **[Architecture & Design Plan](doc/behavior-tree-plan.md)**: Original design specification, execution model, safety limits, and integration with the task queue and dashboard.
 
 ## Documentation
 
@@ -93,6 +99,8 @@ What stays the same: each step is still a normal task-queue job with its own tim
 | [Console CLI](doc/cli.md) | `pcder.exe` usage, JSON output, stdin modes, completion, `help --json` keys |
 | [Task Queue](doc/taskqueue.md) | Ordered jobs, dependencies, job fields, states, ChainGuard |
 | [Behavior Trees](doc/behavior-tree.md) | BT format, node types, variables, worker engines, escalate, examples |
+| [BT Token Optimization](doc/behavior-tree-token-optimization.md) | Token-saving architecture, `compact: true`, lightweight escalation packets |
+| [BT Design Plan](doc/behavior-tree-plan.md) | Architecture and implementation plan for the BT engine |
 | [MCP Server](doc/mcp.md) | MCP registration and the MCP tools |
 | [Data Directory](doc/data-directory.md) | Project-local, git-managed `--data-dir` |
 | [Pros/Cons](doc/pros-cons-comparison.md) | When to use ProcessCommander vs. sub-agents and alternatives |

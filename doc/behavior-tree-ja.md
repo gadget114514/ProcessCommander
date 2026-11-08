@@ -2,6 +2,11 @@
 
 ProcessCommander のビヘイビアツリー (BT) は、条件分岐 (`if`/`fallback`)、回数制限つきの修正ループ (`retry`/`repeat`)、LLM ワーカー呼び出し (`worker`)、ファイル・JSON・ログ判定、判断エスカレーション (`escalate`) を含む複数段の作業を 1 つの JSON 定義として登録し、ステップ間のトークン消費なしに ProcessCommander 側で自動進行させる仕組みです。
 
+> **関連資料:**
+> - [トークン消費削減ガイド](behavior-tree-token-optimization-ja.md): BT によるトークン削減原理と `compact: true` 等のベストプラクティス
+> - [設計・実装計画書](behavior-tree-plan.md): 内部アーキテクチャ・設計思想・統合計画
+> - [English Guide](behavior-tree.md)
+
 ---
 
 ## 1. `bt_*` と `taskqueue_add` の使い分け

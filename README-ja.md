@@ -82,7 +82,13 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 | 再起動 | LLM がどこまで進んだかを覚えておく必要がある | ツリーの状態は変化のたびに保存され、ProcessCommander を再起動しても続きから進む |
 | ワーカーのエンジン | CLI ごとにコマンドラインを手で書く | `worker` の手順はエンジン名（`claude`, `agy`, `opencode`, `codex`、または `engines.json` の独自定義）で指定。1 つのツリーで混在できる |
 
-変わらない点: 各手順は今まで通りタスクキューのジョブで、タイムアウト、成功条件、リソースロック、ログを持ち、タスク一覧にも普通のジョブとして並びます。ツールバーの **BT** ボタン（Ctrl+Shift+B）で、どのノードがどのタスクを起動したか、各ツリーがどこまで進んだかを表示できます。LLM は `pcder help --json` と [doc/behavior-tree-ja.md](doc/behavior-tree-ja.md) から書き方を知ります。
+変わらない点: 各手順は今まで通りタスクキューのジョブで、タイムアウト、成功条件、リソースロック、ログを持ち、タスク一覧にも普通のジョブとして並びます。ツールバーの **BT** ボタン（Ctrl+Shift+B）で、どのノードがどのタスクを起動したか、各ツリーがどこまで進んだかを表示できます。LLM は `pcder help --json` と下記のビヘイビアツリー関連資料から書き方を知ります。
+
+### ビヘイビアツリー関連資料
+
+- **[ビヘイビアツリーガイド](doc/behavior-tree-ja.md)** ([English](doc/behavior-tree.md)): JSON 定義形式、全ノード種類、変数展開、ワーカーエンジン、`escalate` 判断パケット、完全なサンプル 3 例を含む総合ガイド。
+- **[トークン消費削減ガイド](doc/behavior-tree-token-optimization-ja.md)** ([English](doc/behavior-tree-token-optimization.md)): 中間ステップのトークン消費ゼロ化、`compact: true` による応答軽量化、`escalate` の行数・サイズ制限など、トークン効率を最大化する設計とベストプラクティス。
+- **[設計・実装計画書](doc/behavior-tree-plan.md)**: ビヘイビアツリーの設計思想、状態マシンとタスクキューの統合、GUI 連携計画をまとめた設計書。
 
 ---
 
@@ -95,6 +101,8 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 | [CLI](doc/cli-ja.md) | `pcder.exe` の使い方、stdin モード、完了通知 |
 | [タスクキュー](doc/taskqueue-ja.md) | 順序・依存・ジョブのフィールド・状態・ChainGuard |
 | [ビヘイビアツリー](doc/behavior-tree-ja.md) | BT の形式、ノードの種類、変数、ワーカーのエンジン、escalate、例 |
+| [BT トークン削減ガイド](doc/behavior-tree-token-optimization-ja.md) | トークン削減アーキテクチャ、`compact: true`、軽量化パケット |
+| [BT 設計計画書](doc/behavior-tree-plan.md) | ビヘイビアツリーエンジンのアーキテクチャと実装計画 |
 | [MCP サーバー](doc/mcp-ja.md) | MCP 登録と MCP ツール |
 | [データディレクトリ](doc/data-directory-ja.md) | プロジェクト内・git 管理の `--data-dir` |
 | [Pros/Cons](doc/pros-cons-comparison-ja.md) | サブエージェント等との使い分け |
