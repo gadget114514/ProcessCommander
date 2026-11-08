@@ -1,4 +1,6 @@
 #include "common.h"
+#include <tlhelp32.h>
+#include <iterator>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -727,6 +729,64 @@ size_t ResetProjectDataWide(std::string& outError) {
         ++removed;
     }
     return removed;
+}
+
+static std::string GetEnvUtf8(const wchar_t* name) {
+    wchar_t buf[1024] = {};
+    DWORD len = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+    if (len == 0 || len >= std::size(buf)) return "";
+    return WideToUtf8(std::wstring(buf, len));
+}
+
+static DWORD GetParentProcessIdOfSelf() {
+    DWORD self = GetCurrentProcessId();
+    DWORD parent = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (pe.th32ProcessID == self) { parent = pe.th32ParentProcessID; break; }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return parent;
+}
+
+static std::string CallerSessionId() {
+    std::string s = GetEnvUtf8(L"PC_ORIGIN_SESSION");
+    if (s.empty()) s = GetEnvUtf8(L"CLAUDE_CODE_SESSION_ID");
+    return s;
+}
+
+static int64_t CallerPid() {
+    std::string s = GetEnvUtf8(L"CLAUDE_PID");
+    if (!s.empty()) {
+        try { return std::stoll(s); } catch (...) {}
+    }
+    return static_cast<int64_t>(GetParentProcessIdOfSelf());
+}
+
+std::string BuildCallerOriginJson(const std::string& client, const std::string& label) {
+    std::string lbl = label.empty() ? GetEnvUtf8(L"PC_ORIGIN_LABEL") : label;
+    wchar_t cwdBuf[MAX_PATH * 2] = {};
+    DWORD cwdLen = GetCurrentDirectoryW(static_cast<DWORD>(std::size(cwdBuf)), cwdBuf);
+    std::string cwd = (cwdLen > 0 && cwdLen < std::size(cwdBuf)) ? WideToUtf8(std::wstring(cwdBuf, cwdLen)) : "";
+    std::ostringstream oss;
+    oss << "{\"label\":\"" << JsonEscape(lbl) << "\""
+        << ",\"client\":\"" << JsonEscape(client) << "\""
+        << ",\"session\":\"" << JsonEscape(CallerSessionId()) << "\""
+        << ",\"host_session\":\"" << JsonEscape(GetEnvUtf8(L"CLAUDE_CODE_HOST_SESSION_ID")) << "\""
+        << ",\"cwd\":\"" << JsonEscape(cwd) << "\""
+        << ",\"pid\":" << CallerPid() << "}";
+    return oss.str();
+}
+
+std::string CallerSelfOriginFilter() {
+    std::string s = CallerSessionId();
+    if (!s.empty()) return s;
+    return "pid:" + std::to_string(CallerPid());
 }
 
 } // namespace pc

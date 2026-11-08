@@ -588,6 +588,9 @@ static TaskQueueJob ParseJob(const std::string& j) {
             job.bt.run = static_cast<int>(JsonFieldInt(btObj, "run", 0));
         }
     }
+    if (HasJsonKey(j, "origin")) {
+        job.origin = TaskQueueManager::ParseOriginJson(JsonFieldObj(j, "origin", ""));
+    }
     return job;
 }
 
@@ -952,8 +955,62 @@ std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeIns
             << "\",\"node\":\"" << JsonEscape(job.bt.node)
             << "\",\"run\":" << job.bt.run << "}";
     }
+    if (!job.origin.empty()) oss << ",\"origin\":" << OriginToJson(job.origin);
     oss << "}";
     return oss.str();
+}
+
+TaskQueueOrigin TaskQueueManager::ParseOriginJson(const std::string& json) {
+    TaskQueueOrigin o;
+    std::string j = TrimJsonStr(json);
+    if (j.empty() || j.front() != '{') return o;
+    o.label = JsonFieldStr(j, "label", "");
+    o.client = JsonFieldStr(j, "client", "");
+    o.session = JsonFieldStr(j, "session", "");
+    o.hostSession = JsonFieldStr(j, "host_session", "");
+    if (o.hostSession.empty()) o.hostSession = JsonFieldStr(j, "hostSession", "");
+    o.cwd = JsonFieldStr(j, "cwd", "");
+    o.pid = JsonFieldInt(j, "pid", 0);
+    return o;
+}
+
+std::string TaskQueueManager::OriginToJson(const TaskQueueOrigin& o) {
+    std::ostringstream oss;
+    oss << "{\"label\":\"" << JsonEscape(o.label) << "\""
+        << ",\"client\":\"" << JsonEscape(o.client) << "\""
+        << ",\"session\":\"" << JsonEscape(o.session) << "\""
+        << ",\"host_session\":\"" << JsonEscape(o.hostSession) << "\""
+        << ",\"cwd\":\"" << JsonEscape(o.cwd) << "\""
+        << ",\"pid\":" << o.pid << "}";
+    return oss.str();
+}
+
+bool TaskQueueManager::OriginMatches(const TaskQueueOrigin& o, const std::string& filter) {
+    if (filter.empty()) return true;
+    if (filter.rfind("pid:", 0) == 0) {
+        try {
+            return o.pid != 0 && o.pid == std::stoll(filter.substr(4));
+        } catch (...) {
+            return false;
+        }
+    }
+    auto prefixOf = [&](const std::string& value) {
+        return !value.empty() && value.size() >= filter.size() && value.compare(0, filter.size(), filter) == 0;
+    };
+    if (prefixOf(o.session) || prefixOf(o.hostSession)) return true;
+    if (o.label.size() != filter.size()) return false;
+    for (size_t i = 0; i < filter.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(o.label[i])) != std::tolower(static_cast<unsigned char>(filter[i]))) return false;
+    }
+    return true;
+}
+
+void TaskQueueManager::SetBtOrigin(const std::string& btId, const std::string& originJson) {
+    if (btId.empty()) return;
+    TaskQueueOrigin o = ParseOriginJson(originJson);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (o.empty()) btOrigins_.erase(btId);
+    else btOrigins_[btId] = o;
 }
 
 TaskQueueJob* TaskQueueManager::FindJob(const std::string& id, TaskQueue** outQueue) {
@@ -1523,8 +1580,10 @@ static std::wstring ResolveJobPathWide(const TaskQueueJob& job, const std::strin
 }
 
 std::string TaskQueueManager::TaskQueueAdd(const std::string& taskqueue, const std::string& jobsJson,
-                                           int64_t concurrency, const std::string& notifyFile, std::string& outError) {
+                                           int64_t concurrency, const std::string& notifyFile, std::string& outError,
+                                           const std::string& originJson) {
     outError.clear();
+    const TaskQueueOrigin origin = ParseOriginJson(originJson);
     if (taskqueue.empty()) {
         outError = "taskqueue is required";
         return BuildError(outError);
@@ -1554,6 +1613,7 @@ std::string TaskQueueManager::TaskQueueAdd(const std::string& taskqueue, const s
             outError = err;
             return BuildError(outError);
         }
+        job.origin = origin;
         if (FindJob(job.id, nullptr) != nullptr) {
             outError = "duplicate job id '" + job.id + "'";
             return BuildError(outError);
@@ -1643,6 +1703,8 @@ std::string TaskQueueManager::AddBtJob(const std::string& taskqueue, const std::
         return BuildError(outError);
     }
     job.bt = ref;
+    auto btOrigin = btOrigins_.find(ref.id);
+    if (btOrigin != btOrigins_.end()) job.origin = btOrigin->second;
     if (FindJob(job.id, nullptr) != nullptr) {
         outError = "duplicate job id '" + job.id + "'";
         return BuildError(outError);
@@ -1659,7 +1721,8 @@ std::string TaskQueueManager::AddBtJob(const std::string& taskqueue, const std::
            "\",\"added\":[\"" + JsonEscape(job.id) + "\"]}";
 }
 
-std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError) {
+std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError,
+                                            const std::string& origin) {
     outError.clear();
     std::lock_guard<std::mutex> lock(mutex_);
     struct ListedJob { std::string queue; TaskQueueJob job; };
@@ -1669,6 +1732,7 @@ std::string TaskQueueManager::TaskQueueList(const std::string& taskqueue, const 
         if (!taskqueue.empty() && name != taskqueue) continue;
         for (const auto& job : tq.jobs) {
             if (!state.empty() && job.state != state) continue;
+            if (!origin.empty() && !OriginMatches(job.origin, origin)) continue;
             if (sinceSec > 0) {
                 const int64_t ts = ParseTimestampStrToEpoch(job.updatedAt);
                 if (ts <= 0 || ts < cutoff) continue;

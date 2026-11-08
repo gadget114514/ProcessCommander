@@ -9,10 +9,10 @@
 ### 対象ユーザー
 
 - **LLM コーディングエージェント（Claude Code、opencode、Codex など）を使う Windows 開発者**で、監督役の LLM から別の CLI エージェントをワーカープロセスとして動かし、作業を任せたい人。
-- **長時間・並列・対話型のジョブ**（ビルド、テスト、開発サーバー、TUI エージェント）を扱う人。チャット内のサブエージェントでは重すぎる、遅すぎる、トークンがかかりすぎる作業向けです。
+- **長時間・並列・対話型のジョブ**（ビルド、テスト、開発サーバー、TUI エージェント）を扱う人。チャットのセッションより長く動かしたい作業、依存関係やリトライのある決まった計画で進めたい作業、Claude 以外のワーカーが混ざる作業向けです。
 - **多数のエージェント端末を 1 つのダッシュボードで見ながら操作したい人**。タイムアウト、リトライ、依存関係を設定でき、ログは再起動後も残ります。
 
-**向いていないケース**: 短い推論やコード修正だけで、LLM のサブエージェントで足りている場合。詳しくは [Pros/Cons 比較（英語）](doc/pros-cons-comparison.md) を参照してください。
+**向いていないケース**: 短い推論やコード修正だけで、LLM のサブエージェントで足りている場合。トークンコストはどちらを使ってもほぼ同じです。ProcessCommander で何が得られるか（耐久性、決定的な制御、可視性）は [サブエージェント vs. ProcessCommander](doc/pros-cons-comparison-ja.md#トークンコストが決め手でなくなった今) を、全体は [Pros/Cons 比較](doc/pros-cons-comparison-ja.md) を参照してください。
 
 ![ProcessCommander Dashboard](doc/images/dashboard.jpg)
 
@@ -97,7 +97,7 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 | [ビヘイビアツリー](doc/behavior-tree-ja.md) | BT の形式、ノードの種類、変数、ワーカーのエンジン、escalate、例 |
 | [MCP サーバー](doc/mcp-ja.md) | MCP 登録と MCP ツール |
 | [データディレクトリ](doc/data-directory-ja.md) | プロジェクト内・git 管理の `--data-dir` |
-| [Pros/Cons（英語）](doc/pros-cons-comparison.md) | サブエージェント等との使い分け |
+| [Pros/Cons](doc/pros-cons-comparison-ja.md) | サブエージェント等との使い分け |
 | [tools/ww](tools/ww/README-ww.md) | 任意・独立のタスクカード実行テンプレート（ProcessCommander の一部ではない） |
 
 ---

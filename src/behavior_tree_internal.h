@@ -27,6 +27,8 @@ struct BtEscalateInclude {
     std::vector<std::string> logs;
     std::vector<std::string> vars;
     std::vector<std::string> files;
+    int logLines = 100;
+    size_t fileMaxBytes = 16384;
 };
 
 struct BtEscalateFallback {

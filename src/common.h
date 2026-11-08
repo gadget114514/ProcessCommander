@@ -104,4 +104,11 @@ bool IsProcessCommanderRunningForDataDirWide();
 // Returns the number of top-level entries removed; outError is set if any removal failed.
 size_t ResetProjectDataWide(std::string& outError);
 
+// Who is calling pcder, for task queue job origins: a JSON object with label, client,
+// session (PC_ORIGIN_SESSION or CLAUDE_CODE_SESSION_ID), host_session
+// (CLAUDE_CODE_HOST_SESSION_ID), cwd and pid (CLAUDE_PID, else the parent process).
+std::string BuildCallerOriginJson(const std::string& client, const std::string& label);
+// The filter that means "jobs this caller added": its session id, or "pid:<n>" without one.
+std::string CallerSelfOriginFilter();
+
 } // namespace pc

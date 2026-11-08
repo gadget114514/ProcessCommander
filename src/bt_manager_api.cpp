@@ -179,11 +179,33 @@ void FindWaitingEscalationNodeKey(const json& node, const std::string& btId, std
     }
 }
 
+void TrimNodeDefinition(json& n) {
+    if (!n.is_object()) return;
+    for (const char* k : {"prompt", "instructionsText"}) {
+        auto it = n.find(k);
+        if (it != n.end() && it->is_string()) {
+            *it = BtVarPreview(it->get<std::string>());
+        }
+    }
+    for (const char* slot : {"cond", "then", "else", "child", "until"}) {
+        auto it = n.find(slot);
+        if (it != n.end() && it->is_object()) {
+            TrimNodeDefinition(*it);
+        }
+    }
+    auto kids = n.find("children");
+    if (kids != n.end() && kids->is_array()) {
+        for (auto& c : *kids) {
+            TrimNodeDefinition(c);
+        }
+    }
+}
+
 // How much of the tree a reply carries. Every reply is read by an LLM, so only bt_get
 // (without compact) pays for the whole state document.
 enum class TreeView {
     Summary,        // id/state/version/nodeRuns, the compact text and any escalation; no "tree"
-    TrimmedVars,    // plus "tree", with long variable values cut to kBtVarPreviewBytes
+    TrimmedVars,    // plus "tree", with long variable values and prompts cut to kBtVarPreviewBytes
     Full,           // plus "tree", with every variable in full
 };
 
@@ -229,6 +251,10 @@ json BuildTreeResponseJson(const BehaviorTree& tree, TreeView view) {
                 for (auto& v : *vars) {
                     if (v.is_string()) v = BtVarPreview(v.get<std::string>());
                 }
+            }
+            auto rootIt = stateDoc.find("root");
+            if (rootIt != stateDoc.end() && rootIt->is_object()) {
+                TrimNodeDefinition(*rootIt);
             }
         }
         out["tree"] = std::move(stateDoc);
@@ -323,7 +349,7 @@ std::string BtManager::List() {
     return out.dump();
 }
 
-std::string BtManager::Wait(const std::string& id, uint64_t sinceVersion, int timeoutMs) {
+std::string BtManager::Wait(const std::string& id, uint64_t sinceVersion, int timeoutMs, bool compact) {
     uint64_t startTick = GetNowTickMs();
     bool timedOut = false;
     std::unique_lock<std::mutex> lock(mutex_);
@@ -371,7 +397,7 @@ std::string BtManager::Wait(const std::string& id, uint64_t sinceVersion, int ti
         out["hint"] = "Still running; call bt_wait again with this version. Use bt_get for node details.";
         return out.dump();
     }
-    return BuildTreeResponseJson(tree, TreeView::TrimmedVars).dump();
+    return BuildTreeResponseJson(tree, compact ? TreeView::Summary : TreeView::TrimmedVars).dump();
 }
 
 std::string BtManager::Resume(const std::string& id,

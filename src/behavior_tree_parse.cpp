@@ -294,6 +294,16 @@ std::unique_ptr<BtNode> ParseNode(const json& j, const std::string& path, const 
             if (inc.contains("files") && inc["files"].is_array()) {
                 for (const auto& x : inc["files"]) if (x.is_string()) node->include.files.push_back(x.get<std::string>());
             }
+            if (inc.contains("logLines") && inc["logLines"].is_number_integer()) {
+                node->include.logLines = std::max(1, inc["logLines"].get<int>());
+            } else if (inc.contains("lines") && inc["lines"].is_number_integer()) {
+                node->include.logLines = std::max(1, inc["lines"].get<int>());
+            }
+            if (inc.contains("fileMaxBytes") && inc["fileMaxBytes"].is_number_integer()) {
+                node->include.fileMaxBytes = static_cast<size_t>(std::max(0, inc["fileMaxBytes"].get<int>()));
+            } else if (inc.contains("maxBytes") && inc["maxBytes"].is_number_integer()) {
+                node->include.fileMaxBytes = static_cast<size_t>(std::max(0, inc["maxBytes"].get<int>()));
+            }
         }
         if (j.contains("timeoutSec")) ReqPosInt(j, "timeoutSec", path, t, node->escalateTimeoutSec, ctx);
         if (j.contains("fallback")) {

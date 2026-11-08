@@ -114,6 +114,20 @@ struct TaskQueueBtRef {
     int run = 0;
 };
 
+// Who added a job, so jobs from several agent sessions can be told apart.
+// Filled by pcder (MCP server or CLI) from its environment and the MCP clientInfo.
+struct TaskQueueOrigin {
+    std::string label;        // free text from the caller (taskqueue_add originLabel)
+    std::string client;       // MCP clientInfo "name version", "pcder-cli" or "gui"
+    std::string session;      // agent session id (e.g. CLAUDE_CODE_SESSION_ID)
+    std::string hostSession;  // host app session id (e.g. CLAUDE_CODE_HOST_SESSION_ID)
+    std::string cwd;          // working folder of the caller
+    int64_t pid = 0;          // agent process that started pcder
+    bool empty() const {
+        return label.empty() && client.empty() && session.empty() && hostSession.empty() && cwd.empty() && pid == 0;
+    }
+};
+
 enum TaskQueueCaller {
     Gui = 0,
     External = 1,
@@ -147,6 +161,7 @@ struct TaskQueueJob {
     std::string notes;
     int64_t retryAtMs = 0;
     TaskQueueBtRef bt;
+    TaskQueueOrigin origin;
 };
 
 struct TaskQueue {
@@ -183,11 +198,22 @@ public:
 
     // Task queue operations. Each returns a complete JSON response string
     // ({"ok":true,...} or {"ok":false,"error":"..."}).
-    std::string TaskQueueAdd(const std::string& taskqueue, const std::string& jobsJson, int64_t concurrency, const std::string& notifyFile, std::string& outError);
+    // originJson: optional {"label","client","session","hostSession","cwd","pid"} recorded on every added job.
+    std::string TaskQueueAdd(const std::string& taskqueue, const std::string& jobsJson, int64_t concurrency, const std::string& notifyFile, std::string& outError,
+                             const std::string& originJson = "");
     // Internal entry point used only by the BT layer to add a BT-managed job.
+    // The job inherits the origin recorded for its tree with SetBtOrigin.
     std::string AddBtJob(const std::string& taskqueue, const std::string& jobJson, const TaskQueueBtRef& ref, std::string& outError);
+    // Remember who started a behavior tree, so the jobs it adds carry the same origin.
+    void SetBtOrigin(const std::string& btId, const std::string& originJson);
     // sinceSec > 0 keeps only jobs whose updatedAt is within the last sinceSec seconds.
-    std::string TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError);
+    // origin (optional) keeps only jobs whose origin label, session or host session matches
+    // (session ids also match by prefix); "pid:<n>" matches the origin process id.
+    std::string TaskQueueList(const std::string& taskqueue, const std::string& state, int64_t sinceSec, std::string& outError,
+                              const std::string& origin = "");
+    static TaskQueueOrigin ParseOriginJson(const std::string& json);
+    static std::string OriginToJson(const TaskQueueOrigin& origin);
+    static bool OriginMatches(const TaskQueueOrigin& origin, const std::string& filter);
     std::string TaskQueueGet(const std::string& id, bool includeInstructions, int rev, std::string& outError);
     bool GetJobSnapshot(const std::string& id, TaskQueueJob& outJob) const;
     std::string TaskQueueRetry(const std::string& id, bool resetAttempts, bool refreshInstructions, std::string& outError);
@@ -297,6 +323,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::map<std::string, TaskQueue> queues_;
+    std::map<std::string, TaskQueueOrigin> btOrigins_; // behavior tree id -> who started it
     std::map<std::string, std::string> lastNotice_; // taskqueue -> last emitted notice type
     int nextJobNum_ = 1;
     std::atomic<bool> schedulerRunning_{false};

@@ -13,13 +13,13 @@ ProcessCommander のビヘイビアツリー (BT) は、条件分岐 (`if`/`fall
 
 **呼び出し元 LLM の基本フロー:**
 1. `bt_validate` / `bt_start` (または CLI `pcder bt start --file <path>`) で BT を登録・開始する。
-2. `bt_wait` (`id`, `sinceVersion`, `timeoutMs`) で終端状態 (`succeeded`, `failed`, `cancelled`) または `waitingForLlm` になるまでロングポールする。`bt_wait` は終了や `escalate` ではすぐ返るので、`timeoutMs` を長くしても判断が遅れることはない。先に `timeoutMs` が過ぎた場合、応答はツリーを含まない `{state, version, nodeRuns, timedOut: true}` だけになる。`bt_wait` を呼び直し、ノードの詳細が必要なときは `bt_get` を使う。既定は MCP ツールで `600000` (10 分)、`pcder bt wait` で `60000`。負の値なら無制限に待つ。MCP クライアントが呼び出しを取り消した場合 (`notifications/cancelled`。クライアント自身のツールタイムアウトなど)、待ちは約 2 秒以内に止まり応答は返さない。そのためクライアントが先に諦めても、長い `timeoutMs` で問題ない。
+2. `bt_wait` (`id`, `sinceVersion`, `timeoutMs`, `compact`) で終端状態 (`succeeded`, `failed`, `cancelled`) または `waitingForLlm` になるまでロングポールする。`bt_wait` は終了や `escalate` ではすぐ返るので、`timeoutMs` を長くしても判断が遅れることはない。先に `timeoutMs` が過ぎた場合、応答はツリーを含まない `{state, version, nodeRuns, timedOut: true}` だけになる。トークン消費を抑えるため、終了時にツリー全体の JSON が不要な場合は `compact: true` を指定すると `tree` フィールドが省略され、1行サマリ `compact` のみ返る。既定は MCP ツールで `600000` (10 分)、`pcder bt wait` で `60000`。負の値なら無制限に待つ。MCP クライアントが呼び出しを取り消した場合 (`notifications/cancelled`。クライアント自身のツールタイムアウトなど)、待ちは約 2 秒以内に止まり応答は返さない。そのためクライアントが先に諦めても、長い `timeoutMs` で問題ない。
 3. `state == "waitingForLlm"` で返ったら、レスポンス内の `escalation` 判断パケットを読み、`bt_resume` に `id`, `node`, `answer`, 必須の `rationale` (および任意の `vars`) を渡して再開する。
 4. 失敗 (`failed`) 後に外部要因を直すか `bt_update` で非 `running` ノードの定義を修正した場合は、`bt_retry` で失敗ノードから再開する。
 
 **応答の大きさ。** 応答はすべて LLM が読むので、状態ドキュメント全体を返すのは `bt_get` (`compact` なし) だけです。
-- `bt_start`、`bt_resume`、`bt_retry`、`bt_update`、`bt_cancel`、`bt_pause`、`compact: true` の `bt_get` は `{ok, id, state, detail, version, nodeRuns, taskqueue, compact}` を返し、`waitingForLlm` のときは `escalation` も付く。`tree` は含まない。
-- `bt_wait` (終了や `escalate` で返ったとき) はこれに `tree` を加える。ただし 200 バイトを超える変数の値は、先頭部分と `...[truncated, N bytes]` に切り詰める。
+- `bt_start`、`bt_resume`、`bt_retry`、`bt_update`、`bt_cancel`、`bt_pause`、`compact: true` の `bt_get`、`compact: true` の `bt_wait` は `{ok, id, state, detail, version, nodeRuns, taskqueue, compact}` を返し、`waitingForLlm` のときは `escalation` も付く。`tree` は含まない。
+- `bt_wait` (`compact: false`、終了や `escalate` で返ったとき) はこれに `tree` を加える。ただし 200 バイトを超える変数の値やノードの `prompt` / `instructionsText` は、先頭部分と `...[truncated, N bytes]` に切り詰められる。
 - `bt_get` は変数をすべて省略せずに `tree` を返す。
 
 ---
@@ -100,7 +100,7 @@ ProcessCommander のビヘイビアツリー (BT) は、条件分岐 (`if`/`fall
 | `worker` | `"summary"`, `"timeoutSec"` (`> 0`), `"prompt"` または `"promptFile"` | 任意: `"engine"`, `"model"`, `"outputSchema"` (JSON Schema オブジェクトまたは文字列), `"cwd"`, `"env"`, `"idle"`, `"success"`, `"resources"`, `"maxAttempts"`, `"capture"`。エンジンレジストリ経由で LLM ワーカーを起動する。 |
 | `wait` | `"sec"` (`>= 0`) | `"sec"` 秒待ってから `succeeded` になる。 |
 | `set` | `"var"` (または `"name"`), `"value"` | `"value"` 内の `${...}` を展開して `vars[var]` に格納し、`varSet` イベントを出して即 `succeeded`。 |
-| `escalate` | `"question"` | 任意: `"guidance"`, `"expect"` (許可する回答文字列配列), `"include"` (`{logs:[nodeIds], vars:[varNames], files:[relPaths]}`), `"timeoutSec"` (既定 `86400`), `"fallback"` (`{afterSec, engine, model}`)。この枝を止め、ツリー状態を `waitingForLlm` にして判断パケットを保存し、`bt_resume` (または `fallback`) を待つ。 |
+| `escalate` | `"question"` | 任意: `"guidance"`, `"expect"` (許可する回答文字列配列), `"include"` (`{logs:[nodeIds], vars:[varNames], files:[relPaths], lines:100, maxBytes:16384}`), `"timeoutSec"` (既定 `86400`), `"fallback"` (`{afterSec, engine, model}`)。この枝を止め、ツリー状態を `waitingForLlm` にして判断パケットを保存し、`bt_resume` (または `fallback`) を待つ。 |
 | `fail` | *(なし)* | 任意 `"detail"` (または `"reason"`, 既定 `"fail node"`)。指定理由で即 `failed`。 |
 | `succeed` | *(なし)* | 即 `succeeded`。 |
 

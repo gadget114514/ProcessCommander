@@ -249,6 +249,8 @@ int RunMcpServer() {
     WriteAuditLog("MCP_SERVER", "MCP stdio server started (Log dir: " + GetLogsDirectoryUtf8() + ")");
 
     PendingBtWaits waits;
+    // "name version" from the client's initialize request; recorded as the origin of jobs it adds.
+    std::string mcpClient = "mcp";
     std::string line;
     while (std::getline(std::cin, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -266,6 +268,18 @@ int RunMcpServer() {
 
         if (method == "initialize") {
             WriteAuditLog("MCP_INIT", line);
+            {
+                auto initObj = nlohmann::json::parse(line, nullptr, false);
+                if (initObj.is_object() && initObj.contains("params") && initObj["params"].is_object()) {
+                    const auto& params = initObj["params"];
+                    if (params.contains("clientInfo") && params["clientInfo"].is_object()) {
+                        const auto& ci = params["clientInfo"];
+                        std::string name = ci.value("name", std::string());
+                        std::string ver = ci.value("version", std::string());
+                        if (!name.empty()) mcpClient = ver.empty() ? name : name + " " + ver;
+                    }
+                }
+            }
             std::ostringstream oss;
             oss << "{\"jsonrpc\":\"2.0\",\"id\":" << rpcId
                 << ",\"result\":{"
@@ -412,7 +426,8 @@ int RunMcpServer() {
                 << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Task queue name, e.g. 'main'\"},"
                 << "\"jobs\":{\"type\":\"array\",\"description\":\"Job objects: id, command, summary, timeoutSec (required); cwd, env, dependsOn (['id'] or [{id,on}]), idle {outputSec,cpuSec}, maxAttempts, retryDelaySec, success {exitCode,filesNewer,outputRegex}, killExclude, resources {write:[...],read:[...]} (paths/globs relative to cwd or @name locks; a bare file name such as Foo.cs means **/Foo.cs; jobs with overlapping write/write or write/read never run together, read/read may), defer {exitCodes,delaySec,limit} (default [75],60,60: an attempt exiting with one of exitCodes means nothing ran; the job is re-run after delaySec without using up maxAttempts; {exitCodes:[]} turns it off), priority, instructionsFile or instructionsText\",\"items\":{\"type\":\"object\"}},"
                 << "\"concurrency\":{\"type\":\"integer\",\"description\":\"Max jobs running at the same time for this queue (default 1)\"},"
-                << "\"notifyFile\":{\"type\":\"string\",\"description\":\"Optional file updated on jobFailed / taskqueueStalled / taskqueueDrained\"}"
+                << "\"notifyFile\":{\"type\":\"string\",\"description\":\"Optional file updated on jobFailed / taskqueueStalled / taskqueueDrained\"},"
+                << "\"originLabel\":{\"type\":\"string\",\"description\":\"Optional short name for the work these jobs belong to (e.g. 'release v2.9.2'), shown in the dashboard's Origin column. Your session id and working folder are recorded automatically.\"}"
                 << "},\"required\":[\"taskqueue\",\"jobs\"]}"
                 << "},"
                 << "{"
@@ -421,7 +436,8 @@ int RunMcpServer() {
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"taskqueue\":{\"type\":\"string\",\"description\":\"Optional task queue name (all queues when omitted)\"},"
                 << "\"state\":{\"type\":\"string\",\"description\":\"Optional state filter: pending, running, succeeded, failed, blocked, cancelled\"},"
-                << "\"since\":{\"type\":\"string\",\"description\":\"Optional time window: only jobs updated within this period, e.g. 30m, 6h, 2d\"}"
+                << "\"since\":{\"type\":\"string\",\"description\":\"Optional time window: only jobs updated within this period, e.g. 30m, 6h, 2d\"},"
+                << "\"origin\":{\"type\":\"string\",\"description\":\"Optional: 'self' for only the jobs your session added, or an origin label or session id (prefix)\"}"
                 << "}}"
                 << "},"
                 << "{"
@@ -533,7 +549,7 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"bt_validate\","
-                << "\"description\":\"Validate a behavior tree JSON definition (syntax, node types, limits, worker engines) without running it. See doc/behavior-tree.md.\","
+                << "\"description\":\"Validate a behavior tree JSON definition without running it.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"bt\":{\"type\":\"object\",\"description\":\"Behavior tree definition object\"},"
                 << "\"file\":{\"type\":\"string\",\"description\":\"Path to a behavior tree JSON file\"}"
@@ -541,15 +557,16 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"bt_start\","
-                << "\"description\":\"Register and start a behavior tree for multi-step work with branching, retries, worker calls or checks that would otherwise need the LLM to watch and add jobs by hand. After bt_start, call bt_wait to monitor completion or escalations and answer escalations with bt_resume. See doc/behavior-tree.md.\","
+                << "\"description\":\"Register and start a behavior tree for autonomous multi-step execution (branching, retries, workers). Monitor with bt_wait.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"bt\":{\"type\":\"object\",\"description\":\"Behavior tree definition object (id, summary, intent, cwd, vars, limits, worker, root)\"},"
-                << "\"file\":{\"type\":\"string\",\"description\":\"Path to a behavior tree JSON file\"}"
+                << "\"file\":{\"type\":\"string\",\"description\":\"Path to a behavior tree JSON file\"},"
+                << "\"originLabel\":{\"type\":\"string\",\"description\":\"Optional short name shown as the Origin of the jobs this tree adds\"}"
                 << "}}"
                 << "},"
                 << "{"
                 << "\"name\":\"bt_get\","
-                << "\"description\":\"Get a behavior tree's state, per-node status/runs/jobs, variables, and active escalation packet. Set compact=true for one-line-per-node summary. See doc/behavior-tree.md.\","
+                << "\"description\":\"Get behavior tree state and variables. Set compact=true for lightweight summary.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
                 << "\"compact\":{\"type\":\"boolean\",\"description\":\"Return compact tree and one-line-per-node text (default false)\"}"
@@ -557,21 +574,22 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"bt_list\","
-                << "\"description\":\"List registered behavior trees with state, version, nodeRuns and timestamps. See doc/behavior-tree.md.\","
+                << "\"description\":\"List registered behavior trees with state, version, and nodeRuns.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{}}"
                 << "},"
                 << "{"
                 << "\"name\":\"bt_wait\","
-                << "\"description\":\"Wait (long poll) until a behavior tree finishes or reaches waitingForLlm/paused, returning tree state and any escalation decision packet. It returns at once on those events, so a long timeoutMs never delays a decision. If timeoutMs passes first, it returns only {state, version, nodeRuns, timedOut: true}; call it again. If your client cancels the call (e.g. its tool timeout), the wait stops. See doc/behavior-tree.md.\","
+                << "\"description\":\"Wait (long poll) until a behavior tree finishes or reaches waitingForLlm/paused. Set compact=true to omit the heavy tree JSON and save tokens.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
                 << "\"sinceVersion\":{\"type\":\"integer\",\"description\":\"Version last seen by caller (default 0)\"},"
-                << "\"timeoutMs\":{\"type\":\"integer\",\"description\":\"Max wait in milliseconds (default 600000 = 10 min; negative = no limit)\"}"
+                << "\"timeoutMs\":{\"type\":\"integer\",\"description\":\"Max wait in milliseconds (default 600000 = 10 min; negative = no limit)\"},"
+                << "\"compact\":{\"type\":\"boolean\",\"description\":\"If true, omit the full tree JSON object to save tokens (returns status, compact summary, and any escalation packet; default false)\"}"
                 << "},\"required\":[\"id\"]}"
                 << "},"
                 << "{"
                 << "\"name\":\"bt_resume\","
-                << "\"description\":\"Answer an active escalate node (stored in ${<node>.answer}) and resume the behavior tree branch. Requires a concise rationale. See doc/behavior-tree.md.\","
+                << "\"description\":\"Answer an active escalate node (stored in ${<node>.answer}) and resume the tree branch. Requires answer and rationale.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
                 << "\"node\":{\"type\":\"string\",\"description\":\"Escalate node id or path\"},"
@@ -582,7 +600,7 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"bt_retry\","
-                << "\"description\":\"Retry a failed/cancelled behavior tree from the failed leaf or a specified node. See doc/behavior-tree.md.\","
+                << "\"description\":\"Retry a failed/cancelled behavior tree from the failed leaf or a specified node.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
                 << "\"from\":{\"type\":\"string\",\"description\":\"Optional node id/path to retry from\"},"
@@ -591,7 +609,7 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"bt_update\","
-                << "\"description\":\"Replace the definition of non-running nodes in a behavior tree while keeping the exact same tree shape, node types and IDs. See doc/behavior-tree.md.\","
+                << "\"description\":\"Replace the definition of non-running nodes in a behavior tree without changing tree structure.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
                 << "\"node\":{\"type\":\"string\",\"description\":\"Optional target node id or path\"},"
@@ -602,14 +620,14 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"bt_cancel\","
-                << "\"description\":\"Cancel a behavior tree and kill any running jobs it launched. See doc/behavior-tree.md.\","
+                << "\"description\":\"Cancel a behavior tree and kill any running jobs it launched.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"}"
                 << "},\"required\":[\"id\"]}"
                 << "},"
                 << "{"
                 << "\"name\":\"bt_pause\","
-                << "\"description\":\"Pause or unpause a behavior tree and its underlying task queue. See doc/behavior-tree.md.\","
+                << "\"description\":\"Pause or unpause a behavior tree and its underlying task queue.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
                 << "\"paused\":{\"type\":\"boolean\",\"description\":\"true to pause, false to resume (default true)\"}"
@@ -753,13 +771,17 @@ int RunMcpServer() {
                 ipcReq << "{\"action\":\"taskqueue_add\",\"taskqueue\":\"" << JsonEscape(tqName) << "\""
                        << ",\"jobs\":" << (jobsRaw.empty() ? "[]" : jobsRaw)
                        << ",\"concurrency\":" << JsonGetInt(argsJson, "concurrency", 0)
-                       << ",\"notify_file\":\"" << JsonEscape(notifyFile) << "\"}";
+                       << ",\"notify_file\":\"" << JsonEscape(notifyFile) << "\""
+                       << ",\"origin\":" << BuildCallerOriginJson(mcpClient, JsonGetString(argsJson, "originLabel", "")) << "}";
             }
             else if (toolName == "taskqueue_list") {
                 ipcReq << "{\"action\":\"taskqueue_list\""
                        << ",\"taskqueue\":\"" << JsonEscape(JsonGetString(argsJson, "taskqueue", "")) << "\""
                        << ",\"state\":\"" << JsonEscape(JsonGetString(argsJson, "state", "")) << "\""
-                       << ",\"since\":\"" << JsonEscape(JsonGetString(argsJson, "since", "")) << "\"}";
+                       << ",\"since\":\"" << JsonEscape(JsonGetString(argsJson, "since", "")) << "\"";
+                std::string originFilter = JsonGetString(argsJson, "origin", "");
+                if (originFilter == "self") originFilter = CallerSelfOriginFilter();
+                ipcReq << ",\"origin\":\"" << JsonEscape(originFilter) << "\"}";
             }
             else if (toolName == "taskqueue_get") {
                 bool includeInstr = JsonGetBool(argsJson, "includeInstructions",
@@ -837,6 +859,11 @@ int RunMcpServer() {
                     argsObj = nlohmann::json::object();
                 }
                 argsObj["action"] = toolName;
+                if (toolName == "bt_start") {
+                    std::string label = argsObj.value("originLabel", std::string());
+                    argsObj.erase("originLabel");
+                    argsObj["origin"] = nlohmann::json::parse(BuildCallerOriginJson(mcpClient, label), nullptr, false);
+                }
                 if (argsObj.contains("file") && argsObj["file"].is_string()) {
                     std::string fileArg = argsObj["file"].get<std::string>();
                     std::wstring absW = ResolveAbsolutePathWide(Utf8ToWide(fileArg));

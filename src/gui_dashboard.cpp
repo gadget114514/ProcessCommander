@@ -889,6 +889,7 @@ struct DashboardState {
     int lastTotalListHeight = 0;
     std::vector<std::string> taskJobIds;
     std::vector<std::string> taskJobStates;
+    std::vector<std::wstring> taskOriginTips;  // per task row: full origin details for the hover tip
     std::vector<int> taskJobProcIds;     // latest attempt's process per task row (0 = none)
     int lastFollowedProcId = -1;         // process the monitor pane last auto-followed
     // What the lists and KPI cards showed last time, so an idle refresh tick can skip redrawing them.
@@ -1980,15 +1981,18 @@ static void UpdateListHeaderSortIndicator(DashboardState* st) {
     }
 }
 
+// Task list columns: ID, Summary, State, Start, End, Running, Depends, Queue, Origin, Resources.
+static constexpr int kTaskListColumns = 10;
+
 static const wchar_t* TaskColumnTitle(int index) {
-    static const wchar_t* const ja[9] = {
-        L"ID", L"サマリ", L"状態", L"開始時刻", L"終了 / 残り時間", L"実行中", L"依存 / 理由", L"キュー", L"リソース"
+    static const wchar_t* const ja[kTaskListColumns] = {
+        L"ID", L"サマリ", L"状態", L"開始時刻", L"終了 / 残り時間", L"実行中", L"依存 / 理由", L"キュー", L"発行元", L"リソース"
     };
-    static const wchar_t* const en[9] = {
-        L"ID", L"Summary", L"State", L"Start", L"End / Left", L"Running", L"Depends / Reason", L"Queue", L"Resources"
+    static const wchar_t* const en[kTaskListColumns] = {
+        L"ID", L"Summary", L"State", L"Start", L"End / Left", L"Running", L"Depends / Reason", L"Queue", L"Origin", L"Resources"
     };
-    static const wchar_t* const es[9] = {
-        L"ID", L"Resumen", L"Estado", L"Inicio", L"Fin / Restante", L"En curso", L"Dependencias", L"Cola", L"Recursos"
+    static const wchar_t* const es[kTaskListColumns] = {
+        L"ID", L"Resumen", L"Estado", L"Inicio", L"Fin / Restante", L"En curso", L"Dependencias", L"Cola", L"Origen", L"Recursos"
     };
     if (g_uiLanguage == UiLanguage::Spanish) return es[index];
     if (g_uiLanguage == UiLanguage::English) return en[index];
@@ -1998,7 +2002,7 @@ static const wchar_t* TaskColumnTitle(int index) {
 static void UpdateTaskListHeaders(DashboardState* st) {
     if (!st || !st->hwndTaskList) return;
     HWND hHeader = ListView_GetHeader(st->hwndTaskList);
-    for (int i = 0; i < 9; ++i) {
+    for (int i = 0; i < kTaskListColumns; ++i) {
         LVCOLUMNW lvc = {};
         lvc.mask = LVCF_TEXT;
         lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
@@ -2342,6 +2346,62 @@ static std::wstring TaskQueueResourcesDisplay(const std::string& jobJson) {
     return out;
 }
 
+// Short "who added this job" text for the Origin column: the caller's label, else the
+// working folder name and the first 8 characters of the session id. outTip gets every detail.
+static std::wstring TaskQueueOriginDisplay(const std::string& jobJson, std::wstring& outTip) {
+    outTip.clear();
+    std::string btId;
+    size_t btPos = jobJson.find("\"bt\":{");
+    if (btPos != std::string::npos) btId = JsonGetString(jobJson.substr(btPos), "id", "");
+    size_t keyPos = jobJson.find("\"origin\":{");
+    if (keyPos == std::string::npos) {
+        if (btId.empty()) return L"";
+        outTip = L"BT: " + Utf8ToWide(btId);
+        return outTip;
+    }
+    // origin is the last field of a job object, so its keys are the first ones after it.
+    std::string o = jobJson.substr(keyPos);
+    std::string label = JsonGetString(o, "label", "");
+    std::string client = JsonGetString(o, "client", "");
+    std::string session = JsonGetString(o, "session", "");
+    std::string hostSession = JsonGetString(o, "host_session", "");
+    std::string cwd = JsonGetString(o, "cwd", "");
+    int64_t pid = JsonGetInt(o, "pid", 0);
+
+    std::string folder = cwd;
+    while (!folder.empty() && (folder.back() == '\\' || folder.back() == '/')) folder.pop_back();
+    size_t slash = folder.find_last_of("\\/");
+    if (slash != std::string::npos) folder = folder.substr(slash + 1);
+    std::string shortSession = session.substr(0, 8);
+
+    std::wstring text;
+    if (!label.empty()) {
+        text = Utf8ToWide(label);
+        if (!folder.empty()) text += L" (" + Utf8ToWide(folder) + L")";
+    } else {
+        text = Utf8ToWide(folder);
+        if (!shortSession.empty()) text += (text.empty() ? L"" : L" · ") + Utf8ToWide(shortSession);
+        else if (text.empty() && pid > 0) text = L"pid " + std::to_wstring(pid);
+        else if (text.empty()) text = Utf8ToWide(client);
+    }
+    if (!btId.empty()) text += L" [BT " + Utf8ToWide(btId) + L"]";
+
+    auto addLine = [&outTip](const wchar_t* name, const std::string& value) {
+        if (value.empty()) return;
+        if (!outTip.empty()) outTip += L"\n";
+        outTip += name;
+        outTip += Utf8ToWide(value);
+    };
+    addLine(Tr(L"ラベル: ", L"Label: ", L"Etiqueta: "), label);
+    addLine(Tr(L"セッション: ", L"Session: ", L"Sesión: "), session);
+    addLine(Tr(L"ホストセッション: ", L"Host session: ", L"Sesión del host: "), hostSession);
+    addLine(Tr(L"フォルダ: ", L"Folder: ", L"Carpeta: "), cwd);
+    addLine(Tr(L"クライアント: ", L"Client: ", L"Cliente: "), client);
+    if (pid > 0) addLine(L"PID: ", std::to_string(pid));
+    addLine(L"BT: ", btId);
+    return text;
+}
+
 static std::string LastAttemptReason(const std::string& jobJson) {
     auto attempts = SplitJsonObjectArray(jobJson, "attempts");
     if (attempts.empty()) return "";
@@ -2422,8 +2482,9 @@ static void ShowTaskQueueJobDetails(DashboardState* st, const std::string& jobId
 
 static void CopyTextToClipboard(HWND hwnd, const std::wstring& text);
 
-// Column index of "Resources" in the task list (see UpdateTaskListColumnWidths).
-static const int kTaskListResourcesCol = 8;
+// Column indexes of "Origin" and "Resources" in the task list (see UpdateTaskListColumnWidths).
+static const int kTaskListOriginCol = 8;
+static const int kTaskListResourcesCol = 9;
 
 // Full text of one task-list cell. The control keeps the whole string even when the column is
 // too narrow to draw it, so this is the text that hover and "copy cell" should use.
@@ -2554,9 +2615,11 @@ static void RefreshTaskQueueData(DashboardState* st) {
     std::vector<std::string> newJobIds;
     std::vector<std::string> newJobStates;
     std::vector<int> newJobProcIds;
-    std::vector<std::wstring> newRows;  // 9 cells per row, flattened
+    std::vector<std::wstring> newRows;  // kTaskListColumns cells per row, flattened
+    std::vector<std::wstring> newOriginTips;  // full origin details per row, for the Origin hover tip
     std::unordered_set<std::string> nowRunning;  // jobs running now, to spot the ones that just ended
-    newRows.reserve(jobs.size() * 9);
+    newRows.reserve(jobs.size() * kTaskListColumns);
+    newOriginTips.reserve(jobs.size());
     for (const auto& j : jobs) {
         std::string jobId = JsonGetString(j, "id", "");
         std::string state = JsonGetString(j, "state", "");
@@ -2660,6 +2723,9 @@ static void RefreshTaskQueueData(DashboardState* st) {
             depsStr += L"<- " + Utf8ToWide(blockedBy);
         }
         std::wstring queueStr = Utf8ToWide(JsonGetString(j, "taskqueue", ""));
+        std::wstring originTip;
+        std::wstring originStr = TaskQueueOriginDisplay(j, originTip);
+        newOriginTips.push_back(std::move(originTip));
         std::wstring resourcesStr = TaskQueueResourcesDisplay(j);
 
         newRows.push_back(std::move(idStr));
@@ -2670,6 +2736,7 @@ static void RefreshTaskQueueData(DashboardState* st) {
         newRows.push_back(std::move(taskDoingStr));
         newRows.push_back(std::move(depsStr));
         newRows.push_back(std::move(queueStr));
+        newRows.push_back(std::move(originStr));
         newRows.push_back(std::move(resourcesStr));
     }
 
@@ -2679,6 +2746,7 @@ static void RefreshTaskQueueData(DashboardState* st) {
     st->runningTaskJobs = std::move(nowRunning);
     st->taskJobStates = std::move(newJobStates);
     st->taskJobProcIds = std::move(newJobProcIds);
+    st->taskOriginTips = std::move(newOriginTips);
     if (newRows == st->lastTaskRows && newJobIds == st->taskJobIds &&
         ListView_GetItemCount(st->hwndTaskList) == static_cast<int>(newJobIds.size())) {
         return;
@@ -2698,14 +2766,14 @@ static void RefreshTaskQueueData(DashboardState* st) {
     ListView_DeleteAllItems(st->hwndTaskList);
 
     for (int row = 0; row < static_cast<int>(st->taskJobIds.size()); ++row) {
-        std::wstring* cells = &st->lastTaskRows[static_cast<size_t>(row) * 9];
+        std::wstring* cells = &st->lastTaskRows[static_cast<size_t>(row) * kTaskListColumns];
         LVITEMW lvi = {};
         lvi.mask = LVIF_TEXT;
         lvi.iItem = row;
         lvi.iSubItem = 0;
         lvi.pszText = cells[0].data();
         ListView_InsertItem(st->hwndTaskList, &lvi);
-        for (int col = 1; col < 9; ++col) {
+        for (int col = 1; col < kTaskListColumns; ++col) {
             ListView_SetItemText(st->hwndTaskList, row, col, cells[col].data());
         }
     }
@@ -3098,10 +3166,11 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
 
     // Summary takes ~half of the visible list width; the other columns share the rest.
     int summaryW = total / 2;
-    // Columns other than Summary: ID, State, Start, End, Running, Depends, Queue, Resources.
-    const int base[8] = {135, 100, 105, 115, 190, 110, 82, 200};
+    // Columns other than Summary: ID, State, Start, End, Running, Depends, Queue, Origin, Resources.
+    constexpr int kOther = kTaskListColumns - 1;
+    const int base[kOther] = {135, 100, 105, 115, 190, 110, 82, 150, 200};
     int baseSum = 0;
-    for (int i = 0; i < 8; ++i) baseSum += base[i];
+    for (int i = 0; i < kOther; ++i) baseSum += base[i];
 
     // Shares are proportional with no per-column minimum, so the widths always add up to the list width.
     // A minimum here would push the sum past the list and cut off the last column (Resources).
@@ -3109,15 +3178,15 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
     int remaining = total - summaryW;
     // ID is shown at 1.5x its proportional share and Queue at 3/4x. The other columns (State, Start,
     // End, Running, Depends) absorb the difference so the total still fits the list.
-    constexpr int kIdIdx = 0, kQueueIdx = 6;
+    constexpr int kIdIdx = 0, kQueueIdx = 6, kLastIdx = kOther - 1;
     const double idW = base[kIdIdx] * static_cast<double>(remaining) / baseSum * 1.5;
     const double queueW = base[kQueueIdx] * static_cast<double>(remaining) / baseSum * 0.75;
-    const double otherBase = baseSum - base[kIdIdx] - base[kQueueIdx] - base[7];
-    // Resources (index 7) is the last column and takes the rounding remainder.
-    const double freeW = remaining - idW - queueW - (base[7] * static_cast<double>(remaining) / baseSum);
-    int widths[8] = {};
+    const double otherBase = baseSum - base[kIdIdx] - base[kQueueIdx] - base[kLastIdx];
+    // Resources (the last column) takes the rounding remainder.
+    const double freeW = remaining - idW - queueW - (base[kLastIdx] * static_cast<double>(remaining) / baseSum);
+    int widths[kOther] = {};
     int assigned = 0;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < kLastIdx; ++i) {
         double w;
         if (i == kIdIdx) w = idW;
         else if (i == kQueueIdx) w = queueW;
@@ -3125,11 +3194,11 @@ static void UpdateTaskListColumnWidths(DashboardState* st) {
         widths[i] = static_cast<int>(w);
         assigned += widths[i];
     }
-    widths[7] = remaining - assigned;
+    widths[kLastIdx] = remaining - assigned;
 
     ListView_SetColumnWidth(st->hwndTaskList, 0, widths[0]);
     ListView_SetColumnWidth(st->hwndTaskList, 1, summaryW);
-    for (int i = 1; i < 8; ++i) ListView_SetColumnWidth(st->hwndTaskList, i + 1, widths[i]);
+    for (int i = 1; i < kOther; ++i) ListView_SetColumnWidth(st->hwndTaskList, i + 1, widths[i]);
 }
 
 static void LayoutControls(DashboardState* st, int width, int height) {
@@ -8398,8 +8467,8 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             ListView_SetTextBkColor(st->hwndTaskList, g_theme.panel);
             ListView_SetTextColor(st->hwndTaskList, g_theme.listText);
             {
-                const int taskWidths[9] = {90, 350, 100, 105, 115, 190, 110, 110, 200};
-                for (int i = 0; i < 9; ++i) {
+                const int taskWidths[kTaskListColumns] = {90, 350, 100, 105, 115, 190, 110, 110, 150, 200};
+                for (int i = 0; i < kTaskListColumns; ++i) {
                     LVCOLUMNW lvc = {};
                     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
                     lvc.pszText = const_cast<wchar_t*>(TaskColumnTitle(i));
@@ -8986,10 +9055,14 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     }
                 } else if (nmhdr->code == LVN_GETINFOTIPW) {
                     // Hover over the Resources cell: show all of it, not only what fits the column.
+                    // Hover over the Origin cell: show who added the job (session, folder, client).
                     auto* tip = reinterpret_cast<NMLVGETINFOTIPW*>(lParam);
                     if (tip->iSubItem == kTaskListResourcesCol && tip->pszText && tip->cchTextMax > 0) {
                         std::wstring full = TaskListCellText(st->hwndTaskList, tip->iItem, tip->iSubItem);
                         wcsncpy_s(tip->pszText, tip->cchTextMax, full.c_str(), _TRUNCATE);
+                    } else if (tip->iSubItem == kTaskListOriginCol && tip->pszText && tip->cchTextMax > 0 &&
+                               tip->iItem >= 0 && tip->iItem < static_cast<int>(st->taskOriginTips.size())) {
+                        wcsncpy_s(tip->pszText, tip->cchTextMax, st->taskOriginTips[tip->iItem].c_str(), _TRUNCATE);
                     }
                 } else if (nmhdr->code == NM_CUSTOMDRAW) {
                     auto* lvcd = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);

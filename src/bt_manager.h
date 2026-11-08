@@ -44,7 +44,7 @@ public:
     std::string Start(const std::string& json);
     std::string Get(const std::string& id, bool compact = false);
     std::string List();
-    std::string Wait(const std::string& id, uint64_t sinceVersion, int timeoutMs);
+    std::string Wait(const std::string& id, uint64_t sinceVersion, int timeoutMs, bool compact = false);
     std::string Resume(const std::string& id,
                        const std::string& node,
                        const std::string& answer,

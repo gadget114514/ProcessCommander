@@ -382,7 +382,11 @@ COMMANDS:
 
 TASK QUEUE:
   taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]
+                [--origin-label <text>]
       Register jobs (array, or an object with "jobs"/"taskqueue"/"concurrency").
+      Each job records its origin: the caller's session id (CLAUDE_CODE_SESSION_ID
+      or PC_ORIGIN_SESSION), working folder and pid, plus --origin-label (or
+      PC_ORIGIN_LABEL). The dashboard shows it in the Origin column.
       Each job needs id, command, summary, timeoutSec; dependsOn replaces '&&'.
       Optional: cwd, env, dependsOn, idle, maxAttempts, retryDelaySec, success,
       killExclude, resources {write,read}, defer, priority, instructionsFile/instructionsText.
@@ -395,9 +399,10 @@ TASK QUEUE:
       overlapping card) goes back to pending after delaySec without using up
       maxAttempts; after limit deferrals (0 = no limit) it is an ordinary failure.
 
-  taskqueue list [<name>] [--state <state>] [--since <period>]
+  taskqueue list [<name>] [--state <state>] [--since <period>] [--origin <self|label|session>]
       List jobs with state, queue, summary and blockedBy. --since keeps only
       jobs updated within the period (30m, 6h, 2d), e.g. --since 6h.
+      --origin self keeps only the jobs this session added.
 
   taskqueue get <id> [--rev <n>] [--no-instructions]
   taskqueue retry <id>
@@ -694,8 +699,8 @@ void PrintCliUsageJson() {
       "description": "Manage the persistent task queue: ordered jobs, dependencies, per-job timeouts, success checks and automatic retries.",
       "usage": "pcder taskqueue <add|list|get|retry|cancel|pause|resume|graph|wait|purge> ...",
       "subcommands": [
-        {"name": "add", "usage": "pcder taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>]", "description": "Register jobs. Each job needs id, command, summary and timeoutSec; dependsOn replaces shell chaining."},
-        {"name": "list", "usage": "pcder taskqueue list [<name>] [--state <state>] [--since <period>]", "description": "List jobs with state, queue, summary and blockedBy. --since keeps only jobs updated within the period (e.g. 30m, 6h, 2d)."},
+        {"name": "add", "usage": "pcder taskqueue add --file <jobs.json> [--taskqueue <name>] [--concurrency <n>] [--notify-file <path>] [--origin-label <text>]", "description": "Register jobs. Each job needs id, command, summary and timeoutSec; dependsOn replaces shell chaining. The caller's session id, working folder and --origin-label are recorded as the job's origin."},
+        {"name": "list", "usage": "pcder taskqueue list [<name>] [--state <state>] [--since <period>] [--origin <self|label|session>]", "description": "List jobs with state, queue, summary and blockedBy. --since keeps only jobs updated within the period (e.g. 30m, 6h, 2d). --origin self keeps only the jobs this session added."},
         {"name": "get", "usage": "pcder taskqueue get <id> [--rev <n>] [--no-instructions]", "description": "Show one job with attempts and instructions."},
         {"name": "retry", "usage": "pcder taskqueue retry <id> | pcder taskqueue retry --failed [<name>] [--since <period>]", "description": "Requeue a failed/blocked/cancelled job; blocked dependents resume automatically. --failed retries every failed job instead, optionally limited to one queue and to jobs that failed within --since (e.g. --since 6h = last 6 hours)."},
         {"name": "cancel", "usage": "pcder taskqueue cancel <id>", "description": "Cancel a job; a running attempt is killed and is not retried."},
@@ -891,7 +896,7 @@ void PrintCliUsageJson() {
       "when": "Use instead of taskqueue_add when the next step depends on results: if/else, build -> fix -> rebuild, test -> fix -> retest, file/JSON/log checks, worker LLM steps, or a decision you must make mid-way.",
       "flow": [
         "Optionally bt_validate, then bt_start with {bt: {...}} or {file: \"plan.json\"}.",
-        "Loop on bt_wait {id, sinceVersion, timeoutMs}; it returns on finish or when state is waitingForLlm with a decision packet. It returns at once on those events, so long timeouts are fine: timeoutMs defaults to 600000 for the MCP tool (a client cancel stops it) and 60000 for pcder bt wait; on timeout it returns only {state, version, nodeRuns, timedOut: true}.",
+        "Loop on bt_wait {id, sinceVersion, timeoutMs, compact}; it returns on finish or when state is waitingForLlm with a decision packet. Pass compact=true to omit the heavy tree JSON and save tokens. It returns at once on those events, so long timeouts are fine: timeoutMs defaults to 600000 for the MCP tool (a client cancel stops it) and 60000 for pcder bt wait; on timeout it returns only {state, version, nodeRuns, timedOut: true}.",
         "Answer with bt_resume {id, node, answer, rationale}. The packet contains the intent, question, guidance, allowed answers, path, and the logs/vars/files you listed in include, so you can decide without earlier context.",
         "On failure read bt_get {id, compact: true}; fix the cause (bt_update changes a non-running node's definition) and call bt_retry {id, from}."
       ],
@@ -1801,7 +1806,7 @@ if (subcmd == "start" || subcmd == "run") {
         };
         // First non-flag argument, skipping the values of flags that take one (e.g. "--since 6h").
         auto positionalSkippingValues = [&args](size_t startIdx) -> std::string {
-            static const char* const valueFlags[] = {"--state", "--since", "--rev", "--root", "--states", "--older-than-days"};
+            static const char* const valueFlags[] = {"--state", "--since", "--origin", "--rev", "--root", "--states", "--older-than-days"};
             for (size_t i = startIdx; i < args.size(); ++i) {
                 bool isValueFlag = false;
                 for (const char* f : valueFlags) {
@@ -1851,15 +1856,19 @@ if (subcmd == "start" || subcmd == "run") {
             reqJson << "{\"action\":\"taskqueue_add\",\"taskqueue\":\"" << JsonEscape(tqName) << "\""
                     << ",\"jobs\":" << jobsRaw
                     << ",\"concurrency\":" << concurrency
-                    << ",\"notify_file\":\"" << JsonEscape(notifyFile) << "\"}";
+                    << ",\"notify_file\":\"" << JsonEscape(notifyFile) << "\""
+                    << ",\"origin\":" << BuildCallerOriginJson("pcder-cli", argVal("--origin-label", "")) << "}";
             subcmd = "taskqueue_add";
         } else if (op == "list") {
             std::string tqName = positionalSkippingValues(3);
             std::string state = argVal("--state", "");
             std::string since = argVal("--since", "");
+            std::string originFilter = argVal("--origin", "");
+            if (originFilter == "self") originFilter = CallerSelfOriginFilter();
             reqJson << "{\"action\":\"taskqueue_list\",\"taskqueue\":\"" << JsonEscape(tqName)
                     << "\",\"state\":\"" << JsonEscape(state) << "\""
-                    << ",\"since\":\"" << JsonEscape(since) << "\"}";
+                    << ",\"since\":\"" << JsonEscape(since) << "\""
+                    << ",\"origin\":\"" << JsonEscape(originFilter) << "\"}";
             subcmd = "taskqueue_list";
         } else if (op == "get") {
             std::string id = firstPositional(3);
@@ -2081,6 +2090,7 @@ if (subcmd == "start" || subcmd == "run") {
             }
             jReq["action"] = "bt_" + op;
             jReq["bt"] = text;
+            if (op == "start") jReq["origin"] = nlohmann::json::parse(BuildCallerOriginJson("pcder-cli", ""), nullptr, false);
             subcmd = "bt_" + op;
         } else if (op == "get") {
             if (id.empty()) return failWith("get requires --id <id>");
@@ -2097,6 +2107,7 @@ if (subcmd == "start" || subcmd == "run") {
             jReq["id"] = id;
             jReq["sinceVersion"] = sinceVersion;
             jReq["timeoutMs"] = timeoutMs;
+            jReq["compact"] = compact;
             subcmd = "bt_wait";
         } else if (op == "resume") {
             if (id.empty()) return failWith("resume requires --id <id>");

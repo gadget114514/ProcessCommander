@@ -524,7 +524,8 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             resp = tqm_.TaskQueueAdd(JsonGetString(reqJson, "taskqueue", ""),
                                      ExtractRawJsonValue(reqJson, "jobs"),
                                      JsonGetInt(reqJson, "concurrency", 0),
-                                     JsonGetString(reqJson, "notify_file", ""), err);
+                                     JsonGetString(reqJson, "notify_file", ""), err,
+                                     ExtractRawJsonValue(reqJson, "origin"));
         } else if (action == "taskqueue_list") {
             int64_t sinceSec = 0;
             const std::string sinceStr = JsonGetString(reqJson, "since", "");
@@ -532,7 +533,8 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
                 err = "invalid since '" + sinceStr + "' (use a number followed by m, h or d, e.g. 6h)";
             } else {
                 resp = tqm_.TaskQueueList(JsonGetString(reqJson, "taskqueue", ""),
-                                          JsonGetString(reqJson, "state", ""), sinceSec, err);
+                                          JsonGetString(reqJson, "state", ""), sinceSec, err,
+                                          JsonGetString(reqJson, "origin", ""));
             }
         } else if (action == "taskqueue_get") {
             resp = tqm_.TaskQueueGet(JsonGetString(reqJson, "id", ""),
@@ -660,6 +662,14 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             if (!extractBtPayload(btJson, err)) {
                 return "{\"ok\":false,\"error\":\"" + JsonEscape(err) + "\"}";
             }
+            // Jobs the tree adds carry the origin of whoever started it; set it before
+            // Start, which may already add the first jobs.
+            if (req.contains("origin") && req["origin"].is_object()) {
+                auto btDef = json::parse(btJson, nullptr, false);
+                if (btDef.is_object() && btDef.contains("id") && btDef["id"].is_string()) {
+                    tqm_.SetBtOrigin(btDef["id"].get<std::string>(), req["origin"].dump());
+                }
+            }
             resp = btm_->Start(btJson);
         } else if (action == "bt_get") {
             std::string id = req.value("id", std::string());
@@ -681,7 +691,8 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             } else if (req.contains("timeout_ms") && req["timeout_ms"].is_number_integer()) {
                 timeoutMs = req["timeout_ms"].get<int>();
             }
-            resp = btm_->Wait(id, sinceVer, timeoutMs);
+            bool compact = req.value("compact", false);
+            resp = btm_->Wait(id, sinceVer, timeoutMs, compact);
         } else if (action == "bt_resume") {
             std::string id = req.value("id", std::string());
             std::string node = req.value("node", std::string());

@@ -10,6 +10,21 @@ Back to [README](../README.md).
 
 A short Pros/Cons analysis for choosing how to run work: **LLM-native sub-agents** vs. **ProcessCommander-managed CLI processes**.
 
+### When Token Cost Is No Longer the Difference
+
+Token usage used to be the main reason to hand work to ProcessCommander. Now that the supervisor's cost of waiting on a ProcessCommander job (`taskqueue_wait`, `bt_wait`) is about the same as delegating to a sub-agent, the choice comes down to **durability, deterministic control and visibility**, not price.
+
+| | Sub-agent | ProcessCommander |
+|---|---|---|
+| **Lifetime** | Lives inside the parent's turn. Lost if the parent is interrupted, crashes, compacts its context or the session closes. | Runs in the dashboard, independent of the LLM session. Another session can pick it up later with `wait` / `get_state`. You can start an hour-long job and walk away. |
+| **Control flow** | "Run A and B, then C; retry twice; escalate on failure" is reasoned out by the parent LLM on every turn. It can slip and is not reproducible. | Written once as task-queue dependencies or a behavior tree, then executed deterministically by ProcessCommander. The LLM only writes the plan and answers `escalate` nodes. |
+| **Visibility and intervention** | A black box until it returns. | The dashboard and BT view show every worker's state and output live. You can kill, retry, pause or send input at any point. |
+| **Kinds of worker** | Claude inside the same client only. | Other engines (Codex, Gemini/agy, opencode) and ordinary processes (builds, tests, servers) in the same queue or tree. "Review with a different model" or "continue when the tests pass" is natural. |
+| **Concurrency and load** | However many the parent calls at once. | Queue `concurrency`, priorities and resource locks keep a large batch from running away. |
+| **Setup and context** | None. Inherits the parent's conversation. | Windows-only install. Each job's spec (prompt, command, timeout, success check) must be explicit. |
+
+**Rule of thumb:** short, disposable work whose result the parent uses right away → sub-agent. Long work, work that must not be lost, work with dependencies or retries, work a human wants to watch or stop, or work that mixes in non-Claude workers → ProcessCommander.
+
 ### Sub-Agent Execution (LLM-native)
 
 **Pros**
@@ -19,7 +34,7 @@ A short Pros/Cons analysis for choosing how to run work: **LLM-native sub-agents
 - Natural error diagnosis and retry with human-like judgment.
 
 **Cons**
-- Token- and cost-heavy for large/repetitive jobs; bounded by the context window.
+- Bounded by the parent's turn and context window; lost when the parent session is interrupted or closed.
 - Poor fit for long-running, interactive, or process-tree-heavy workloads (builds, dev servers, TUI agents).
 - Limited observability: no live terminal grid, idle detection, or job-object tree control.
 - Concurrency and dependency orchestration are client-dependent and often implicit.
@@ -32,7 +47,8 @@ A short Pros/Cons analysis for choosing how to run work: **LLM-native sub-agents
 - Live dashboard: up to 16 terminals, idle detection, per-job timeouts, retries, dependencies, and persisted task queues.
 - `.done` markers and per-process logs enable simple, robust completion detection by LLMs/automation.
 - Claude Code sub-agents started by a ProcessCommander run are visible: the monitor pane shows each one as a tree branch with its steps, tokens and tool count, and `pcder agent status` lists them.
-- Lower token cost for heavy work; the LLM acts as supervisor only.
+- The LLM acts as supervisor only: dependencies, retries and branching (task queue, behavior trees) run deterministically inside ProcessCommander.
+- Mixes LLM engines (Claude, Codex, Gemini/agy, opencode) and plain processes in one queue or tree.
 - MCP + CLI integration and project-local data directories.
 - State recovery across restarts.
 
@@ -46,7 +62,7 @@ A short Pros/Cons analysis for choosing how to run work: **LLM-native sub-agents
 
 ### Recommendation
 
-Use **sub-agents** for reasoning and code changes; use **ProcessCommander** for parallel, long-running, interactive, or build-heavy CLI workloads. Best of both: let the LLM supervisor delegate heavy jobs to ProcessCommander while sub-agents handle analysis and edits.
+Use **sub-agents** for short reasoning and code changes whose result the parent needs right away; use **ProcessCommander** for parallel, long-running, interactive, or build-heavy CLI workloads, and for any work that must survive the session, follow a fixed plan, or be watched and steered. Best of both: let the LLM supervisor delegate heavy jobs to ProcessCommander while sub-agents handle analysis and edits.
 
 ---
 

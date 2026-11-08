@@ -146,6 +146,40 @@ int main() {
     Check(GetFileAttributesW(stateFile.c_str()) != INVALID_FILE_ATTRIBUTES, "taskqueue json persisted");
 
     {
+        // Origin: recorded on every added job, persisted, returned and usable as a list filter.
+        std::string originJson = R"({"label":"Release Work","client":"claude-code 2.1","session":"121bb3dd-40e2-4acb",)"
+                                 R"("host_session":"local_9f76","cwd":"D:\\wsgit\\ProcessCommander","pid":4242})";
+        std::string oJobs = R"([{"id":"O1","command":"cmd /c exit 0","summary":"origin job","timeoutSec":30}])";
+        Check(JsonGetBool(tqm.TaskQueueAdd("originq", oJobs, 0, "", err, originJson), "ok", false), "origin job added: " + err);
+        std::string other = R"([{"id":"O2","command":"cmd /c exit 0","summary":"no origin","timeoutSec":30}])";
+        Check(JsonGetBool(tqm.TaskQueueAdd("originq", other, 0, "", err), "ok", false), "job without origin added: " + err);
+
+        std::string got = tqm.TaskQueueGet("O1", false, 0, err);
+        Check(got.find("\"origin\":{\"label\":\"Release Work\"") != std::string::npos, "origin returned by get: " + got);
+        Check(tqm.TaskQueueGet("O2", false, 0, err).find("\"origin\"") == std::string::npos, "no origin field when none given");
+        std::string saved = ReadFileUtf8Wide(TaskQueueManager::GetTaskQueueFileWide("originq"));
+        Check(saved.find("\"session\":\"121bb3dd-40e2-4acb\"") != std::string::npos, "origin persisted");
+
+        auto listIds = [&](const std::string& filter) {
+            std::string resp = tqm.TaskQueueList("originq", "", 0, err, filter);
+            int n = 0;
+            for (size_t p = resp.find("{\"id\":"); p != std::string::npos; p = resp.find("{\"id\":", p + 1)) ++n;
+            return n;
+        };
+        Check(listIds("121bb3dd") == 1, "origin filter matches session prefix");
+        Check(listIds("local_9f76") == 1, "origin filter matches host session");
+        Check(listIds("release work") == 1, "origin filter matches label case-insensitively");
+        Check(listIds("pid:4242") == 1, "origin filter matches pid");
+        Check(listIds("Release") == 0, "origin label needs a full match");
+        Check(listIds("") == 2, "no origin filter lists all");
+
+        TaskQueueOrigin parsed = TaskQueueManager::ParseOriginJson(TaskQueueManager::OriginToJson(
+            TaskQueueManager::ParseOriginJson(originJson)));
+        Check(parsed.hostSession == "local_9f76" && parsed.pid == 4242 && parsed.cwd == "D:\\wsgit\\ProcessCommander",
+              "origin JSON round trip");
+    }
+
+    {
         TaskQueueCounts cBefore = tqm.GetJobCounts();
         Check(cBefore.total > 0, "GetJobCounts returned non-empty total");
         Check(cBefore.succeeded >= 3, "GetJobCounts accurately counted succeeded jobs");

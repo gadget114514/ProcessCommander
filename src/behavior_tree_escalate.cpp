@@ -8,12 +8,11 @@ namespace pc {
 
 namespace {
 
-std::string Truncate64K(const std::string& s) {
-    constexpr size_t kMax = 65536;
-    if (s.size() <= kMax) return s;
-    size_t n = kMax;
+std::string TruncateUtf8Bytes(const std::string& s, size_t maxBytes) {
+    if (s.size() <= maxBytes) return s;
+    size_t n = maxBytes;
     while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) n--;
-    return s.substr(0, n);
+    return s.substr(0, n) + " ...[truncated, " + std::to_string(s.size()) + " bytes]";
 }
 
 bool FindPathToNode(const BtNode* cur, const BtNode* target, std::vector<const BtNode*>& path) {
@@ -123,6 +122,7 @@ void BehaviorTree::Impl::StartEscalateNode(BehaviorTree& bt, BtNode& node, int64
     }
 
     json logsObj = json::object();
+    int logLines = node.include.logLines > 0 ? node.include.logLines : 100;
     for (const std::string& logNodeRef : node.include.logs) {
         const BtNode* ln = FindNodeConst(logNodeRef, bt.id_);
         std::string tail;
@@ -131,7 +131,7 @@ void BehaviorTree::Impl::StartEscalateNode(BehaviorTree& bt, BtNode& node, int64
             if (tail.empty() && !ln->lastLogFile.empty()) {
                 tail = ReadFileUtf8Wide(Utf8ToWide(ln->lastLogFile));
             }
-            tail = GetTailLines(tail, 200);
+            tail = GetTailLines(tail, logLines);
         }
         logsObj[logNodeRef] = tail;
     }
@@ -143,11 +143,12 @@ void BehaviorTree::Impl::StartEscalateNode(BehaviorTree& bt, BtNode& node, int64
     }
 
     json filesObj = json::object();
+    size_t fileMaxBytes = node.include.fileMaxBytes > 0 ? node.include.fileMaxBytes : 16384;
     for (const std::string& relFile : node.include.files) {
         std::string expandedRel, u;
         if (!ExpandString(bt, relFile, false, expandedRel, u)) expandedRel = relFile;
         std::wstring fp = ResolveBtPathWide(bt.cwd_, expandedRel);
-        filesObj[relFile] = Truncate64K(ReadFileUtf8Wide(fp));
+        filesObj[relFile] = TruncateUtf8Bytes(ReadFileUtf8Wide(fp), fileMaxBytes);
     }
 
     // Every variable, cut short: a worker's ${<id>.result} can be 64 KB and the packet is

@@ -173,6 +173,10 @@ int main() {
             Check(rWait.value("ok", false) && rWait.value("state", "") == "succeeded",
                   "bt_wait finishes ipc-two-jobs with state=succeeded (got " + rWait.value("state", "") + ")");
 
+            json rWaitCompact = h.Call({{"action", "bt_wait"}, {"id", "ipc-two-jobs"}, {"sinceVersion", 0}, {"timeoutMs", 1000}, {"compact", true}});
+            Check(rWaitCompact.value("ok", false) && !rWaitCompact.contains("tree") && rWaitCompact.contains("compact"),
+                  "bt_wait with compact:true omits tree and includes compact summary");
+
             json rGetCompact = h.Call({{"action", "bt_get"}, {"id", "ipc-two-jobs"}, {"compact", true}});
             std::string compactStr = rGetCompact.value("compact", "");
             Check(rGetCompact.value("ok", false) && !rGetCompact.contains("tree") &&
