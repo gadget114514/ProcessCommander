@@ -2,6 +2,9 @@
 
 **[English](README.md) | [Japanese](README-ja.md)**
 
+> [!IMPORTANT]
+> **ProcessCommander has moved to [Hancho](https://github.com/gadget114514/Hancho).** ProcessCommander v2.9.3 continues as **Hancho 0.9.0**. This repository is no longer updated; please use Hancho for new releases, issues, and pull requests.
+
 **ProcessCommander** is a native Win32 C++ Multi-Terminal ConPTY Process Manager and Dashboard designed for orchestrating, monitoring, and interacting with multiple parallel CLI agents (`claude`, `opencode`, build scripts, and interactive shells) via both **Model Context Protocol (MCP)** and **CLI commands**.
 
 **PCR** is short for ProcessCommander. Check the version with `pcder.exe --version` (current: 2.0.1).
@@ -111,6 +114,7 @@ What stays the same: each step is still a normal task-queue job with its own tim
 ## Release Notes
 
 ### v2.9.3
+- **Final release of ProcessCommander.** It continues as [Hancho](https://github.com/gadget114514/Hancho) 0.9.0; this repository is no longer updated.
 - **See which session added each task**: every task-queue job records its origin (agent session id, Claude desktop session id, MCP client, working folder, process id), filled in automatically by MCP `taskqueue_add`, `pcder taskqueue add` and behavior trees. Name the work with `originLabel`, `--origin-label` or `PC_ORIGIN_LABEL`. The dashboard shows it in a new **Origin** column (hover for every field), and `taskqueue_list` `origin: "self"` (`pcder taskqueue list --origin self`) lists only your own session's jobs. See [doc/taskqueue.md](doc/taskqueue.md).
 - **Fewer tokens in behavior tree replies**: only `bt_get` returns the whole tree; the other BT tools and `bt_wait compact: true` leave it out, and long variable values and prompts are cut to a preview. Escalation `include` takes `lines` and `maxBytes`. Worker nodes now see their `outputSchema`.
 

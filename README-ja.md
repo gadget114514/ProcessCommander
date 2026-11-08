@@ -2,6 +2,9 @@
 
 **[English](README.md) | [日本語 (Japanese)](README-ja.md)**
 
+> [!IMPORTANT]
+> **ProcessCommander は [Hancho](https://github.com/gadget114514/Hancho) に移行しました。** ProcessCommander v2.9.3 は **Hancho 0.9.0** として引き継がれています。このリポジトリは更新を停止しました。今後のリリース、Issue、プルリクエストは Hancho をご利用ください。
+
 **ProcessCommander** は、Claude Code や各種自動化スクリプトから複数のサブプロセス・対話型 CLI エージェント（`opencode`, `claude`, PowerShell, cmd, Git Bash 等）を並列起動・監視・制御し、**状況をひと目で把握できる Native Win32 + Direct2D マルチターミナルダッシュボード GUI** を備えたプロセスマネージャです。
 
 **PCR** は ProcessCommander の略称です。バージョンは `pcder.exe --version` で確認できます（現在: 2.0.1）。
@@ -115,6 +118,7 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 ## リリースノート
 
 ### v2.9.3
+- **ProcessCommander の最終リリースです。** [Hancho](https://github.com/gadget114514/Hancho) 0.9.0 として引き継がれ、このリポジトリは更新を停止しました。
 - **どのセッションが追加したタスクか分かるように**: タスクキューの各ジョブに発行元（エージェントのセッション id、Claude デスクトップのセッション id、MCP クライアント、作業フォルダ、プロセス id）を記録します。MCP の `taskqueue_add`、`pcder taskqueue add`、ビヘイビアツリーで自動的に入ります。`originLabel`、`--origin-label`、`PC_ORIGIN_LABEL` で作業に名前を付けられます。ダッシュボードの新しい **発行元** 列に表示され（マウスを乗せると全項目）、`taskqueue_list` の `origin: "self"`（`pcder taskqueue list --origin self`）で自分のセッションのジョブだけを一覧できます。詳しくは [doc/taskqueue-ja.md](doc/taskqueue-ja.md) を参照してください。
 - **ビヘイビアツリーの応答のトークンを削減**: ツリー全体を返すのは `bt_get` だけになりました。ほかの BT ツールと `bt_wait` の `compact: true` はツリーを省き、長い変数値とプロンプトは先頭部分だけになります。escalate の `include` に `lines` と `maxBytes` を指定できます。ワーカーのノードに `outputSchema` が渡されるようになりました。
 
