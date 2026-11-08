@@ -117,6 +117,11 @@ pcder.exe taskqueue retry A
 # Only jobs updated within the last 6 hours (--since takes 30m, 6h, 2d)
 pcder.exe taskqueue list main --state failed --since 6h
 
+# Name the work these jobs belong to (shown in the dashboard's Origin column),
+# then list only the jobs this session added
+pcder.exe taskqueue add --file jobs.json --taskqueue main --origin-label "release v2.9.2"
+pcder.exe taskqueue list --origin self
+
 # Retry every failed job at once (optionally one queue, and only recent failures)
 pcder.exe taskqueue retry --failed
 pcder.exe taskqueue retry --failed main --since 6h

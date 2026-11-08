@@ -39,6 +39,20 @@ pcder.exe taskqueue wait main --since 0 --timeout-ms 30000
 | `resources` | `{ "write": [...], "read": [...] }`。パス/glob（`cwd` 基準。ファイル名だけの `Foo.cs` は `**/Foo.cs`）または `@name` ロック。集合が重なる（write/write、write/read）ジョブはキューをまたいでも同時に実行しない。read 同士は並列可。デフォルトはオン（設定画面のチェックボックス）。[resource-locks-ja.md](resource-locks-ja.md) を参照。 |
 | `instructionsFile` / `instructionsText` | 任意の指示書。ジョブに複製され、版ごとに実体化される。 |
 
+**発行元: どのセッションが追加したジョブか**
+
+複数のエージェントセッションのジョブを見分けられるよう、各ジョブは追加した側の情報を持ちます。pcder が自動で記録し、ジョブ JSON の `origin` に入ります:
+
+| フィールド | 取得元 |
+| :--- | :--- |
+| `label` | MCP `taskqueue_add` / `bt_start` の `originLabel`、CLI の `--origin-label`、または環境変数 `PC_ORIGIN_LABEL`。`release v2.9.2` のような任意の短い名前。 |
+| `session` | `PC_ORIGIN_SESSION`、なければ `CLAUDE_CODE_SESSION_ID`。 |
+| `host_session` | `CLAUDE_CODE_HOST_SESSION_ID`（Claude デスクトップアプリのセッション）。 |
+| `client` | MCP の `clientInfo` の名前とバージョン、または `pcder-cli`。 |
+| `cwd`, `pid` | 呼び出し側の作業フォルダ。`CLAUDE_PID`、なければ pcder を起動したプロセス。 |
+
+ビヘイビアツリーが追加するジョブには `bt_start` を呼んだ側の発行元が付きます。ダッシュボードの **発行元** 列に表示されます（ラベル、なければフォルダ名とセッション id の先頭 8 文字）。マウスを乗せると全フィールドが出ます。`taskqueue list --origin self`（MCP `taskqueue_list` の `origin: "self"`）で自分のセッションが追加したジョブだけを一覧できます。`--origin` にはラベル（完全一致・大文字小文字を区別しない）、セッション id / ホストセッション id（先頭一致）、`pid:<n>` も指定できます。
+
 **状態**
 
 | 状態 | 意味 |
