@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.7.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64-setup.exe)
-  (portable: [ProcessCommander-v2.7.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.9.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64-setup.exe)
+  (portable: [ProcessCommander-v2.9.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -101,6 +101,13 @@ What stays the same: each step is still a normal task-queue job with its own tim
 ---
 
 ## Release Notes
+
+### v2.9.0
+- **Behavior trees**: a supervisor LLM can submit a whole multi-step plan (branches, build-fix loops, retries, condition checks, worker LLM steps, decisions) as one JSON tree with `bt_start`. ProcessCommander runs it, adds each step as an ordinary task-queue job, and calls the LLM back only for `escalate` decisions or at the end. New MCP tools `bt_validate`, `bt_start`, `bt_get`, `bt_list`, `bt_wait`, `bt_resume`, `bt_retry`, `bt_update`, `bt_cancel`, `bt_pause` and `pcder bt ...` commands. See [Behavior trees](#behavior-trees-the-next-step-decisions-run-inside-processcommander) and [doc/behavior-tree.md](doc/behavior-tree.md).
+- **Worker engines**: `worker` steps name an engine (`claude`, `agy`, `opencode`, `codex`, or your own in `engines.json` in the data directory) and a model; permission flags stay in the engine definition.
+- **Behavior tree view**: the **BT** toolbar button (Ctrl+Shift+B), or "Show in Behavior Tree" on a task's right-click menu, shows each tree, which node started which task, and how far it has run. Active trees come first; finished trees older than 24 hours are hidden unless "Show all" is on.
+- **Help for LLMs**: `ProcessCommander.exe --help`, `pcder help` and `pcder help --json` explain when to use a behavior tree instead of adding jobs by hand.
+- **Task queue**: `taskqueue_retry` / `taskqueue_update` from MCP or the CLI on a job started by a behavior tree are refused (use `bt_retry` / `bt_update`); Retry in the dashboard retries the tree from that step.
 
 ### v2.7.2
 - **Remaining time ignores jobs that cannot run**: the total remaining time (task remaining KPI and tooltip) no longer counts blocked jobs, or pending jobs whose upstream finished without satisfying them. Their counts are unchanged.

@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.7.2-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.7.2-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.7.2/ProcessCommander-v2.7.2-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.9.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.9.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -105,6 +105,13 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.9.0
+- **ビヘイビアツリー**: 監督役の LLM が、複数手順の作業全体（分岐、ビルド修正ループ、リトライ、条件の確認、ワーカー LLM の手順、判断）を 1 つの JSON のツリーとして `bt_start` で渡せるようになりました。ProcessCommander がツリーを実行し、各手順を普通のタスクキューのジョブとして追加します。LLM が呼ばれるのは `escalate` の判断と終了時だけです。MCP ツール `bt_validate`, `bt_start`, `bt_get`, `bt_list`, `bt_wait`, `bt_resume`, `bt_retry`, `bt_update`, `bt_cancel`, `bt_pause` と `pcder bt ...` コマンドを追加しました。詳しくは [ビヘイビアツリー](#ビヘイビアツリー-次に何をするかの判断を-processcommander-の中で行う) と [doc/behavior-tree-ja.md](doc/behavior-tree-ja.md) を参照してください。
+- **ワーカーのエンジン**: `worker` の手順は、エンジン（`claude`, `agy`, `opencode`, `codex`、またはデータディレクトリの `engines.json` の独自定義）とモデルで指定します。確認なしで動かすための引数はエンジン定義の側だけに置きます。
+- **ビヘイビアツリーの表示**: ツールバーの **BT** ボタン（Ctrl+Shift+B）か、タスクの右クリックメニュー「ビヘイビアツリーで表示」で、各ツリー、どのノードがどのタスクを起動したか、どこまで進んだかを表示します。実行中のツリーが上に来て、24 時間より前に終わったツリーは「すべて表示」をオンにしない限り隠れます。
+- **LLM 向けの help**: `ProcessCommander.exe --help`、`pcder help`、`pcder help --json` に、ジョブを手で足す代わりにビヘイビアツリーを使う場面と使い方を書きました。
+- **タスクキュー**: ビヘイビアツリーが起動したジョブに MCP や CLI から `taskqueue_retry` / `taskqueue_update` すると拒否します（`bt_retry` / `bt_update` を使います）。ダッシュボードの再実行は、その手順からツリーを再実行します。
 
 ### v2.7.2
 - **実行されないジョブを残り時間から除外**: 合計残り時間（タスク残り時間の KPI とツールチップ）に、ブロックされたジョブや、上流が満たされない形で終わった保留ジョブを含めなくなりました。件数の表示は変わりません。
