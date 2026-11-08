@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.9.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64-setup.exe)
-  (portable: [ProcessCommander-v2.9.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.9.3-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.3/ProcessCommander-v2.9.3-win64-setup.exe)
+  (portable: [ProcessCommander-v2.9.3-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.3/ProcessCommander-v2.9.3-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -101,6 +101,10 @@ What stays the same: each step is still a normal task-queue job with its own tim
 ---
 
 ## Release Notes
+
+### v2.9.3
+- **See which session added each task**: every task-queue job records its origin (agent session id, Claude desktop session id, MCP client, working folder, process id), filled in automatically by MCP `taskqueue_add`, `pcder taskqueue add` and behavior trees. Name the work with `originLabel`, `--origin-label` or `PC_ORIGIN_LABEL`. The dashboard shows it in a new **Origin** column (hover for every field), and `taskqueue_list` `origin: "self"` (`pcder taskqueue list --origin self`) lists only your own session's jobs. See [doc/taskqueue.md](doc/taskqueue.md).
+- **Fewer tokens in behavior tree replies**: only `bt_get` returns the whole tree; the other BT tools and `bt_wait compact: true` leave it out, and long variable values and prompts are cut to a preview. Escalation `include` takes `lines` and `maxBytes`. Worker nodes now see their `outputSchema`.
 
 ### v2.9.1
 - **Cheaper `bt_wait` for supervisor LLMs**: when the timeout passes with nothing to act on, `bt_wait` now returns only `{state, version, nodeRuns, timedOut}` instead of the whole tree. Finish and escalation replies are unchanged and still return at once.

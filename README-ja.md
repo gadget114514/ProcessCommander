@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.9.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.9.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.9.3-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.3/ProcessCommander-v2.9.3-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.9.3-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.3/ProcessCommander-v2.9.3-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -105,6 +105,10 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.9.3
+- **どのセッションが追加したタスクか分かるように**: タスクキューの各ジョブに発行元（エージェントのセッション id、Claude デスクトップのセッション id、MCP クライアント、作業フォルダ、プロセス id）を記録します。MCP の `taskqueue_add`、`pcder taskqueue add`、ビヘイビアツリーで自動的に入ります。`originLabel`、`--origin-label`、`PC_ORIGIN_LABEL` で作業に名前を付けられます。ダッシュボードの新しい **発行元** 列に表示され（マウスを乗せると全項目）、`taskqueue_list` の `origin: "self"`（`pcder taskqueue list --origin self`）で自分のセッションのジョブだけを一覧できます。詳しくは [doc/taskqueue-ja.md](doc/taskqueue-ja.md) を参照してください。
+- **ビヘイビアツリーの応答のトークンを削減**: ツリー全体を返すのは `bt_get` だけになりました。ほかの BT ツールと `bt_wait` の `compact: true` はツリーを省き、長い変数値とプロンプトは先頭部分だけになります。escalate の `include` に `lines` と `maxBytes` を指定できます。ワーカーのノードに `outputSchema` が渡されるようになりました。
 
 ### v2.9.1
 - **監督役 LLM の `bt_wait` を軽く**: 何も起きずに時間切れになったとき、`bt_wait` はツリー全体ではなく `{state, version, nodeRuns, timedOut}` だけを返すようになりました。終了と escalate のときの応答は変わらず、すぐに返ります。
