@@ -13,7 +13,7 @@ ProcessCommander Behavior Trees (BTs) let an LLM agent declare a complete multi-
 
 **Standard lifecycle for a supervisor LLM:**
 1. Validate or start the tree with `bt_validate` / `bt_start` (via MCP or `pcder bt start --file <path>`).
-2. Call `bt_wait` (`id`, `sinceVersion`, `timeoutMs`) in a loop until `state` is terminal (`succeeded`, `failed`, `cancelled`) or `waitingForLlm`.
+2. Call `bt_wait` (`id`, `sinceVersion`, `timeoutMs`) in a loop until `state` is terminal (`succeeded`, `failed`, `cancelled`) or `waitingForLlm`. `bt_wait` returns at once on finish or escalation, so a long `timeoutMs` never delays a decision. If `timeoutMs` passes first, the reply is only `{state, version, nodeRuns, timedOut: true}` without the tree; call `bt_wait` again and use `bt_get` when you need node details. The default is `600000` (10 minutes) for the MCP tool and `60000` for `pcder bt wait`; a negative value waits with no limit. If the MCP client cancels the call (`notifications/cancelled`, for example when its own tool-call timeout fires), the wait stops within about 2 seconds and sends no reply, so a long `timeoutMs` is safe even when the client gives up first.
 3. When `state == "waitingForLlm"`, read the returned `escalation` decision packet and call `bt_resume` with `id`, `node`, `answer`, and a required `rationale` (plus optional `vars`).
 4. If the tree fails and you fix an external issue or update a non-running node with `bt_update`, resume from the failed node with `bt_retry`.
 

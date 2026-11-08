@@ -89,6 +89,13 @@ int main() {
             json startResp = json::parse(h.btm->Start(btDef.dump()), nullptr, false);
             Check(startResp.value("ok", false), "Start bt-action-happy ok");
 
+            json waitShort = json::parse(h.btm->Wait("bt-action-happy", 0, 0), nullptr, false);
+            if (waitShort.value("state", "") == "running") {
+                Check(waitShort.value("timedOut", false) && !waitShort.contains("tree") &&
+                          !waitShort.contains("compact") && waitShort.contains("version"),
+                      "Wait timeout while running returns a light reply: " + waitShort.dump());
+            }
+
             json waitResp = json::parse(h.btm->Wait("bt-action-happy", 0, 15000), nullptr, false);
             Check(waitResp.value("ok", false) && waitResp.value("state", "") == "succeeded",
                   "Wait bt-action-happy reached succeeded (got " + waitResp.value("state", "") + ")");

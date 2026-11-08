@@ -675,7 +675,7 @@ std::string IpcServer::HandleRequestJson(const std::string& reqJson) {
             } else if (req.contains("since_version") && req["since_version"].is_number()) {
                 sinceVer = req["since_version"].get<uint64_t>();
             }
-            int timeoutMs = 30000;
+            int timeoutMs = 60000;
             if (req.contains("timeoutMs") && req["timeoutMs"].is_number_integer()) {
                 timeoutMs = req["timeoutMs"].get<int>();
             } else if (req.contains("timeout_ms") && req["timeout_ms"].is_number_integer()) {

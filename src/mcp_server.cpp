@@ -7,6 +7,11 @@
 #include <sstream>
 #include <io.h>
 #include <fcntl.h>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace pc {
 
@@ -19,6 +24,7 @@ struct McpRequest {
     std::string method;
     std::string toolName;         // params.name
     std::string argumentsJson = "{}";  // params.arguments
+    std::string cancelRequestIdRaw;    // params.requestId of notifications/cancelled
 };
 
 static McpRequest ParseMcpRequest(const std::string& line) {
@@ -37,6 +43,10 @@ static McpRequest ParseMcpRequest(const std::string& line) {
             if (name != params->end() && name->is_string()) req.toolName = name->get<std::string>();
             auto args = params->find("arguments");
             if (args != params->end() && args->is_object()) req.argumentsJson = args->dump();
+            auto reqId = params->find("requestId");
+            if (reqId != params->end() && (reqId->is_string() || reqId->is_number())) {
+                req.cancelRequestIdRaw = reqId->dump();
+            }
         }
     } catch (const nlohmann::json::exception&) {
         // dump() throws on invalid UTF-8; treat the line as unparseable.
@@ -98,6 +108,139 @@ static std::string BuildMcpToolResult(const std::string& rpcIdRaw, const std::st
     return oss.str();
 }
 
+// stdout is shared by the read loop and the bt_wait threads; one line per message.
+static std::mutex g_outMutex;
+
+static void EmitLine(const std::string& line) {
+    std::lock_guard<std::mutex> lock(g_outMutex);
+    std::cout << line << "\n" << std::flush;
+}
+
+// bt_wait calls in flight. Each runs on its own thread and waits in short IPC slices,
+// so a notifications/cancelled from the client (for example when its tool-call
+// timeout fires) stops it within one slice instead of holding a wait open.
+class PendingBtWaits {
+public:
+    static constexpr int64_t kDefaultTimeoutMs = 600000;  // 10 minutes
+    static constexpr int64_t kSliceMs = 2000;
+
+    void Start(const std::string& rpcId, const nlohmann::json& args) {
+        Reap();
+        auto entry = std::make_unique<Entry>();
+        entry->rpcId = rpcId;
+        Entry* e = entry.get();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            entries_.push_back(std::move(entry));
+        }
+        e->thread = std::thread([this, e, args] { Run(*e, args); });
+    }
+
+    void Cancel(const std::string& rpcId) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& e : entries_) {
+            if (e->rpcId == rpcId) e->cancelled = true;
+        }
+        WriteAuditLog("MCP_CANCEL", "requestId=" + rpcId);
+    }
+
+    void CancelAllAndJoin() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (auto& e : entries_) e->cancelled = true;
+        }
+        std::vector<std::unique_ptr<Entry>> all;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            all.swap(entries_);
+        }
+        for (auto& e : all) {
+            if (e->thread.joinable()) e->thread.join();
+        }
+    }
+
+private:
+    struct Entry {
+        std::string rpcId;
+        std::atomic<bool> cancelled{false};
+        std::atomic<bool> done{false};
+        std::thread thread;
+    };
+
+    void Reap() {
+        std::vector<std::unique_ptr<Entry>> finished;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (auto it = entries_.begin(); it != entries_.end();) {
+                if ((*it)->done) {
+                    finished.push_back(std::move(*it));
+                    it = entries_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (auto& e : finished) {
+            if (e->thread.joinable()) e->thread.join();
+        }
+    }
+
+    // Reply unless the client has cancelled the request (MCP: no response after cancel).
+    void Finish(Entry& e, const std::string& message) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!e.cancelled) EmitLine(message);
+        }
+        e.done = true;
+    }
+
+    void Run(Entry& e, nlohmann::json args) {
+        int64_t totalMs = kDefaultTimeoutMs;
+        if (args.contains("timeoutMs") && args["timeoutMs"].is_number_integer()) {
+            totalMs = args["timeoutMs"].get<int64_t>();
+        } else if (args.contains("timeout_ms") && args["timeout_ms"].is_number_integer()) {
+            totalMs = args["timeout_ms"].get<int64_t>();
+        }
+        args.erase("timeout_ms");
+        const uint64_t startTick = GetTickCount64();
+
+        while (true) {
+            if (e.cancelled) {
+                WriteAuditLog("MCP_TOOL_RESP", "tool=bt_wait cancelled");
+                e.done = true;
+                return;
+            }
+            int64_t slice = kSliceMs;
+            if (totalMs >= 0) {
+                int64_t remain = totalMs - static_cast<int64_t>(GetTickCount64() - startTick);
+                if (remain < 0) remain = 0;
+                if (remain < slice) slice = remain;
+            }
+            args["timeoutMs"] = slice;
+
+            std::string ipcResp, err;
+            if (!SendIpcRequest(args.dump(), ipcResp, err, true)) {
+                WriteAuditLog("MCP_TOOL_ERR", "tool=bt_wait error=" + err);
+                Finish(e, BuildMcpToolResult(e.rpcId, "IPC error: " + err, true));
+                return;
+            }
+            const bool ok = JsonGetBool(ipcResp, "ok", false);
+            const bool timedOut = JsonGetBool(ipcResp, "timedOut", false);
+            const bool overall = totalMs >= 0 &&
+                static_cast<int64_t>(GetTickCount64() - startTick) >= totalMs;
+            if (!ok || !timedOut || overall) {
+                WriteAuditLog("MCP_TOOL_RESP", std::string("tool=bt_wait ok=") + (ok ? "true" : "false") +
+                                                   " bytes=" + std::to_string(ipcResp.size()));
+                Finish(e, BuildMcpToolResult(e.rpcId, ipcResp, !ok));
+                return;
+            }
+        }
+    }
+
+    std::mutex mutex_;
+    std::vector<std::unique_ptr<Entry>> entries_;
+};
+
 int RunMcpServer() {
     // Set stdin and stdout to binary mode to avoid CRLF translation issues
     _setmode(_fileno(stdin), _O_BINARY);
@@ -105,6 +248,7 @@ int RunMcpServer() {
 
     WriteAuditLog("MCP_SERVER", "MCP stdio server started (Log dir: " + GetLogsDirectoryUtf8() + ")");
 
+    PendingBtWaits waits;
     std::string line;
     while (std::getline(std::cin, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -114,7 +258,7 @@ int RunMcpServer() {
 
         McpRequest req = ParseMcpRequest(line);
         if (!req.valid) {
-            std::cout << "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n" << std::flush;
+            EmitLine("{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}");
             continue;
         }
         const std::string& method = req.method;
@@ -129,14 +273,20 @@ int RunMcpServer() {
                 << "\"capabilities\":{\"tools\":{}},"
                 << "\"serverInfo\":{\"name\":\"ProcessCommander\",\"version\":\"" PC_VERSION "\"}"
                 << "}}";
-            std::cout << oss.str() << "\n" << std::flush;
+            EmitLine(oss.str());
         }
-        else if (method == "notifications/initialized" || method.rfind("notifications/", 0) == 0) {
+        else if (method == "notifications/cancelled") {
+            // The client gave up on a request (often its own tool-call timeout). Stop a
+            // pending bt_wait so it neither answers late nor keeps a wait open.
+            if (!req.cancelRequestIdRaw.empty()) waits.Cancel(req.cancelRequestIdRaw);
+            continue;
+        }
+        else if (method.rfind("notifications/", 0) == 0) {
             // Notification requires no response
             continue;
         }
         else if (method == "ping") {
-            std::cout << "{\"jsonrpc\":\"2.0\",\"id\":" << rpcId << ",\"result\":{}}\n" << std::flush;
+            EmitLine("{\"jsonrpc\":\"2.0\",\"id\":" + rpcId + ",\"result\":{}}");
         }
         else if (method == "tools/list") {
             std::ostringstream oss;
@@ -412,11 +562,11 @@ int RunMcpServer() {
                 << "},"
                 << "{"
                 << "\"name\":\"bt_wait\","
-                << "\"description\":\"Wait (long poll) until a behavior tree finishes or reaches waitingForLlm/paused, returning tree state and any escalation decision packet. See doc/behavior-tree.md.\","
+                << "\"description\":\"Wait (long poll) until a behavior tree finishes or reaches waitingForLlm/paused, returning tree state and any escalation decision packet. It returns at once on those events, so a long timeoutMs never delays a decision. If timeoutMs passes first, it returns only {state, version, nodeRuns, timedOut: true}; call it again. If your client cancels the call (e.g. its tool timeout), the wait stops. See doc/behavior-tree.md.\","
                 << "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
                 << "\"id\":{\"type\":\"string\",\"description\":\"Behavior tree id\"},"
                 << "\"sinceVersion\":{\"type\":\"integer\",\"description\":\"Version last seen by caller (default 0)\"},"
-                << "\"timeoutMs\":{\"type\":\"integer\",\"description\":\"Max wait in milliseconds (default 30000)\"}"
+                << "\"timeoutMs\":{\"type\":\"integer\",\"description\":\"Max wait in milliseconds (default 600000 = 10 min; negative = no limit)\"}"
                 << "},\"required\":[\"id\"]}"
                 << "},"
                 << "{"
@@ -466,7 +616,7 @@ int RunMcpServer() {
                 << "},\"required\":[\"id\"]}"
                 << "}"
                 << "]}}";
-            std::cout << oss.str() << "\n" << std::flush;
+            EmitLine(oss.str());
         }
         else if (method == "tools/call") {
             const std::string& toolName = req.toolName;
@@ -694,9 +844,8 @@ int RunMcpServer() {
                     if (!argsObj.contains("bt") && !argsObj.contains("patch")) {
                         std::ifstream ifs(absW, std::ios::binary);
                         if (!ifs) {
-                            std::cout << BuildMcpToolResult(
-                                rpcId, "{\"ok\":false,\"error\":\"cannot open file: " + JsonEscape(fileArg) + "\"}", true)
-                                      << "\n" << std::flush;
+                            EmitLine(BuildMcpToolResult(
+                                rpcId, "{\"ok\":false,\"error\":\"cannot open file: " + JsonEscape(fileArg) + "\"}", true));
                             continue;
                         }
                         std::ostringstream fss;
@@ -704,28 +853,35 @@ int RunMcpServer() {
                         argsObj["bt"] = fss.str();
                     }
                 }
+                if (toolName == "bt_wait") {
+                    // Long waits run off the read loop so that notifications/cancelled
+                    // (and other calls) are still read while this one is waiting.
+                    waits.Start(rpcId, argsObj);
+                    continue;
+                }
                 ipcReq << argsObj.dump();
             }
             else {
-                std::cout << BuildMcpToolResult(rpcId, "Unknown tool: " + toolName, true) << "\n" << std::flush;
+                EmitLine(BuildMcpToolResult(rpcId, "Unknown tool: " + toolName, true));
                 continue;
             }
 
             std::string ipcResp, err;
             if (!SendIpcRequest(ipcReq.str(), ipcResp, err, true)) {
                 WriteAuditLog("MCP_TOOL_ERR", "tool=" + toolName + " error=" + err);
-                std::cout << BuildMcpToolResult(rpcId, "IPC error: " + err, true) << "\n" << std::flush;
+                EmitLine(BuildMcpToolResult(rpcId, "IPC error: " + err, true));
             } else {
                 bool ok = JsonGetBool(ipcResp, "ok", false);
                 WriteAuditLog("MCP_TOOL_RESP", "tool=" + toolName + " ok=" + (ok ? "true" : "false") + " bytes=" + std::to_string(ipcResp.size()));
-                std::cout << BuildMcpToolResult(rpcId, ipcResp, !ok) << "\n" << std::flush;
+                EmitLine(BuildMcpToolResult(rpcId, ipcResp, !ok));
             }
         }
         else {
-            std::cout << "{\"jsonrpc\":\"2.0\",\"id\":" << rpcId
-                      << ",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n" << std::flush;
+            EmitLine("{\"jsonrpc\":\"2.0\",\"id\":" + rpcId +
+                     ",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}");
         }
     }
+    waits.CancelAllAndJoin();
     return 0;
 }
 

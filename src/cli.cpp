@@ -891,7 +891,7 @@ void PrintCliUsageJson() {
       "when": "Use instead of taskqueue_add when the next step depends on results: if/else, build -> fix -> rebuild, test -> fix -> retest, file/JSON/log checks, worker LLM steps, or a decision you must make mid-way.",
       "flow": [
         "Optionally bt_validate, then bt_start with {bt: {...}} or {file: \"plan.json\"}.",
-        "Loop on bt_wait {id, sinceVersion, timeoutMs}; it returns on finish or when state is waitingForLlm with a decision packet.",
+        "Loop on bt_wait {id, sinceVersion, timeoutMs}; it returns on finish or when state is waitingForLlm with a decision packet. It returns at once on those events, so long timeouts are fine: timeoutMs defaults to 600000 for the MCP tool (a client cancel stops it) and 60000 for pcder bt wait; on timeout it returns only {state, version, nodeRuns, timedOut: true}.",
         "Answer with bt_resume {id, node, answer, rationale}. The packet contains the intent, question, guidance, allowed answers, path, and the logs/vars/files you listed in include, so you can decide without earlier context.",
         "On failure read bt_get {id, compact: true}; fix the cause (bt_update changes a non-running node's definition) and call bt_retry {id, from}."
       ],
@@ -1252,7 +1252,12 @@ int PrintResponse(const std::string& action, const std::string& respJson, bool j
             std::cout << compact << "\n";
         } else {
             std::cout << "[" << JsonGetString(respJson, "state", "") << "] "
-                      << JsonGetString(respJson, "id", "") << "\n";
+                      << JsonGetString(respJson, "id", "");
+            if (respJson.find("\"timedOut\":true") != std::string::npos) {
+                std::cout << "  (timed out; version=" << JsonGetInt(respJson, "version", 0)
+                          << ", runs=" << JsonGetInt(respJson, "nodeRuns", 0) << ")";
+            }
+            std::cout << "\n";
         }
         std::string esc = ExtractJsonObject(respJson, "escalation");
         if (!esc.empty()) {
@@ -2006,7 +2011,7 @@ if (subcmd == "start" || subcmd == "run") {
         bool compact = false;
         bool paused = true;
         uint64_t sinceVersion = 0;
-        int timeoutMs = 30000;
+        int timeoutMs = 60000;
 
         for (size_t i = 3; i < args.size(); ++i) {
             const std::string& a = args[i];

@@ -344,6 +344,7 @@ std::string BtManager::List() {
 
 std::string BtManager::Wait(const std::string& id, uint64_t sinceVersion, int timeoutMs) {
     uint64_t startTick = GetNowTickMs();
+    bool timedOut = false;
     std::unique_lock<std::mutex> lock(mutex_);
     while (!stopped_.load()) {
         auto it = trees_.find(id);
@@ -361,7 +362,7 @@ std::string BtManager::Wait(const std::string& id, uint64_t sinceVersion, int ti
 
         if (timeoutMs >= 0) {
             int64_t elapsed = static_cast<int64_t>(GetNowTickMs() - startTick);
-            if (elapsed >= timeoutMs) break;
+            if (elapsed >= timeoutMs) { timedOut = true; break; }
             int64_t remain = std::min<int64_t>(100, timeoutMs - elapsed);
             waitCv_.wait_for(lock, std::chrono::milliseconds(remain));
         } else {
@@ -373,7 +374,23 @@ std::string BtManager::Wait(const std::string& id, uint64_t sinceVersion, int ti
     if (it == trees_.end() || !it->second || !it->second->tree) {
         return MakeErrorJson("behavior tree not found: " + id);
     }
-    return BuildTreeResponseJson(*it->second->tree, false).dump();
+    const BehaviorTree& tree = *it->second->tree;
+    if (timedOut) {
+        // Nothing for the caller to act on: keep the reply small so a supervisor
+        // LLM that loops on bt_wait does not pay for the whole tree every poll.
+        // bt_get returns the full tree when it is actually needed.
+        json out;
+        out["ok"] = true;
+        out["id"] = tree.Id();
+        out["state"] = tree.State();
+        if (!tree.Detail().empty()) out["detail"] = tree.Detail();
+        out["version"] = tree.Version();
+        out["nodeRuns"] = tree.NodeRuns();
+        out["timedOut"] = true;
+        out["hint"] = "Still running; call bt_wait again with this version. Use bt_get for node details.";
+        return out.dump();
+    }
+    return BuildTreeResponseJson(tree, false).dump();
 }
 
 std::string BtManager::Resume(const std::string& id,

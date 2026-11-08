@@ -13,7 +13,7 @@ ProcessCommander のビヘイビアツリー (BT) は、条件分岐 (`if`/`fall
 
 **呼び出し元 LLM の基本フロー:**
 1. `bt_validate` / `bt_start` (または CLI `pcder bt start --file <path>`) で BT を登録・開始する。
-2. `bt_wait` (`id`, `sinceVersion`, `timeoutMs`) で終端状態 (`succeeded`, `failed`, `cancelled`) または `waitingForLlm` になるまでロングポールする。
+2. `bt_wait` (`id`, `sinceVersion`, `timeoutMs`) で終端状態 (`succeeded`, `failed`, `cancelled`) または `waitingForLlm` になるまでロングポールする。`bt_wait` は終了や `escalate` ではすぐ返るので、`timeoutMs` を長くしても判断が遅れることはない。先に `timeoutMs` が過ぎた場合、応答はツリーを含まない `{state, version, nodeRuns, timedOut: true}` だけになる。`bt_wait` を呼び直し、ノードの詳細が必要なときは `bt_get` を使う。既定は MCP ツールで `600000` (10 分)、`pcder bt wait` で `60000`。負の値なら無制限に待つ。MCP クライアントが呼び出しを取り消した場合 (`notifications/cancelled`。クライアント自身のツールタイムアウトなど)、待ちは約 2 秒以内に止まり応答は返さない。そのためクライアントが先に諦めても、長い `timeoutMs` で問題ない。
 3. `state == "waitingForLlm"` で返ったら、レスポンス内の `escalation` 判断パケットを読み、`bt_resume` に `id`, `node`, `answer`, 必須の `rationale` (および任意の `vars`) を渡して再開する。
 4. 失敗 (`failed`) 後に外部要因を直すか `bt_update` で非 `running` ノードの定義を修正した場合は、`bt_retry` で失敗ノードから再開する。
 
