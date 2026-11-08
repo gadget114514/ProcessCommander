@@ -25,8 +25,8 @@ The dashboard has an **execution monitor pane** below the process and task lists
 
 ## Express
 
-- Download and install [ProcessCommander-v2.9.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64-setup.exe)
-  (portable: [ProcessCommander-v2.9.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
+- Download and install [ProcessCommander-v2.9.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64-setup.exe)
+  (portable: [ProcessCommander-v2.9.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64.zip), all versions: [Releases](https://github.com/gadget114514/ProcessCommander/releases))
 - In your llm, "find processcommander in PATH, then read help to use it" 
 - In your llm, "create task and use (opencode|claude|agy|codex) to execute the task via processcommander" 
 - That's all
@@ -101,6 +101,10 @@ What stays the same: each step is still a normal task-queue job with its own tim
 ---
 
 ## Release Notes
+
+### v2.9.1
+- **Cheaper `bt_wait` for supervisor LLMs**: when the timeout passes with nothing to act on, `bt_wait` now returns only `{state, version, nodeRuns, timedOut}` instead of the whole tree. Finish and escalation replies are unchanged and still return at once.
+- **Long, cancellable waits**: the MCP `bt_wait` waits up to 10 minutes by default (a negative `timeoutMs` waits with no limit). Other MCP calls are still served while it waits, and `notifications/cancelled` stops it within about 2 seconds. `pcder bt wait` keeps a 60-second default.
 
 ### v2.9.0
 - **Behavior trees**: a supervisor LLM can submit a whole multi-step plan (branches, build-fix loops, retries, condition checks, worker LLM steps, decisions) as one JSON tree with `bt_start`. ProcessCommander runs it, adds each step as an ordinary task-queue job, and calls the LLM back only for `escalate` decisions or at the end. New MCP tools `bt_validate`, `bt_start`, `bt_get`, `bt_list`, `bt_wait`, `bt_resume`, `bt_retry`, `bt_update`, `bt_cancel`, `bt_pause` and `pcder bt ...` commands. See [Behavior trees](#behavior-trees-the-next-step-decisions-run-inside-processcommander) and [doc/behavior-tree.md](doc/behavior-tree.md).

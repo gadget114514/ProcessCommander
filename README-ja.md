@@ -22,8 +22,8 @@
 
 ## Express
 
-- [ProcessCommander-v2.9.0-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64-setup.exe) をダウンロードしてインストール
-  （ポータブル版: [ProcessCommander-v2.9.0-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.0/ProcessCommander-v2.9.0-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
+- [ProcessCommander-v2.9.1-win64-setup.exe](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64-setup.exe) をダウンロードしてインストール
+  （ポータブル版: [ProcessCommander-v2.9.1-win64.zip](https://github.com/gadget114514/ProcessCommander/releases/download/v2.9.1/ProcessCommander-v2.9.1-win64.zip)、全バージョン: [Releases](https://github.com/gadget114514/ProcessCommander/releases)）
 - LLM に「PATH から processcommander を探して、help を読んで使い方を把握して」と伝える
 - LLM に「タスクを作成して、processcommander 経由で (opencode|claude|agy|codex) に実行させて」と伝える
 - 以上
@@ -105,6 +105,10 @@ MCP ツール `run_worker` は、1つのタスクをワーカーの LLM CLI に�
 （以下の help 本文は英語です）
 
 ## リリースノート
+
+### v2.9.1
+- **監督役 LLM の `bt_wait` を軽く**: 何も起きずに時間切れになったとき、`bt_wait` はツリー全体ではなく `{state, version, nodeRuns, timedOut}` だけを返すようになりました。終了と escalate のときの応答は変わらず、すぐに返ります。
+- **長く待てて取り消せる待機**: MCP の `bt_wait` は既定で最大 10 分待ちます（`timeoutMs` を負にすると無制限）。待っている間もほかの MCP 呼び出しに応答し、`notifications/cancelled` で約 2 秒以内に止まります。`pcder bt wait` の既定は 60 秒のままです。
 
 ### v2.9.0
 - **ビヘイビアツリー**: 監督役の LLM が、複数手順の作業全体（分岐、ビルド修正ループ、リトライ、条件の確認、ワーカー LLM の手順、判断）を 1 つの JSON のツリーとして `bt_start` で渡せるようになりました。ProcessCommander がツリーを実行し、各手順を普通のタスクキューのジョブとして追加します。LLM が呼ばれるのは `escalate` の判断と終了時だけです。MCP ツール `bt_validate`, `bt_start`, `bt_get`, `bt_list`, `bt_wait`, `bt_resume`, `bt_retry`, `bt_update`, `bt_cancel`, `bt_pause` と `pcder bt ...` コマンドを追加しました。詳しくは [ビヘイビアツリー](#ビヘイビアツリー-次に何をするかの判断を-processcommander-の中で行う) と [doc/behavior-tree-ja.md](doc/behavior-tree-ja.md) を参照してください。
