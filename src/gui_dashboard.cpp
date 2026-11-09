@@ -2062,9 +2062,14 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnRefresh,
                 Tr(L"すべてのリストを最新の情報に更新", L"Refresh All Lists", L"Actualizar todas las listas"));
         }
+        if (st->hwndBtnUsage) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                st->showUsagePanel ? L"Hide Token Usage Graph"
+                                   : L"Show Token Usage Graph");
+        }
     }
     // Repaint the toggles so their latched (pressed) look follows the state.
-    for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane}) {
+    for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnUsage}) {
         if (b) InvalidateRect(b, nullptr, FALSE);
     }
 }
@@ -8422,6 +8427,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnBtView);
                 addTool(st->hwndBtnHideTray);
                 addTool(st->hwndBtnRefresh);
+                addTool(st->hwndBtnUsage);
             }
 
             LoadShellConfig(st);
@@ -8500,7 +8506,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             HWND uiCtrls[] = {
                 st->hwndBtnStart, st->hwndBtnSettings, st->hwndBtnKillAll,
                 st->hwndBtnGridView,
-                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnBtView, st->hwndBtnHideTray, st->hwndBtnRefresh, st->hwndClock,
+                st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnBtView, st->hwndBtnHideTray, st->hwndBtnRefresh, st->hwndClock, st->hwndBtnUsage,
                 st->hwndBtnViewTasks, st->hwndList, st->hwndTaskList, st->hwndTab
             };
             for (HWND h : uiCtrls) {
@@ -8859,6 +8865,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 if (dis->hwndItem == st->hwndBtnStreamPane) latched = st->showStreamPane;
                 else if (dis->hwndItem == st->hwndBtnToggleList) latched = !st->hideProcessList;
                 else if (dis->hwndItem == st->hwndBtnToggleTerm) latched = !st->hideTerminalGrid;
+                else if (dis->hwndItem == st->hwndBtnUsage) latched = st->showUsagePanel;
             }
             bool pressed = (dis->itemState & ODS_SELECTED) != 0 || latched;
             COLORREF bg = pressed ? g_theme.border : g_theme.panel;
