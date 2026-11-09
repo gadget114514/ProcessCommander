@@ -2062,6 +2062,10 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnRefresh,
                 Tr(L"すべてのリストを最新の情報に更新", L"Refresh All Lists", L"Actualizar todas las listas"));
         }
+        if (st->hwndBtnUsage) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                L"Usage Graph");
+        }
     }
     // Repaint the toggles so their latched (pressed) look follows the state.
     for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane}) {
@@ -8420,6 +8424,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnToggleTerm);
                 addTool(st->hwndBtnStreamPane);
                 addTool(st->hwndBtnBtView);
+                addTool(st->hwndBtnUsage);
                 addTool(st->hwndBtnHideTray);
                 addTool(st->hwndBtnRefresh);
             }
