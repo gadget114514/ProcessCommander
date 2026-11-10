@@ -2062,9 +2062,14 @@ static void UpdatePanelToggleLabels(DashboardState* st) {
             UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnRefresh,
                 Tr(L"すべてのリストを最新の情報に更新", L"Refresh All Lists", L"Actualizar todas las listas"));
         }
+        if (st->hwndBtnUsage) {
+            UpdateControlTooltip(st->hwndToolbarTip, st->hwndMain, st->hwndBtnUsage,
+                st->showUsagePanel ? Tr(L"トークン使用量を非表示", L"Hide Token Usage", L"Ocultar uso de tokens")
+                                   : Tr(L"トークン使用量を表示", L"Show Token Usage", L"Mostrar uso de tokens"));
+        }
     }
     // Repaint the toggles so their latched (pressed) look follows the state.
-    for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane}) {
+    for (HWND b : {st->hwndBtnToggleList, st->hwndBtnToggleTerm, st->hwndBtnStreamPane, st->hwndBtnUsage}) {
         if (b) InvalidateRect(b, nullptr, FALSE);
     }
 }
@@ -8422,6 +8427,7 @@ static LRESULT CALLBACK DashboardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 addTool(st->hwndBtnBtView);
                 addTool(st->hwndBtnHideTray);
                 addTool(st->hwndBtnRefresh);
+                addTool(st->hwndBtnUsage);
             }
 
             LoadShellConfig(st);
