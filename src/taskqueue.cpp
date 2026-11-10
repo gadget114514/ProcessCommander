@@ -918,46 +918,55 @@ void TaskQueueManager::SaveQueue(const TaskQueue& tq) {
 }
 
 std::string TaskQueueManager::JobToJson(const TaskQueueJob& job, bool includeInstructions) const {
-    std::ostringstream oss;
-    oss << "{\"id\":\"" << JsonEscape(job.id) << "\""
-        << ",\"taskqueue\":\"" << JsonEscape(job.taskqueue) << "\""
-        << ",\"name\":\"" << JsonEscape(job.name) << "\""
-        << ",\"summary\":\"" << JsonEscape(job.summary) << "\"";
+    std::string out;
+    out.reserve(1024); // Optimization: avoid ostringstream overhead for JSON serialization
+    out.append("{\"id\":\"").append(JsonEscape(job.id))
+       .append("\",\"taskqueue\":\"").append(JsonEscape(job.taskqueue))
+       .append("\",\"name\":\"").append(JsonEscape(job.name))
+       .append("\",\"summary\":\"").append(JsonEscape(job.summary))
+       .append("\"");
     if (includeInstructions) {
-        oss << ",\"instructions\":" << InstructionsToJson(job.instructions);
+        out.append(",\"instructions\":").append(InstructionsToJson(job.instructions));
     } else {
-        oss << ",\"instructions\":{\"source\":\"" << JsonEscape(job.instructions.source)
-            << "\",\"rev\":" << job.instructions.rev << "}";
+        out.append(",\"instructions\":{\"source\":\"").append(JsonEscape(job.instructions.source))
+           .append("\",\"rev\":").append(std::to_string(job.instructions.rev)).append("}");
     }
-    oss << ",\"command\":\"" << JsonEscape(job.command) << "\""
-        << ",\"cwd\":\"" << JsonEscape(job.cwd) << "\""
-        << ",\"env\":" << EnvToJson(job.env)
-        << ",\"depends_on\":" << DepsToJson(job.dependsOn)
-        << ",\"timeout_sec\":" << job.timeoutSec
-        << ",\"idle\":{\"output_sec\":" << job.idle.outputSec << ",\"cpu_sec\":" << job.idle.cpuSec << "}"
-        << ",\"max_attempts\":" << job.maxAttempts
-        << ",\"retry_delay_sec\":" << job.retryDelaySec
-        << ",\"defer\":" << DeferToJson(job.defer)
-        << ",\"success\":" << SuccessToJson(job.success)
-        << ",\"kill_exclude\":" << StrArrayToJson(job.killExclude)
-        << ",\"resources\":" << ResourcesToJson(job.resources)
-        << ",\"priority\":" << job.priority
-        << ",\"state\":\"" << JsonEscape(job.state) << "\""
-        << ",\"attempts\":" << AttemptsToJson(job.attempts)
-        << ",\"blocked_by\":";
-    if (job.blockedBy.empty()) oss << "null";
-    else oss << "\"" << JsonEscape(job.blockedBy) << "\"";
-    oss << ",\"created_at\":\"" << JsonEscape(job.createdAt) << "\""
-        << ",\"updated_at\":\"" << JsonEscape(job.updatedAt) << "\""
-        << ",\"notes\":\"" << JsonEscape(job.notes) << "\"";
+    out.append(",\"command\":\"").append(JsonEscape(job.command))
+       .append("\",\"cwd\":\"").append(JsonEscape(job.cwd))
+       .append("\",\"env\":").append(EnvToJson(job.env))
+       .append(",\"depends_on\":").append(DepsToJson(job.dependsOn))
+       .append(",\"timeout_sec\":").append(std::to_string(job.timeoutSec))
+       .append(",\"idle\":{\"output_sec\":").append(std::to_string(job.idle.outputSec))
+       .append(",\"cpu_sec\":").append(std::to_string(job.idle.cpuSec)).append("}")
+       .append(",\"max_attempts\":").append(std::to_string(job.maxAttempts))
+       .append(",\"retry_delay_sec\":").append(std::to_string(job.retryDelaySec))
+       .append(",\"defer\":").append(DeferToJson(job.defer))
+       .append(",\"success\":").append(SuccessToJson(job.success))
+       .append(",\"kill_exclude\":").append(StrArrayToJson(job.killExclude))
+       .append(",\"resources\":").append(ResourcesToJson(job.resources))
+       .append(",\"priority\":").append(std::to_string(job.priority))
+       .append(",\"state\":\"").append(JsonEscape(job.state))
+       .append("\",\"attempts\":").append(AttemptsToJson(job.attempts))
+       .append(",\"blocked_by\":");
+    if (job.blockedBy.empty()) {
+        out.append("null");
+    } else {
+        out.append("\"").append(JsonEscape(job.blockedBy)).append("\"");
+    }
+    out.append(",\"created_at\":\"").append(JsonEscape(job.createdAt))
+       .append("\",\"updated_at\":\"").append(JsonEscape(job.updatedAt))
+       .append("\",\"notes\":\"").append(JsonEscape(job.notes))
+       .append("\"");
     if (!job.bt.id.empty()) {
-        oss << ",\"bt\":{\"id\":\"" << JsonEscape(job.bt.id)
-            << "\",\"node\":\"" << JsonEscape(job.bt.node)
-            << "\",\"run\":" << job.bt.run << "}";
+        out.append(",\"bt\":{\"id\":\"").append(JsonEscape(job.bt.id))
+           .append("\",\"node\":\"").append(JsonEscape(job.bt.node))
+           .append("\",\"run\":").append(std::to_string(job.bt.run)).append("}");
     }
-    if (!job.origin.empty()) oss << ",\"origin\":" << OriginToJson(job.origin);
-    oss << "}";
-    return oss.str();
+    if (!job.origin.empty()) {
+        out.append(",\"origin\":").append(OriginToJson(job.origin));
+    }
+    out.append("}");
+    return out;
 }
 
 TaskQueueOrigin TaskQueueManager::ParseOriginJson(const std::string& json) {
